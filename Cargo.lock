@@ -101,6 +101,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
 
 [[package]]
+name = "bytes"
+version = "1.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
+
+[[package]]
 name = "cassowary"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -474,6 +480,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "netgap-assess"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "netgap-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "netgap-cli"
 version = "0.1.0"
 dependencies = [
@@ -517,6 +534,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "netgap-fingerprint"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "netgap-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "netgap-interfaces"
 version = "0.1.0"
 dependencies = [
@@ -525,6 +554,18 @@ dependencies = [
  "pnet",
  "pnet_datalink",
  "thiserror",
+]
+
+[[package]]
+name = "netgap-probes"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "netgap-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -993,6 +1034,7 @@ version = "1.52.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b67dee974fe86fd92cc45b7a95fdd2f99a36a6d7b0d431a231178d3d670bbcc6"
 dependencies = [
+ "bytes",
  "libc",
  "mio 1.2.0",
  "pin-project-lite",
