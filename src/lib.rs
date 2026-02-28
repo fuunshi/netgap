@@ -1,7 +1,8 @@
-pub mod app;
 pub mod analyzer;
+pub mod app;
 pub mod cli;
 pub mod discovery;
+pub mod engine;
 pub mod model;
 pub mod output;
 pub mod ports;

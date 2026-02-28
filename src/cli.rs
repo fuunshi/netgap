@@ -6,7 +6,10 @@ use crate::app;
 use crate::model::{OutputFormat, ScanMode};
 
 #[derive(Debug, Parser)]
-#[command(name = "netgap", about = "Scan a local network for exposed services and common security gaps")]
+#[command(
+    name = "netgap",
+    about = "Scan a local network for exposed services and common security gaps"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -51,15 +54,26 @@ pub enum OutputArg {
     Html,
 }
 
-pub fn run() -> Result<()> {
+pub async fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
         Command::Interfaces => {
             app::print_interfaces()?;
         }
-        Command::Scan { interface, mode, output, output_file } => {
-            app::run_scan(interface.as_deref(), mode.into(), output.into(), output_file.as_deref())?;
+        Command::Scan {
+            interface,
+            mode,
+            output,
+            output_file,
+        } => {
+            app::run_scan(
+                interface.as_deref(),
+                mode.into(),
+                output.into(),
+                output_file.as_deref(),
+            )
+            .await?;
         }
     }
 

@@ -18,6 +18,13 @@ pub struct ScanConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoveredHost {
+    pub ip: String,
+    pub hostname: Option<String>,
+    pub mac: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanSummary {
     pub interface: String,
     pub mode: ScanMode,
