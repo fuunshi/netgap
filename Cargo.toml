@@ -5,14 +5,15 @@ members = [
     "netgap-discover",
     "netgap-scan",
     "netgap-report",
-    "netgap-cli", "netgap-fingerprint", "netgap-assess", "netgap-probes", "netgap-storage",
+    "netgap-raw-sockets",
+    "netgap-fingerprint", "netgap-assess", "netgap-probes", "netgap-storage",
 ]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["GitHub Copilot"]
+authors = ["Pranil Shrestha"]
 license = "MIT"
 
 [workspace.dependencies]
@@ -22,6 +23,7 @@ clap = { version = "4", features = ["derive", "env"] }
 colored = "2"
 config = "0.13"
 dns-lookup = "2"
+futures = "0.3"
 indicatif = "0.17"
 mdns-sd = "0.10"
 network-interface = "1.1"

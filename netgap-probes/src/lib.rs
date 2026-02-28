@@ -3,7 +3,7 @@
 //! This module implements deep service fingerprinting via protocol-specific probes.
 //! Each probe sends crafted requests and parses responses to identify service versions.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result};
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

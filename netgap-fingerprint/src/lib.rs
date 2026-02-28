@@ -7,9 +7,7 @@
 //! - Device name and capability inference
 
 use netgap_core::{Device, OsType};
-use anyhow::{anyhow, Result};
 use std::collections::HashMap;
-use std::net::IpAddr;
 
 /// Fingerprinter for device OS and vendor identification.
 pub struct Fingerprinter {

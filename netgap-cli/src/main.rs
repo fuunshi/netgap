@@ -11,7 +11,7 @@ use chrono::Local;
 #[command(name = "netgap")]
 #[command(about = "Network security scanner for discovering and assessing vulnerabilities on your LAN", long_about = None)]
 #[command(version = "0.1.0")]
-#[command(author = "GitHub Copilot")]
+#[command(author = "Pranil Shrestha")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

@@ -1,0 +1,20 @@
+[package]
+name = "netgap-raw-sockets"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+netgap-core = { path = "../netgap-core" }
+socket2.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+log = "0.4"
+pnet.workspace = true
+pnet_datalink.workspace = true
+pnet_packet.workspace = true
+futures.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
