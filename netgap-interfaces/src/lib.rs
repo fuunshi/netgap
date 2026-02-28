@@ -7,6 +7,7 @@
 use anyhow::{anyhow, Result};
 use pnet::datalink;
 use std::path::PathBuf;
+use std::io::{self, Write};
 
 /// Represents an enumerated network interface.
 #[derive(Debug, Clone)]
@@ -132,6 +133,73 @@ fn get_config_dir() -> Result<PathBuf> {
     }
 }
 
+/// Interactive TUI-style interface selector (terminal-based menu).
+/// Shows a numbered list and prompts the user to select.
+pub fn select_interface_interactive() -> Result<String> {
+    let interfaces = get_interfaces()?;
+    
+    if interfaces.is_empty() {
+        return Err(anyhow!("No network interfaces found"));
+    }
+
+    println!("\n📡 Select Network Interface:\n");
+    
+    // Display interface options
+    for (idx, iface) in interfaces.iter().enumerate() {
+        let status = if iface.is_up { "✓" } else { "✗" };
+        let ip_str = iface.ipv4.as_ref().map(|s| s.as_str()).unwrap_or("No IPv4");
+        println!("  {}. {} {} [{}]", idx + 1, iface.name, ip_str, status);
+    }
+
+    // Get user input
+    loop {
+        print!("\nSelect interface (1-{}): ", interfaces.len());
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        
+        if let Ok(choice) = input.trim().parse::<usize>() {
+            if choice > 0 && choice <= interfaces.len() {
+                let selected = interfaces[choice - 1].name.clone();
+                save_interface_preference(&selected)?;
+                println!("✓ Selected: {}\n", selected);
+                return Ok(selected);
+            }
+        }
+        
+        println!("❌ Invalid selection. Please try again.");
+    }
+}
+
+/// Get interface with fallback to saved preference or first available.
+pub fn get_interface_auto() -> Result<String> {
+    // Try saved preference first
+    if let Ok(Some(saved)) = load_interface_preference() {
+        if let Ok(_) = get_interface(&saved) {
+            return Ok(saved);
+        }
+    }
+
+    // Fallback to first up interface
+    let interfaces = get_interfaces()?;
+    let up_interfaces: Vec<_> = interfaces
+        .iter()
+        .filter(|iface| iface.is_up && iface.ipv4.is_some())
+        .collect();
+
+    if !up_interfaces.is_empty() {
+        return Ok(up_interfaces[0].name.clone());
+    }
+
+    // Last resort: any interface
+    if !interfaces.is_empty() {
+        return Ok(interfaces[0].name.clone());
+    }
+
+    Err(anyhow!("No network interfaces available"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,6 +225,27 @@ mod tests {
         let interfaces = get_interfaces().expect("Should get interfaces");
         for iface in interfaces {
             assert!(!iface.name.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_get_interface_auto() {
+        let iface = get_interface_auto().expect("Should get an interface");
+        assert!(!iface.is_empty());
+    }
+
+    #[test]
+    fn test_save_load_interface_preference() {
+        let interfaces = get_interfaces().expect("Should get interfaces");
+        if !interfaces.is_empty() {
+            let test_iface = &interfaces[0].name;
+            save_interface_preference(test_iface).expect("Should save preference");
+            
+            let loaded = load_interface_preference()
+                .expect("Should load preference")
+                .expect("Should have preference");
+            
+            assert_eq!(&loaded, test_iface);
         }
     }
 }
