@@ -1,0 +1,13 @@
+[package]
+name = "netgap-scan"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+netgap-core = { path = "../netgap-core" }
+tokio.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+indicatif.workspace = true

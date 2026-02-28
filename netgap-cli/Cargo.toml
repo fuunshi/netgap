@@ -1,0 +1,23 @@
+[package]
+name = "netgap-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "netgap"
+path = "src/main.rs"
+
+[dependencies]
+netgap-core = { path = "../netgap-core" }
+netgap-interfaces = { path = "../netgap-interfaces" }
+netgap-discover = { path = "../netgap-discover" }
+netgap-scan = { path = "../netgap-scan" }
+clap.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+indicatif.workspace = true

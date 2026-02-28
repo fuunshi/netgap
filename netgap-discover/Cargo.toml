@@ -1,0 +1,14 @@
+[package]
+name = "netgap-discover"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+netgap-core = { path = "../netgap-core" }
+tokio.workspace = true
+pnet.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+indicatif.workspace = true

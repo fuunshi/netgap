@@ -1,19 +1,40 @@
-[package]
-name = "netgap"
+[workspace]
+members = [
+    "netgap-core",
+    "netgap-interfaces",
+    "netgap-discover",
+    "netgap-scan",
+    "netgap-cli",
+]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
+authors = ["GitHub Copilot"]
+license = "MIT"
 
-[dependencies]
+[workspace.dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 colored = "2"
+config = "0.13"
 dns-lookup = "2"
+indicatif = "0.17"
+mdns-sd = "0.10"
+network-interface = "1.1"
+notify-rust = "4"
 pnet = "0.34"
 rand = "0.8"
+ratatui = "0.27"
+crossterm = "0.27"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+socket2 = "0.5"
+thiserror = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "sync"] }
+toml = "0.8"
 
-[dev-dependencies]
+[workspace.dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
