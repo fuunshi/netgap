@@ -1,3 +1,4 @@
+pub mod app;
 pub mod analyzer;
 pub mod cli;
 pub mod discovery;

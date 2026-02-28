@@ -1,10 +1,28 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InterfaceInfo {
+    pub name: String,
+    pub ips: Vec<String>,
+    pub mac: Option<String>,
+    pub is_up: bool,
+    pub is_loopback: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanConfig {
+    pub interface: String,
+    pub mode: ScanMode,
+    pub output: OutputFormat,
+    pub output_file: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanSummary {
     pub interface: String,
     pub mode: ScanMode,
     pub hosts: Vec<HostReport>,
+    pub interfaces: Vec<InterfaceInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,4 +63,11 @@ pub enum Severity {
 pub enum ScanMode {
     Quick,
     Full,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum OutputFormat {
+    Terminal,
+    Json,
+    Html,
 }
