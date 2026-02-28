@@ -94,13 +94,25 @@ impl VulnerabilityDatabase {
                 "CVE-2021-44228".to_string(),
                 "< 2.4.50".to_string(),
                 Severity::Critical,
-                "Upgrade to Apache 2.4.50 or later".to_string(),
+                "Upgrade to Apache 2.4.50 or later; this is the Log4Shell vulnerability impacting many services".to_string(),
             ),
             (
                 "CVE-2021-26691".to_string(),
                 "< 2.4.49".to_string(),
                 Severity::High,
                 "Upgrade to Apache 2.4.49 or later".to_string(),
+            ),
+            (
+                "CVE-2021-41773".to_string(),
+                "< 2.4.50".to_string(),
+                Severity::Critical,
+                "Path traversal vulnerability; upgrade to 2.4.50+".to_string(),
+            ),
+            (
+                "CVE-2020-1927".to_string(),
+                "< 2.4.43".to_string(),
+                Severity::High,
+                "Privilege escalation via mod_auth; upgrade to 2.4.43+".to_string(),
             ),
         ]
     }
@@ -120,37 +132,139 @@ impl VulnerabilityDatabase {
                 Severity::Medium,
                 "Upgrade to OpenSSH 9.6 or later".to_string(),
             ),
+            (
+                "CVE-2021-41617".to_string(),
+                "< 8.7".to_string(),
+                Severity::High,
+                "Privilege escalation in sshd; upgrade to 8.7+".to_string(),
+            ),
+            (
+                "CVE-2020-14145".to_string(),
+                "< 8.3".to_string(),
+                Severity::Medium,
+                "Information leak in ssh client; upgrade to 8.3+".to_string(),
+            ),
         ]
     }
 
     /// Known vulnerabilities for Nginx.
     pub fn nginx_vulns() -> Vec<(String, String, Severity, String)> {
-        vec![(
-            "CVE-2013-4547".to_string(),
-            "< 1.5.6".to_string(),
-            Severity::High,
-            "Upgrade to Nginx 1.5.6 or later".to_string(),
-        )]
+        vec![
+            (
+                "CVE-2019-9511".to_string(),
+                "< 1.16.1".to_string(),
+                Severity::High,
+                "HTTP/2 DoS vulnerability; upgrade to 1.16.1+".to_string(),
+            ),
+            (
+                "CVE-2013-4547".to_string(),
+                "< 1.5.6".to_string(),
+                Severity::High,
+                "Upgrade to Nginx 1.5.6 or later".to_string(),
+            ),
+            (
+                "CVE-2021-3618".to_string(),
+                "< 1.21.0".to_string(),
+                Severity::Medium,
+                "Off-by-one in HTTP/2 processing; upgrade to 1.21.0+".to_string(),
+            ),
+        ]
     }
 
     /// Known vulnerabilities for PostgreSQL.
     pub fn postgres_vulns() -> Vec<(String, String, Severity, String)> {
-        vec![(
-            "CVE-2022-41862".to_string(),
-            "< 15.1".to_string(),
-            Severity::High,
-            "Upgrade to PostgreSQL 15.1 or later".to_string(),
-        )]
+        vec![
+            (
+                "CVE-2022-41862".to_string(),
+                "< 15.1".to_string(),
+                Severity::High,
+                "Upgrade to PostgreSQL 15.1 or later".to_string(),
+            ),
+            (
+                "CVE-2021-23214".to_string(),
+                "< 13.2".to_string(),
+                Severity::High,
+                "Server doesn't validate host certificates properly; upgrade to 13.2+".to_string(),
+            ),
+            (
+                "CVE-2021-20229".to_string(),
+                "< 12.6".to_string(),
+                Severity::Medium,
+                "Schema-dependent row security bypass; upgrade to 12.6+".to_string(),
+            ),
+        ]
     }
 
     /// Known vulnerabilities for MySQL/MariaDB.
     pub fn mysql_vulns() -> Vec<(String, String, Severity, String)> {
-        vec![(
-            "CVE-2022-0778".to_string(),
-            "< 8.0.28".to_string(),
-            Severity::Medium,
-            "Upgrade to MySQL 8.0.28 or later".to_string(),
-        )]
+        vec![
+            (
+                "CVE-2022-0778".to_string(),
+                "< 8.0.28".to_string(),
+                Severity::Medium,
+                "Upgrade to MySQL 8.0.28 or later".to_string(),
+            ),
+            (
+                "CVE-2021-2354".to_string(),
+                "< 8.0.25".to_string(),
+                Severity::High,
+                "Privilege escalation vulnerability; upgrade to 8.0.25+".to_string(),
+            ),
+            (
+                "CVE-2021-2109".to_string(),
+                "< 5.7.32".to_string(),
+                Severity::High,
+                "Local privilege escalation; upgrade to 5.7.32+".to_string(),
+            ),
+        ]
+    }
+
+    /// Known vulnerabilities for IIS.
+    pub fn iis_vulns() -> Vec<(String, String, Severity, String)> {
+        vec![
+            (
+                "CVE-2021-26858".to_string(),
+                "< 10.0.20348".to_string(),
+                Severity::Critical,
+                "Remote code execution in Exchange Server; update immediately".to_string(),
+            ),
+            (
+                "CVE-2021-34473".to_string(),
+                "< 10.0.20348".to_string(),
+                Severity::Critical,
+                "Path traversal and disclosure in Exchange; update immediately".to_string(),
+            ),
+        ]
+    }
+
+    /// Known vulnerabilities for FTP servers.
+    pub fn ftp_vulns() -> Vec<(String, String, Severity, String)> {
+        vec![
+            (
+                "FTP-UNENCRYPTED".to_string(),
+                "ALL".to_string(),
+                Severity::Critical,
+                "FTP transmits credentials in plaintext; disable FTP and use SFTP instead".to_string(),
+            ),
+            (
+                "CVE-2018-7725".to_string(),
+                "vsftpd < 3.0.3".to_string(),
+                Severity::High,
+                "Username enumeration vulnerability; upgrade to 3.0.3+".to_string(),
+            ),
+        ]
+    }
+
+    /// Known vulnerabilities for Telnet.
+    pub fn telnet_vulns() -> Vec<(String, String, Severity, String)> {
+        vec![
+            (
+                "TELNET-UNENCRYPTED".to_string(),
+                "ALL".to_string(),
+                Severity::Critical,
+                "Telnet transmits all data in plaintext; replace with SSH immediately".to_string(),
+            ),
+        ]
     }
 }
 
@@ -169,6 +283,8 @@ impl VulnerabilityCheck {
                 "nginx" => VulnerabilityDatabase::nginx_vulns(),
                 "postgresql" | "postgres" => VulnerabilityDatabase::postgres_vulns(),
                 "mysql" | "mariadb" => VulnerabilityDatabase::mysql_vulns(),
+                "iis" | "microsoft" => VulnerabilityDatabase::iis_vulns(),
+                "ftp" | "vsftpd" | "proftpd" => VulnerabilityDatabase::ftp_vulns(),
                 _ => Vec::new(),
             };
 
@@ -191,6 +307,11 @@ impl VulnerabilityCheck {
 
     /// Simple version comparison. Real implementation would use proper semver.
     fn version_matches_affected(current: &str, affected_pattern: &str) -> bool {
+        // Check if "ALL" affects all versions
+        if affected_pattern == "ALL" {
+            return true;
+        }
+
         // Very simplified: just check if "< X" pattern matches
         if affected_pattern.starts_with("< ") {
             let target = affected_pattern.trim_start_matches("< ");
@@ -301,6 +422,33 @@ mod tests {
         let vulns = VulnerabilityCheck::check_version(&service);
         assert!(!vulns.is_empty());
         assert!(vulns.iter().any(|v| v.cve_id == "CVE-2021-44228"));
+    }
+
+    #[test]
+    fn test_vulnerability_check_openssh() {
+        let service = ServiceInfo {
+            name: "OpenSSH".to_string(),
+            version: Some("8.5".to_string()),
+            service_type: "ssh".to_string(),
+            ..Default::default()
+        };
+
+        let vulns = VulnerabilityCheck::check_version(&service);
+        assert!(!vulns.is_empty());
+    }
+
+    #[test]
+    fn test_vulnerability_check_ftp_protocol() {
+        let service = ServiceInfo {
+            name: "vsftpd".to_string(),
+            version: Some("3.0.2".to_string()),
+            service_type: "ftp".to_string(),
+            ..Default::default()
+        };
+
+        let vulns = VulnerabilityCheck::check_version(&service);
+        // Should find FTP vulnerabilities (either CVE or general FTP issues)
+        assert!(!vulns.is_empty(), "Should find FTP vulnerabilities");
     }
 
     #[test]

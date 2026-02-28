@@ -5,13 +5,30 @@
 //! - TTL-based operating system detection
 //! - Service version extraction from banners
 //! - Device name and capability inference
+//! - Banner grabbing for HTTP, SSH, SMTP, FTP protocols
 
 use netgap_core::{Device, OsType};
 use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
+use std::time::Duration;
+use tokio::net::TcpStream;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Fingerprinter for device OS and vendor identification.
 pub struct Fingerprinter {
     oui_database: HashMap<String, String>,
+}
+
+/// Banner grabbing result with service identification.
+#[derive(Debug, Clone)]
+pub struct BannerGrabResult {
+    pub ip: String,
+    pub port: u16,
+    pub protocol: String,
+    pub banner: String,
+    pub service_name: Option<String>,
+    pub version: Option<String>,
+    pub confidence: f32,
 }
 
 impl Fingerprinter {
@@ -146,7 +163,6 @@ impl Fingerprinter {
     pub fn guess_device_type(open_ports: &[u16]) -> &'static str {
         let has_ssh = open_ports.contains(&22);
         let has_http = open_ports.contains(&80);
-        let has_https = open_ports.contains(&443);
         let has_smb = open_ports.contains(&445) || open_ports.contains(&139);
         let has_rdp = open_ports.contains(&3389);
         let has_database = open_ports.contains(&3306) || open_ports.contains(&5432);
@@ -163,6 +179,169 @@ impl Fingerprinter {
             (false, false, false, false, true) => "Dedicated Database Server",
             _ => "Unknown Device",
         }
+    }
+
+    /// Attempt to grab HTTP banner from a service.
+    pub async fn grab_http_banner(ip: &str, port: u16) -> Option<BannerGrabResult> {
+        let addr: SocketAddr = format!("{}:{}", ip, port).parse().ok()?;
+        let connect_future = TcpStream::connect(addr);
+        let mut stream = tokio::time::timeout(
+            Duration::from_secs(2),
+            connect_future
+        ).await.ok()?.ok()?;
+
+        let request = "GET / HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+        stream.write_all(request.as_bytes()).await.ok()?;
+
+        let mut buffer = vec![0; 4096];
+        let n = stream.read(&mut buffer).await.ok()?;
+        let response = String::from_utf8_lossy(&buffer[..n]);
+
+        // Extract Server header
+        for line in response.lines() {
+            if line.to_lowercase().starts_with("server:") {
+                let banner = line.trim_start_matches("Server:").trim().to_string();
+                let (service_name, version) = Self::identify_http_service(&banner);
+                return Some(BannerGrabResult {
+                    ip: ip.to_string(),
+                    port,
+                    protocol: "HTTP".to_string(),
+                    banner: banner.clone(),
+                    service_name,
+                    version,
+                    confidence: 0.9,
+                });
+            }
+        }
+
+        None
+    }
+
+    /// Attempt to grab SSH banner from a service.
+    pub async fn grab_ssh_banner(ip: &str, port: u16) -> Option<BannerGrabResult> {
+        let addr: SocketAddr = format!("{}:{}", ip, port).parse().ok()?;
+        let connect_future = TcpStream::connect(addr);
+        let mut stream = tokio::time::timeout(
+            Duration::from_secs(2),
+            connect_future
+        ).await.ok()?.ok()?;
+
+        let mut buffer = vec![0; 256];
+        let n = stream.read(&mut buffer).await.ok()?;
+        let banner = String::from_utf8_lossy(&buffer[..n]).trim().to_string();
+
+        // SSH format: SSH-2.0-OpenSSH_7.4p1 Debian-10+deb9u6
+        if banner.starts_with("SSH-") {
+            let (service_name, version) = Self::identify_ssh_service(&banner);
+            return Some(BannerGrabResult {
+                ip: ip.to_string(),
+                port,
+                protocol: "SSH".to_string(),
+                banner: banner.clone(),
+                service_name,
+                version,
+                confidence: 0.95,
+            });
+        }
+
+        None
+    }
+
+    /// Attempt to grab FTP banner from a service.
+    pub async fn grab_ftp_banner(ip: &str, port: u16) -> Option<BannerGrabResult> {
+        let addr: SocketAddr = format!("{}:{}", ip, port).parse().ok()?;
+        let connect_future = TcpStream::connect(addr);
+        let mut stream = tokio::time::timeout(
+            Duration::from_secs(2),
+            connect_future
+        ).await.ok()?.ok()?;
+
+        let mut buffer = vec![0; 256];
+        let n = stream.read(&mut buffer).await.ok()?;
+        let banner = String::from_utf8_lossy(&buffer[..n]).trim().to_string();
+
+        // FTP format: 220 FTP server (Version 6.4/OpenBSD/Linux-ftpd-0.17)
+        if banner.starts_with("220") {
+            let (service_name, version) = Self::identify_ftp_service(&banner);
+            return Some(BannerGrabResult {
+                ip: ip.to_string(),
+                port,
+                protocol: "FTP".to_string(),
+                banner: banner.clone(),
+                service_name,
+                version,
+                confidence: 0.85,
+            });
+        }
+
+        None
+    }
+
+    /// Identify HTTP service from Server header.
+    fn identify_http_service(banner: &str) -> (Option<String>, Option<String>) {
+        if banner.contains("Apache") {
+            let version = Self::extract_version(banner, "Apache/");
+            (Some("Apache".to_string()), version)
+        } else if banner.contains("nginx") {
+            let version = Self::extract_version(banner, "nginx/");
+            (Some("nginx".to_string()), version)
+        } else if banner.contains("IIS") {
+            let version = Self::extract_version(banner, "IIS/");
+            (Some("IIS".to_string()), version)
+        } else if banner.contains("LiteSpeed") {
+            let version = Self::extract_version(banner, "LiteSpeed/");
+            (Some("LiteSpeed".to_string()), version)
+        } else if banner.contains("Caddy") {
+            (Some("Caddy".to_string()), None)
+        } else {
+            (None, None)
+        }
+    }
+
+    /// Identify SSH service from banner.
+    fn identify_ssh_service(banner: &str) -> (Option<String>, Option<String>) {
+        if banner.contains("OpenSSH") {
+            let version = Self::extract_version(banner, "OpenSSH_");
+            (Some("OpenSSH".to_string()), version)
+        } else if banner.contains("libssh") {
+            let version = Self::extract_version(banner, "libssh_");
+            (Some("libssh".to_string()), version)
+        } else {
+            (None, None)
+        }
+    }
+
+    /// Identify FTP service from banner.
+    fn identify_ftp_service(banner: &str) -> (Option<String>, Option<String>) {
+        if banner.contains("vsftpd") || banner.contains("vsFTPd") {
+            let version = Self::extract_version(banner, "vsFTPd");
+            (Some("vsftpd".to_string()), version)
+        } else if banner.contains("ProFTPD") {
+            let version = Self::extract_version(banner, "ProFTPD");
+            (Some("ProFTPD".to_string()), version)
+        } else if banner.contains("FileZilla") {
+            let version = Self::extract_version(banner, "FileZilla");
+            (Some("FileZilla".to_string()), version)
+        } else {
+            (None, None)
+        }
+    }
+
+    /// Extract version string from banner using a marker.
+    fn extract_version(banner: &str, marker: &str) -> Option<String> {
+        if let Some(start) = banner.find(marker) {
+            let remainder = &banner[start + marker.len()..];
+            // Get until space, /, or end of string
+            let end = remainder
+                .find(' ')
+                .or_else(|| remainder.find('/'))
+                .unwrap_or(remainder.len());
+            let version = remainder[..end].trim();
+            if !version.is_empty() {
+                return Some(version.to_string());
+            }
+        }
+        None
     }
 }
 
@@ -255,5 +434,38 @@ mod tests {
         fp.fingerprint_device(&mut device);
 
         assert_eq!(device.vendor, Some("Cisco".to_string()));
+    }
+
+    #[test]
+    fn test_identify_http_service() {
+        let (name, version) = Fingerprinter::identify_http_service("Apache/2.4.41 (Ubuntu)");
+        assert_eq!(name, Some("Apache".to_string()));
+        assert_eq!(version, Some("2.4.41".to_string()));
+
+        let (name, version) = Fingerprinter::identify_http_service("nginx/1.18.0");
+        assert_eq!(name, Some("nginx".to_string()));
+        assert_eq!(version, Some("1.18.0".to_string()));
+    }
+
+    #[test]
+    fn test_identify_ssh_service() {
+        let (name, version) = Fingerprinter::identify_ssh_service("SSH-2.0-OpenSSH_7.4p1");
+        assert_eq!(name, Some("OpenSSH".to_string()));
+        assert_eq!(version, Some("7.4p1".to_string()));
+    }
+
+    #[test]
+    fn test_identify_ftp_service() {
+        let (name, _) = Fingerprinter::identify_ftp_service("220 (vsFTPd 3.0.3)");
+        assert_eq!(name, Some("vsftpd".to_string()));
+    }
+
+    #[test]
+    fn test_extract_version() {
+        let version = Fingerprinter::extract_version("Apache/2.4.41 (Ubuntu)", "Apache/");
+        assert_eq!(version, Some("2.4.41".to_string()));
+
+        let version = Fingerprinter::extract_version("nginx/1.18.0", "nginx/");
+        assert_eq!(version, Some("1.18.0".to_string()));
     }
 }
