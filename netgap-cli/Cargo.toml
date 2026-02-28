@@ -14,6 +14,7 @@ netgap-core = { path = "../netgap-core" }
 netgap-interfaces = { path = "../netgap-interfaces" }
 netgap-discover = { path = "../netgap-discover" }
 netgap-scan = { path = "../netgap-scan" }
+netgap-report = { path = "../netgap-report" }
 clap.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
@@ -21,3 +22,4 @@ serde_json.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 indicatif.workspace = true
+chrono.workspace = true

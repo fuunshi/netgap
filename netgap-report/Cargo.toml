@@ -1,0 +1,14 @@
+[package]
+name = "netgap-report"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+netgap-core = { path = "../netgap-core" }
+ratatui.workspace = true
+crossterm.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
