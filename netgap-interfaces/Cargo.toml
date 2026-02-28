@@ -7,8 +7,7 @@ license.workspace = true
 
 [dependencies]
 netgap-core = { path = "../netgap-core" }
-network-interface.workspace = true
-config.workspace = true
-toml.workspace = true
+pnet.workspace = true
+pnet_datalink.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
