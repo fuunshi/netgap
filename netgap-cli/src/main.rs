@@ -45,11 +45,23 @@ enum Commands {
         format: String,
     },
 
-    /// Display results from the last scan
+    /// Display results from the last scan or export reports
     Report {
-        /// Output format: table, json, summary
+        /// Scan ID to report on (latest if not specified)
+        #[arg(short, long)]
+        scan_id: Option<String>,
+
+        /// Compare with another scan (shows changes between scans)
+        #[arg(long)]
+        compare: Option<String>,
+
+        /// Export format: table, json, summary, markdown, html, csv
         #[arg(short, long, default_value = "table")]
         format: String,
+
+        /// List all historical scans
+        #[arg(long)]
+        history: bool,
     },
 
     /// Continuous monitoring mode
@@ -73,9 +85,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             cmd_scan(interface, target, quick, deep, &format).await?;
         }
-        Commands::Report { format } => {
-            println!("📊 Report generation (format: {})", format);
-            println!("(Loading from persistent storage - coming in future milestone)");
+        Commands::Report { scan_id, compare, format, history } => {
+            cmd_report(scan_id, compare, &format, history)?;
         }
         Commands::Watch => {
             println!("👁️  Continuous monitoring mode");
@@ -206,6 +217,101 @@ async fn cmd_scan(
     };
 
     println!("{}", output);
+
+    Ok(())
+}
+
+fn cmd_report(scan_id: Option<String>, compare: Option<String>, format: &str, history: bool) -> Result<(), Box<dyn std::error::Error>> {
+    use netgap_storage::ScanStore;
+
+    let store = ScanStore::default()?;
+
+    if history {
+        println!("📋 Scan History\n");
+        let scans = store.list_scans()?;
+        if scans.is_empty() {
+            println!("  No scans found. Run 'netgap scan' to start scanning.");
+        } else {
+            for scan in scans {
+                println!("  {} - {} ({} devices, {} findings)", 
+                    scan.id, scan.started_at, scan.device_count, scan.finding_count);
+                if scan.critical_count > 0 {
+                    println!("    🔴 {} critical issues", scan.critical_count);
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    if let (Some(id1), Some(id2)) = (scan_id.as_ref(), compare.as_ref()) {
+        println!("🔄 Comparing scans {} → {}\n", id1, id2);
+        let comparison = store.compare_scans(id1, id2)?;
+        
+        println!("Scan 1: {} ({})", comparison.scan1_id, comparison.scan1_date);
+        println!("Scan 2: {} ({})\n", comparison.scan2_id, comparison.scan2_date);
+
+        if !comparison.new_devices.is_empty() {
+            println!("✨ New Devices ({}):", comparison.new_devices.len());
+            for ip in &comparison.new_devices {
+                println!("  + {}", ip);
+            }
+            println!();
+        }
+
+        if !comparison.removed_devices.is_empty() {
+            println!("👋 Removed Devices ({}):", comparison.removed_devices.len());
+            for ip in &comparison.removed_devices {
+                println!("  - {}", ip);
+            }
+            println!();
+        }
+
+        if !comparison.new_critical.is_empty() {
+            println!("🔴 New Critical Findings ({}):", comparison.new_critical.len());
+            for (title, ip) in &comparison.new_critical {
+                println!("  + {} on {}", title, ip);
+            }
+            println!();
+        }
+
+        if !comparison.resolved_findings.is_empty() {
+            println!("✅ Resolved Findings ({}):", comparison.resolved_findings.len());
+            for (title, ip) in &comparison.resolved_findings {
+                println!("  ✓ {} on {}", title, ip);
+            }
+        }
+
+        return Ok(());
+    }
+
+    let scan_to_report = if let Some(id) = scan_id {
+        id
+    } else {
+        let scans = store.list_scans()?;
+        if scans.is_empty() {
+            println!("❌ No scans found. Run 'netgap scan' first.");
+            return Ok(());
+        }
+        scans[0].id.clone()
+    };
+
+    match format {
+        "markdown" => {
+            let md = store.export_markdown(&scan_to_report)?;
+            println!("{}", md);
+        }
+        "html" => {
+            let html = store.export_html(&scan_to_report)?;
+            println!("{}", html);
+        }
+        "csv" => {
+            let csv = store.export_csv(&scan_to_report)?;
+            println!("{}", csv);
+        }
+        _ => {
+            println!("❌ Format '{}' not yet supported for reports. Use: markdown, html, csv", format);
+        }
+    }
 
     Ok(())
 }
