@@ -7,7 +7,12 @@ members = [
     "netgap-report",
     "netgap-raw-sockets",
     "netgap-mdns",
-    "netgap-fingerprint", "netgap-assess", "netgap-probes", "netgap-storage", "netgap-services",
+    "netgap-fingerprint",
+    "netgap-assess",
+    "netgap-probes",
+    "netgap-storage",
+    "netgap-services",
+    "netgap-cli",
 ]
 resolver = "2"
 

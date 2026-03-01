@@ -40,6 +40,18 @@ enum Commands {
         #[arg(long)]
         deep: bool,
 
+        /// Include mDNS service discovery
+        #[arg(long)]
+        mdns: bool,
+
+        /// Perform banner grabbing for service identification
+        #[arg(long)]
+        fingerprint: bool,
+
+        /// Include vulnerability assessment (requires --deep or --fingerprint)
+        #[arg(long)]
+        assess: bool,
+
         /// Output format: table, json, summary
         #[arg(short, long, default_value = "table")]
         format: String,
@@ -81,9 +93,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             target,
             quick,
             deep,
+            mdns,
+            fingerprint,
+            assess,
             format,
         } => {
-            cmd_scan(interface, target, quick, deep, &format).await?;
+            cmd_scan(interface, target, quick, deep, mdns, fingerprint, assess, &format).await?;
         }
         Commands::Report { scan_id, compare, format, history } => {
             cmd_report(scan_id, compare, &format, history)?;
@@ -119,17 +134,32 @@ async fn cmd_scan(
     target: Option<String>,
     quick: bool,
     deep: bool,
+    mdns: bool,
+    fingerprint: bool,
+    assess: bool,
     format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mode = if quick {
         "quick"
     } else if deep {
         "deep"
+    } else if mdns || fingerprint || assess {
+        "enhanced"
     } else {
         "standard"
     };
 
-    println!("🔍 Starting {} scan...\n", mode);
+    println!("🔍 Starting {} scan...", mode);
+    if mdns {
+        println!("   📡 mDNS discovery enabled");
+    }
+    if fingerprint {
+        println!("   🔎 Service fingerprinting enabled");
+    }
+    if assess {
+        println!("   ⚠️  Vulnerability assessment enabled");
+    }
+    println!();
 
     // Get interface
     let iface_name = interface.unwrap_or_else(|| {
