@@ -3,10 +3,9 @@
 //! This module tracks network changes over time, detects new devices/services,
 //! identifies vulnerability regressions, and calculates network health scores.
 
-use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use chrono::Utc;
 use netgap_core::{ScanResult, Severity};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Represents a snapshot of network state at a point in time.

@@ -5,9 +5,11 @@ use netgap_scan::{PortScanner, ScanConfig as PortScanConfig};
 use netgap_fingerprint::Fingerprinter;
 use netgap_mdns::MdnsDiscovery;
 use netgap_services::{VulnerabilityCheck, ServiceInfo};
+use netgap_trends::{ChangeDetection, HealthScore, ScanHistory, AlertRule};
 use netgap_report::ReportFormatter;
 use chrono::Local;
 use std::net::Ipv4Addr;
+use std::time::Duration;
 
 #[derive(Parser)]
 #[command(name = "netgap")]
@@ -78,8 +80,20 @@ enum Commands {
         history: bool,
     },
 
-    /// Continuous monitoring mode
-    Watch,
+    /// Continuous monitoring mode (watch for network changes)
+    Watch {
+        /// Network interface to scan (e.g., eth0)
+        #[arg(short, long)]
+        interface: Option<String>,
+
+        /// Target network in CIDR notation (default: auto-detect)
+        #[arg(short, long)]
+        target: Option<String>,
+
+        /// Interval in seconds between scans (default: 60)
+        #[arg(long, default_value = "60")]
+        interval: u64,
+    },
 }
 
 #[tokio::main]
@@ -105,9 +119,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Report { scan_id, compare, format, history } => {
             cmd_report(scan_id, compare, &format, history)?;
         }
-        Commands::Watch => {
-            println!("👁️  Continuous monitoring mode");
-            println!("(Scheduled alerting coming in future milestone)");
+        Commands::Watch { interface, target, interval } => {
+            cmd_watch(interface, target, interval).await?;
         }
     }
 
@@ -497,4 +510,127 @@ fn cmd_report(scan_id: Option<String>, compare: Option<String>, format: &str, hi
     }
 
     Ok(())
+}
+
+async fn cmd_watch(
+    interface: Option<String>,
+    target: Option<String>,
+    interval_secs: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("👁️  Continuous Monitoring Mode");
+    println!("Interval: {}s | Press Ctrl+C to stop\n", interval_secs);
+
+    let mut last_history: Option<ScanHistory> = None;
+    let mut scan_count = 0;
+
+    loop {
+        scan_count += 1;
+        println!("📊 Scan #{} — {}", scan_count, Local::now().format("%H:%M:%S"));
+
+        // Run a standard scan without extra features for speed
+        let iface_name = interface.clone().unwrap_or_else(|| "eth0".to_string());
+        let target_cidr = target.clone().unwrap_or_else(|| "192.168.1.0/24".to_string());
+
+        let discovery_config = DiscoveryConfig {
+            interface_name: iface_name,
+            target_cidr,
+            timeout_ms: 1000,
+        };
+
+        match netgap_discover::ArpDiscovery::new(discovery_config).scan().await {
+            Ok(mut devices) => {
+                // Port scanning
+                let port_config = PortScanConfig {
+                    ports: netgap_scan::TOP_DANGEROUS_PORTS.to_vec(),
+                    timeout_ms: 1500,
+                    concurrency: 32,
+                };
+                let scanner = PortScanner::new(port_config);
+                if let Err(e) = scanner.scan_devices(&mut devices).await {
+                    println!("⚠️  Port scanning error: {}", e);
+                }
+
+                // Create scan result
+                let result = ScanResult {
+                    started_at: Local::now().to_rfc3339(),
+                    config: ScanConfig {
+                        interface: interface.clone().unwrap_or_default(),
+                        target: target.clone().unwrap_or_default(),
+                        timeout_ms: 1500,
+                        concurrency: 32,
+                        discovery_only: false,
+                    },
+                    devices,
+                    summary: FindingSummary::new(),
+                };
+
+                // Create history snapshot
+                let current_history = ScanHistory::from_scan_result(
+                    format!("scan-{}", scan_count),
+                    &result,
+                );
+
+                // Detect changes if we have previous history
+                if let Some(prev) = &last_history {
+                    let changes = ChangeDetection::detect_changes(&prev, &current_history);
+                    let prev_health = HealthScore::calculate(&prev);
+                    let curr_health = HealthScore::calculate(&current_history);
+
+                    let health_drop = if curr_health.score < prev_health.score {
+                        Some((prev_health.score as i16 - curr_health.score as i16) as i16)
+                    } else {
+                        None
+                    };
+
+                    if !changes.is_empty() {
+                        println!("\n⚠️  Changes Detected:\n");
+                        for change in &changes {
+                            println!("  • {}", change);
+                        }
+
+                        // Check alert rules
+                        let critical_rule = AlertRule::critical_vulnerability();
+                        let health_drop_rule = AlertRule::health_drop(5);
+
+                        if critical_rule.should_trigger(&changes, None) {
+                            println!("\n🔴 ALERT: Critical vulnerability detected!");
+                        }
+                        if let Some(drop) = health_drop {
+                            if health_drop_rule.should_trigger(&changes, Some(drop)) {
+                                println!("\n🟠 ALERT: Network health score dropped {} points", drop);
+                            }
+                        }
+                    } else {
+                        println!("  ✓ No changes detected");
+                    }
+
+                    println!(
+                        "\nHealth Score: {}/100 {} ({}) → {}/100 {} ({})",
+                        prev_health.score,
+                        if curr_health.score >= prev_health.score { "↑" } else { "↓" },
+                        prev_health.risk_level(),
+                        curr_health.score,
+                        if curr_health.score >= prev_health.score { "↑" } else { "↓" },
+                        curr_health.risk_level(),
+                    );
+                } else {
+                    println!("✓ Discovered {} device(s)", current_history.device_count);
+                    let health = HealthScore::calculate(&current_history);
+                    println!("  Health Score: {}/100 ({})", health.score, health.risk_level());
+                }
+
+                last_history = Some(current_history);
+            }
+            Err(e) => {
+                println!("❌ Scan failed: {}", e);
+            }
+        }
+
+        println!("\n---");
+        println!("Next scan in {}s (Ctrl+C to stop)", interval_secs);
+        println!("---\n");
+
+        // Sleep before next iteration
+        tokio::time::sleep(Duration::from_secs(interval_secs)).await;
+    }
 }

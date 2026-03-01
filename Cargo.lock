@@ -681,6 +681,7 @@ dependencies = [
  "netgap-scan",
  "netgap-services",
  "netgap-storage",
+ "netgap-trends",
  "ratatui",
  "serde_json",
  "tokio",
