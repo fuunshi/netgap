@@ -4,8 +4,10 @@ use netgap_discover::DiscoveryConfig;
 use netgap_scan::{PortScanner, ScanConfig as PortScanConfig};
 use netgap_fingerprint::Fingerprinter;
 use netgap_mdns::MdnsDiscovery;
+use netgap_services::{VulnerabilityCheck, ServiceInfo};
 use netgap_report::ReportFormatter;
 use chrono::Local;
+use std::net::Ipv4Addr;
 
 #[derive(Parser)]
 #[command(name = "netgap")]
@@ -306,7 +308,74 @@ async fn cmd_scan(
         if assess {
             println!("Phase 4: Vulnerability Assessment");
             println!("─────────────────────────────────");
-            println!("  (Matching against known CVEs and configuration issues)");
+
+            let mut has_findings = false;
+
+            for device in &devices {
+                // For each open port, try to assess vulnerabilities
+                for port in &device.open_ports {
+                    // Map port to service name for vulnerability lookup
+                    let service_name = match *port {
+                        21 => Some("FTP"),
+                        22 => Some("OpenSSH"),
+                        23 => Some("Telnet"),
+                        80 | 8080 => Some("Apache"),
+                        443 | 8443 => Some("Apache"),
+                        3306 => Some("MySQL"),
+                        5432 => Some("PostgreSQL"),
+                        _ => None,
+                    };
+
+                    if let Some(svc_name) = service_name {
+                        // Create a basic service info for vulnerability check
+                        let service_info = ServiceInfo {
+                            ip: if let std::net::IpAddr::V4(v4) = device.ip {
+                                v4
+                            } else {
+                                Ipv4Addr::UNSPECIFIED
+                            },
+                            port: *port,
+                            name: svc_name.to_string(),
+                            version: None, // Would need banner grabbing for actual version
+                            service_type: match *port {
+                                21 => "ftp".to_string(),
+                                22 => "ssh".to_string(),
+                                23 => "telnet".to_string(),
+                                _ => "http".to_string(),
+                            },
+                            banner: None,
+                            confidence: 0.75,
+                            vulnerabilities: Vec::new(),
+                        };
+
+                        // Check for vulnerabilities
+                        let vulns = VulnerabilityCheck::check_version(&service_info);
+                        if !vulns.is_empty() {
+                            has_findings = true;
+                            println!("  {}:{} ({}) - {} finding(s):", device.ip, port, svc_name, vulns.len());
+                            for vuln in vulns {
+                                let severity_emoji = match vuln.severity.as_str() {
+                                    "Critical" => "🔴",
+                                    "High" => "🟠",
+                                    "Medium" => "🟡",
+                                    _ => "🔵",
+                                };
+                                println!(
+                                    "    {} [{}] {}: {}",
+                                    severity_emoji, vuln.cve_id, vuln.severity.as_str(), vuln.description
+                                );
+                                println!("       Affected: {}", vuln.affected_versions);
+                                println!("       Fix: {}", vuln.remediation);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !has_findings {
+                println!("  ✓ No known vulnerabilities detected for open ports");
+            }
+
             println!();
         }
     }

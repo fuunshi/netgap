@@ -679,6 +679,7 @@ dependencies = [
  "netgap-mdns",
  "netgap-report",
  "netgap-scan",
+ "netgap-services",
  "netgap-storage",
  "ratatui",
  "serde_json",

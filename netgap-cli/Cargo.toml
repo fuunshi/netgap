@@ -16,6 +16,7 @@ netgap-discover = { path = "../netgap-discover" }
 netgap-scan = { path = "../netgap-scan" }
 netgap-fingerprint = { path = "../netgap-fingerprint" }
 netgap-mdns = { path = "../netgap-mdns" }
+netgap-services = { path = "../netgap-services" }
 netgap-report = { path = "../netgap-report" }
 netgap-storage = { path = "../netgap-storage" }
 clap.workspace = true
