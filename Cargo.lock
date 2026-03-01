@@ -674,6 +674,7 @@ dependencies = [
  "indicatif",
  "netgap-core",
  "netgap-discover",
+ "netgap-fingerprint",
  "netgap-interfaces",
  "netgap-report",
  "netgap-scan",

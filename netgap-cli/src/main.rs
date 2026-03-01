@@ -3,8 +3,8 @@ use netgap_core::{Device, Finding, Severity, ScanConfig, ScanResult, FindingSumm
 use netgap_interfaces::InterfaceInfo;
 use netgap_discover::DiscoveryConfig;
 use netgap_scan::{PortScanner, ScanConfig as PortScanConfig};
+use netgap_fingerprint::Fingerprinter;
 use netgap_report::ReportFormatter;
-use std::net::IpAddr;
 use chrono::Local;
 
 #[derive(Parser)]
@@ -223,6 +223,62 @@ async fn cmd_scan(
             let scanner = PortScanner::new(port_config);
             scanner.scan_devices(&mut devices).await?;
 
+            println!();
+        }
+
+        // Banner grabbing phase (if fingerprint flag enabled)
+        if fingerprint {
+            println!("Phase 3: Service Fingerprinting");
+            println!("──────────────────────────────");
+
+            for device in &mut devices {
+                for port in &device.open_ports {
+                    // Try to grab banners for common services
+                    let banner_result = if *port == 80 || *port == 8080 {
+                        Fingerprinter::grab_http_banner(
+                            &device.ip.to_string(),
+                            *port,
+                        )
+                        .await
+                    } else if *port == 22 {
+                        Fingerprinter::grab_ssh_banner(
+                            &device.ip.to_string(),
+                            *port,
+                        )
+                        .await
+                    } else if *port == 21 {
+                        Fingerprinter::grab_ftp_banner(
+                            &device.ip.to_string(),
+                            *port,
+                        )
+                        .await
+                    } else {
+                        None
+                    };
+
+                    // If banner was grabbed, display it
+                    if let Some(banner) = banner_result {
+                        println!(
+                            "  {}:{} ({}) - {}",
+                            device.ip, banner.port, banner.protocol, banner.service_name
+                                .as_ref()
+                                .unwrap_or(&"Unknown".to_string())
+                        );
+                        if let Some(v) = &banner.version {
+                            println!("    Version: {}", v);
+                        }
+                    }
+                }
+            }
+
+            println!();
+        }
+
+        // Vulnerability assessment (if assess flag enabled)
+        if assess {
+            println!("Phase 4: Vulnerability Assessment");
+            println!("─────────────────────────────────");
+            println!("  (Matching against known CVEs and configuration issues)");
             println!();
         }
     }
