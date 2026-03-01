@@ -676,6 +676,7 @@ dependencies = [
  "netgap-discover",
  "netgap-fingerprint",
  "netgap-interfaces",
+ "netgap-mdns",
  "netgap-report",
  "netgap-scan",
  "netgap-storage",

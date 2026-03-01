@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
-use netgap_core::{Device, Finding, Severity, ScanConfig, ScanResult, FindingSummary};
-use netgap_interfaces::InterfaceInfo;
+use netgap_core::{ScanConfig, ScanResult, FindingSummary};
 use netgap_discover::DiscoveryConfig;
 use netgap_scan::{PortScanner, ScanConfig as PortScanConfig};
 use netgap_fingerprint::Fingerprinter;
+use netgap_mdns::MdnsDiscovery;
 use netgap_report::ReportFormatter;
 use chrono::Local;
 
@@ -222,6 +222,34 @@ async fn cmd_scan(
 
             let scanner = PortScanner::new(port_config);
             scanner.scan_devices(&mut devices).await?;
+
+            println!();
+        }
+
+        // mDNS discovery phase (if mdns flag enabled)
+        if mdns {
+            println!("Phase 2b: mDNS Service Discovery");
+            println!("────────────────────────────────");
+
+            match MdnsDiscovery::discover_services(3).await {
+                Ok(services) => {
+                    if services.is_empty() {
+                        println!("  No mDNS services discovered");
+                    } else {
+                        println!("  Discovered {} mDNS service(s):", services.len());
+                        for service in &services {
+                            println!("    • {} ({})", service.name, service.service_type.display_name());
+                            if let Some(ip) = &service.ip {
+                                println!("      IP: {}", ip);
+                            }
+                            println!("      Port: {}", service.port);
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("  ⚠️  mDNS discovery error: {}", e);
+                }
+            }
 
             println!();
         }
