@@ -399,6 +399,72 @@ impl ServiceHealthScore {
     }
 }
 
+/// Confidence scoring for service detection accuracy.
+pub struct ConfidenceScorer;
+
+impl ConfidenceScorer {
+    /// Calculate confidence score for a service based on detection method.
+    /// 
+    /// Detection methods ranked by confidence:
+    /// - Banner grab with exact match: 0.95-1.0
+    /// - mDNS advertised service: 0.85-0.95
+    /// - Port-based heuristic: 0.6-0.75
+    /// - TCP response pattern: 0.5-0.65
+    /// - Unconfirmed port: 0.3-0.5
+    pub fn calculate_confidence(
+        has_banner: bool,
+        has_version: bool,
+        has_mdns: bool,
+        port: u16,
+    ) -> f32 {
+        let mut score = 0.5f32; // Base score
+
+        // Banner grab is highest confidence
+        if has_banner {
+            score = 0.95;
+            // Exact version from banner increases confidence
+            if has_version {
+                score = 0.98;
+            }
+        }
+        // mDNS is very reliable
+        else if has_mdns {
+            score = 0.90;
+            if has_version {
+                score = 0.93;
+            }
+        }
+        // Port-based heuristics
+        else if Self::is_well_known_port(port) {
+            score = 0.75;
+            if has_version {
+                score = 0.80;
+            }
+        }
+
+        score.min(1.0).max(0.0)
+    }
+
+    /// Check if port is well-known (reliable for service identification).
+    fn is_well_known_port(port: u16) -> bool {
+        matches!(
+            port,
+            22 | 25 | 80 | 110 | 143 | 443 | 445 | 587 | 993 | 995 | 3306 | 5432 | 6379 | 8080
+        )
+    }
+
+    /// Get confidence category as string.
+    pub fn confidence_level(confidence: f32) -> &'static str {
+        match confidence {
+            c if c >= 0.95 => "Very High",
+            c if c >= 0.85 => "High",
+            c if c >= 0.70 => "Good",
+            c if c >= 0.50 => "Fair",
+            _ => "Low",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -505,5 +571,32 @@ mod tests {
         assert!(VulnerabilityCheck::version_matches_affected("2.4.41", "< 2.4.50"));
         assert!(!VulnerabilityCheck::version_matches_affected("2.4.50", "< 2.4.50"));
         assert!(!VulnerabilityCheck::version_matches_affected("2.4.51", "< 2.4.50"));
+    }
+
+    #[test]
+    fn test_confidence_score_banner() {
+        let score = ConfidenceScorer::calculate_confidence(true, true, false, 80);
+        assert!(score >= 0.95);
+    }
+
+    #[test]
+    fn test_confidence_score_mdns() {
+        let score = ConfidenceScorer::calculate_confidence(false, false, true, 80);
+        assert!(score >= 0.85 && score < 0.95);
+    }
+
+    #[test]
+    fn test_confidence_score_port_heuristic() {
+        let score = ConfidenceScorer::calculate_confidence(false, false, false, 22);
+        assert!(score >= 0.70 && score < 0.85);
+    }
+
+    #[test]
+    fn test_confidence_level_categorization() {
+        assert_eq!(ConfidenceScorer::confidence_level(0.99), "Very High");
+        assert_eq!(ConfidenceScorer::confidence_level(0.90), "High");
+        assert_eq!(ConfidenceScorer::confidence_level(0.75), "Good");
+        assert_eq!(ConfidenceScorer::confidence_level(0.60), "Fair");
+        assert_eq!(ConfidenceScorer::confidence_level(0.30), "Low");
     }
 }
