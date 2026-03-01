@@ -819,6 +819,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "netgap-trends"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "netgap-core",
+ "netgap-storage",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "no-std-net"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

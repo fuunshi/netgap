@@ -12,7 +12,7 @@ members = [
     "netgap-probes",
     "netgap-storage",
     "netgap-services",
-    "netgap-cli",
+    "netgap-cli", "netgap-trends",
 ]
 resolver = "2"
 
