@@ -1,12 +1,19 @@
-//! Network device discovery engine (ARP, ICMP).
+//! Network device discovery engine.
 //!
-//! This module implements ARP-based host discovery on local networks.
-//! ARP is highly reliable for LAN discovery and requires no response cooperation.
+//! This module performs ARP-based host discovery on the selected LAN subnet.
+//! It sends broadcast ARP requests and records any replies, so it discovers
+//! peers on the network instead of only reporting the local host.
 
-use netgap_core::Device;
 use anyhow::{anyhow, Result};
-use pnet::datalink;
-use std::net::Ipv4Addr;
+use netgap_core::Device;
+use pnet::datalink::{self, Channel::Ethernet, Config};
+use pnet::packet::arp::{ArpHardwareTypes, ArpOperations, ArpPacket, MutableArpPacket};
+use pnet::packet::ethernet::{EtherTypes, EthernetPacket, MutableEthernetPacket};
+use pnet::packet::{MutablePacket, Packet};
+use pnet::util::MacAddr;
+use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr};
+use std::time::{Duration, Instant};
 
 /// Configuration for ARP discovery.
 #[derive(Debug, Clone)]
@@ -33,27 +40,26 @@ impl ArpDiscovery {
     /// Run ARP sweep on the configured network.
     /// Returns list of discovered devices with MAC addresses.
     pub async fn scan(&self) -> Result<Vec<Device>> {
-        let devices = datalink::interfaces();
-        let interface = devices
-            .iter()
+        let interface = datalink::interfaces()
+            .into_iter()
             .find(|iface| iface.name == self.config.interface_name)
             .ok_or_else(|| anyhow!("Interface '{}' not found", self.config.interface_name))?;
 
-        // Get our own IP and MAC
-        let our_ip = interface
+        let (network, prefix) = parse_cidr(&self.config.target_cidr)?;
+        let target_hosts = generate_ips(network, prefix);
+
+        let source_ip = interface
             .ips
             .iter()
             .find_map(|ip| match ip {
                 pnet::ipnetwork::IpNetwork::V4(ipv4) => Some(ipv4.ip()),
                 _ => None,
             })
-            .ok_or_else(|| anyhow!("No IPv4 address on interface"))?;
+            .ok_or_else(|| anyhow!("No IPv4 address on interface '{}'", self.config.interface_name))?;
 
-        let our_mac = interface.mac.ok_or_else(|| anyhow!("No MAC address on interface"))?;
-
-        // Parse target network
-        let (network, prefix) = parse_cidr(&self.config.target_cidr)?;
-        let target_hosts = generate_ips(network, prefix);
+        let source_mac = interface
+            .mac
+            .ok_or_else(|| anyhow!("No MAC address on interface '{}'", self.config.interface_name))?;
 
         println!(
             "🔍 ARP discovery starting on {} (target: {})",
@@ -61,20 +67,65 @@ impl ArpDiscovery {
         );
         println!("   Will scan {} hosts...", target_hosts.len());
 
-        let mut results = Vec::new();
+        let mut config = Config::default();
+        config.read_timeout = Some(Duration::from_millis(self.config.timeout_ms));
 
-        // Simple synchronous ARP scan for Phase 1
-        // In a real implementation, this would be async with proper packet handling
-        for ip in target_hosts {
-            if ip == our_ip {
-                // We're alive
-                let mut device = Device::new(std::net::IpAddr::V4(ip));
-                device.mac = Some(our_mac.to_string());
-                results.push(device);
-            }
-            // Note: Full ARP scanning requires raw sockets which need special permissions
-            // For Phase 1, we demonstrate the structure. Real ARP handling comes in M2 refinement.
+        let (mut tx, mut rx) = match datalink::channel(&interface, config)? {
+            Ethernet(tx, rx) => (tx, rx),
+            _ => return Err(anyhow!("unsupported datalink channel")),
+        };
+
+        for target_ip in &target_hosts {
+            let mut frame = [0u8; 42];
+            let mut ethernet = MutableEthernetPacket::new(&mut frame).unwrap();
+            ethernet.set_destination(MacAddr::broadcast());
+            ethernet.set_source(source_mac);
+            ethernet.set_ethertype(EtherTypes::Arp);
+
+            let mut arp = MutableArpPacket::new(ethernet.payload_mut()).unwrap();
+            arp.set_hardware_type(ArpHardwareTypes::Ethernet);
+            arp.set_protocol_type(EtherTypes::Ipv4);
+            arp.set_hw_addr_len(6);
+            arp.set_proto_addr_len(4);
+            arp.set_operation(ArpOperations::Request);
+            arp.set_sender_hw_addr(source_mac);
+            arp.set_sender_proto_addr(source_ip);
+            arp.set_target_hw_addr(MacAddr::zero());
+            arp.set_target_proto_addr(*target_ip);
+
+            tx.send_to(&frame, None)
+                .ok_or_else(|| anyhow!("failed to send ARP request"))??;
         }
+
+        let mut discovered: HashMap<Ipv4Addr, Device> = HashMap::new();
+        let deadline = Instant::now() + Duration::from_millis(self.config.timeout_ms);
+
+        while Instant::now() < deadline {
+            match rx.next() {
+                Ok(packet) => {
+                    if let Some(ethernet) = EthernetPacket::new(packet) {
+                        if ethernet.get_ethertype() != EtherTypes::Arp {
+                            continue;
+                        }
+
+                        if let Some(arp) = ArpPacket::new(ethernet.payload()) {
+                            if arp.get_operation() != ArpOperations::Reply {
+                                continue;
+                            }
+
+                            let ip = arp.get_sender_proto_addr();
+                            let mut device = Device::new(IpAddr::V4(ip));
+                            device.mac = Some(arp.get_sender_hw_addr().to_string());
+                            discovered.insert(ip, device);
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
+        let mut results: Vec<Device> = discovered.into_values().collect();
+        results.sort_by_key(|device| device.ip.to_string());
 
         println!("✓ Discovery complete: found {} host(s)", results.len());
         Ok(results)
@@ -109,6 +160,10 @@ fn generate_ips(network: Ipv4Addr, prefix: u32) -> Vec<Ipv4Addr> {
     let start = u32::from(network) & mask;
     let end = start | (!mask);
     let mut ips = Vec::new();
+
+    if end <= start + 1 {
+        return ips;
+    }
 
     // Skip network address and broadcast
     for i in (start + 1)..end {

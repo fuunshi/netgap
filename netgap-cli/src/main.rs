@@ -10,6 +10,9 @@ use netgap_report::ReportFormatter;
 use chrono::Local;
 use std::net::Ipv4Addr;
 use std::time::Duration;
+use netgap_interfaces::{get_interface_auto, get_interface_cidr};
+
+mod interactive;
 
 #[derive(Parser)]
 #[command(name = "netgap")]
@@ -25,6 +28,21 @@ struct Cli {
 enum Commands {
     /// List available network interfaces
     Interfaces,
+
+    /// Discover devices on the selected network without scanning ports
+    Discover {
+        /// Network interface to use (auto-detected if not specified)
+        #[arg(short, long)]
+        interface: Option<String>,
+
+        /// Target network in CIDR notation (default: derived from interface)
+        #[arg(short, long)]
+        target: Option<String>,
+
+        /// Output format: table, json
+        #[arg(short, long, default_value = "table")]
+        format: String,
+    },
 
     /// Run a security scan on the selected network
     Scan {
@@ -55,6 +73,10 @@ enum Commands {
         /// Include vulnerability assessment (requires --deep or --fingerprint)
         #[arg(long)]
         assess: bool,
+
+        /// Show an interactive dashboard with per-host scan progress
+        #[arg(long)]
+        interactive: bool,
 
         /// Output format: table, json, summary
         #[arg(short, long, default_value = "table")]
@@ -104,6 +126,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Interfaces => {
             cmd_interfaces()?;
         }
+        Commands::Discover { interface, target, format } => {
+            cmd_discover(interface, target, &format).await?;
+        }
         Commands::Scan {
             interface,
             target,
@@ -112,9 +137,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             mdns,
             fingerprint,
             assess,
+            interactive,
             format,
         } => {
-            cmd_scan(interface, target, quick, deep, mdns, fingerprint, assess, &format).await?;
+            cmd_scan(interface, target, quick, deep, mdns, fingerprint, assess, interactive, &format).await?;
         }
         Commands::Report { scan_id, compare, format, history } => {
             cmd_report(scan_id, compare, &format, history)?;
@@ -152,6 +178,7 @@ async fn cmd_scan(
     mdns: bool,
     fingerprint: bool,
     assess: bool,
+    interactive: bool,
     format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mode = if quick {
@@ -176,19 +203,11 @@ async fn cmd_scan(
     }
     println!();
 
-    // Get interface
-    let iface_name = interface.unwrap_or_else(|| {
-        println!("ℹ️  Using first available interface (specify with -i to change)");
-        "eth0".to_string()
-    });
+    let iface_name = resolve_interface(interface)?;
 
     println!("📍 Interface: {}", iface_name);
 
-    // Determine target CIDR
-    let target_cidr = target.unwrap_or_else(|| {
-        println!("ℹ️  Using default target 192.168.1.0/24 (specify with -t to change)");
-        "192.168.1.0/24".to_string()
-    });
+    let target_cidr = resolve_target(target, &iface_name)?;
 
     println!("🎯 Target: {}\n", target_cidr);
 
@@ -206,41 +225,11 @@ async fn cmd_scan(
         summary: FindingSummary::new(),
     };
 
-    // Discovery phase
-    println!("Phase 1: Device Discovery");
-    println!("─────────────────────────");
-
-    let discovery_config = DiscoveryConfig {
-        interface_name: iface_name,
-        target_cidr,
-        timeout_ms: 1000,
-    };
-
-    let discovery = netgap_discover::ArpDiscovery::new(discovery_config);
-    let mut devices = discovery.scan().await?;
+    let mut devices = run_discovery_and_port_scan(&iface_name, &target_cidr, quick, interactive).await?;
 
     if devices.is_empty() {
         println!("\n✗ No devices discovered on target network");
     } else {
-        println!("✓ Discovered {} device(s)\n", devices.len());
-
-        // Port scanning phase (unless quick mode)
-        if !quick {
-            println!("Phase 2: Port Scanning");
-            println!("─────────────────────");
-
-            let port_config = PortScanConfig {
-                ports: netgap_scan::TOP_DANGEROUS_PORTS.to_vec(),
-                timeout_ms: 2000,
-                concurrency: 32,
-            };
-
-            let scanner = PortScanner::new(port_config);
-            scanner.scan_devices(&mut devices).await?;
-
-            println!();
-        }
-
         // mDNS discovery phase (if mdns flag enabled)
         if mdns {
             println!("Phase 2b: mDNS Service Discovery");
@@ -415,6 +404,105 @@ async fn cmd_scan(
     println!("{}", output);
 
     Ok(())
+}
+
+async fn cmd_discover(
+    interface: Option<String>,
+    target: Option<String>,
+    format: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let iface_name = resolve_interface(interface)?;
+    let target_cidr = resolve_target(target, &iface_name)?;
+
+    println!("🔍 Discovering devices on {} ({})\n", iface_name, target_cidr);
+
+    let discovery_config = DiscoveryConfig {
+        interface_name: iface_name,
+        target_cidr,
+        timeout_ms: 1000,
+    };
+
+    let discovery = netgap_discover::ArpDiscovery::new(discovery_config);
+    let devices = discovery.scan().await?;
+
+    match format {
+        "json" => {
+            println!("{}", serde_json::to_string_pretty(&devices)?);
+        }
+        _ => {
+            if devices.is_empty() {
+                println!("No devices discovered");
+            } else {
+                println!("Discovered {} device(s):", devices.len());
+                for device in &devices {
+                    println!("  {}{}", device.ip, device.mac.as_ref().map(|mac| format!("  [{}]", mac)).unwrap_or_default());
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_discovery_and_port_scan(
+    iface_name: &str,
+    target_cidr: &str,
+    quick: bool,
+    interactive: bool,
+) -> Result<Vec<netgap_core::Device>, Box<dyn std::error::Error>> {
+    println!("Phase 1: Device Discovery");
+    println!("─────────────────────────");
+
+    if interactive {
+        return interactive::run(Some(iface_name.to_string()), Some(target_cidr.to_string()), quick).await.map_err(Into::into);
+    }
+
+    let discovery_config = DiscoveryConfig {
+        interface_name: iface_name.to_string(),
+        target_cidr: target_cidr.to_string(),
+        timeout_ms: 1000,
+    };
+
+    let discovery = netgap_discover::ArpDiscovery::new(discovery_config);
+    let mut devices = discovery.scan().await?;
+
+    if devices.is_empty() {
+        return Ok(devices);
+    }
+
+    println!("✓ Discovered {} device(s)\n", devices.len());
+
+    if !quick {
+        println!("Phase 2: Port Scanning");
+        println!("─────────────────────");
+
+        let port_config = PortScanConfig {
+            ports: netgap_scan::TOP_DANGEROUS_PORTS.to_vec(),
+            timeout_ms: 2000,
+            concurrency: 32,
+        };
+
+        let scanner = PortScanner::new(port_config);
+        scanner.scan_devices(&mut devices).await?;
+
+        println!();
+    }
+
+    Ok(devices)
+}
+
+fn resolve_interface(interface: Option<String>) -> Result<String, Box<dyn std::error::Error>> {
+    Ok(match interface {
+        Some(iface) => iface,
+        None => get_interface_auto()?,
+    })
+}
+
+fn resolve_target(target: Option<String>, iface_name: &str) -> Result<String, Box<dyn std::error::Error>> {
+    Ok(match target {
+        Some(target) => target,
+        None => get_interface_cidr(iface_name)?,
+    })
 }
 
 fn cmd_report(scan_id: Option<String>, compare: Option<String>, format: &str, history: bool) -> Result<(), Box<dyn std::error::Error>> {

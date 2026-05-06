@@ -8,7 +8,19 @@ use anyhow::{anyhow, Result};
 use std::net::{IpAddr, SocketAddr, Ipv4Addr};
 use std::time::Duration;
 use tokio::net::TcpStream;
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::timeout;
+use tokio::task::JoinSet;
+
+/// Progress update for a host port scan.
+#[derive(Debug, Clone)]
+pub struct PortScanEvent {
+    pub device_ip: IpAddr,
+    pub completed_ports: usize,
+    pub total_ports: usize,
+    pub open_port: Option<u16>,
+    pub finished: bool,
+}
 
 /// Top 20 most dangerous ports to scan by default.
 pub const TOP_DANGEROUS_PORTS: &[u16] = &[
@@ -73,28 +85,54 @@ impl PortScanner {
 
     /// Scan a single IP address for open ports.
     pub async fn scan_ip(&self, ip: IpAddr) -> Result<Vec<u16>> {
+        self.scan_ip_with_progress(ip, None).await
+    }
+
+    /// Scan a single IP address for open ports while emitting progress events.
+    pub async fn scan_ip_with_progress(
+        &self,
+        ip: IpAddr,
+        progress: Option<UnboundedSender<PortScanEvent>>,
+    ) -> Result<Vec<u16>> {
         let mut open_ports = Vec::new();
+        let total_ports = self.config.ports.len();
 
         // Create tasks for each port with semaphore for concurrency control
         let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(self.config.concurrency));
-        let mut handles = Vec::new();
+        let mut tasks = JoinSet::new();
 
         for &port in &self.config.ports {
             let sem = semaphore.clone();
             let timeout_duration = Duration::from_millis(self.config.timeout_ms);
 
-            let handle = tokio::spawn(async move {
+            tasks.spawn(async move {
                 let _permit = sem.acquire().await;
                 Self::check_port(ip, port, timeout_duration).await
             });
-
-            handles.push(handle);
         }
 
-        // Collect results
-        for handle in handles {
-            if let Ok(Some(port)) = handle.await {
-                open_ports.push(port);
+        let mut completed_ports = 0;
+
+        // Collect results as tasks finish so callers can render live progress.
+        while let Some(handle) = tasks.join_next().await {
+            let open_port = match handle {
+                Ok(Some(port)) => {
+                    open_ports.push(port);
+                    Some(port)
+                }
+                _ => None,
+            };
+
+            completed_ports += 1;
+
+            if let Some(progress) = &progress {
+                let _ = progress.send(PortScanEvent {
+                    device_ip: ip,
+                    completed_ports,
+                    total_ports,
+                    open_port,
+                    finished: completed_ports == total_ports,
+                });
             }
         }
 
@@ -104,9 +142,20 @@ impl PortScanner {
 
     /// Scan multiple devices.
     pub async fn scan_devices(&self, devices: &mut Vec<Device>) -> Result<()> {
+        self.scan_devices_with_progress(devices, None).await
+    }
+
+    /// Scan multiple devices while emitting progress events.
+    pub async fn scan_devices_with_progress(
+        &self,
+        devices: &mut Vec<Device>,
+        progress: Option<UnboundedSender<PortScanEvent>>,
+    ) -> Result<()> {
         for device in devices.iter_mut() {
             println!("🔍 Scanning {} for open ports...", device.ip);
-            let open_ports = self.scan_ip(device.ip).await?;
+            let open_ports = self
+                .scan_ip_with_progress(device.ip, progress.clone())
+                .await?;
 
             for port in open_ports {
                 device.add_open_port(port);
