@@ -6,10 +6,12 @@
 //! - Scan comparison (diff between consecutive scans)
 //! - Export to various formats
 
-use netgap_core::{ScanResult, Severity};
+use netgap_core::{Device, Finding, FindingSummary, OsType, ScanConfig, ScanResult, Severity};
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
+use std::collections::HashMap;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 /// Scan store backed by SQLite
@@ -18,8 +20,9 @@ pub struct ScanStore {
 }
 
 impl ScanStore {
-    /// Create or open scan database at default location
-    pub fn default() -> Result<Self> {
+    /// Create or open the scan database at its default location
+    /// (`~/.config/netgap/scans.db`, or `$NETGAP_CONFIG_DIR/scans.db`).
+    pub fn open_default() -> Result<Self> {
         let db_path = Self::default_db_path()?;
         Self::open(&db_path)
     }
@@ -37,12 +40,12 @@ impl ScanStore {
         Ok(store)
     }
 
-    /// Get default database path (~/.config/netgap/scans.db)
+    /// Get default database path (~/.config/netgap/scans.db).
+    ///
+    /// Honours `NETGAP_CONFIG_DIR`, which keeps tests off the real database.
     fn default_db_path() -> Result<PathBuf> {
-        let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE"))?;
-        Ok(PathBuf::from(home)
-            .join(".config/netgap")
-            .join("scans.db"))
+        netgap_core::paths::scans_db_path()
+            .ok_or_else(|| anyhow!("Could not determine the netgap config directory"))
     }
 
     /// Initialize database schema
@@ -68,6 +71,7 @@ impl ScanStore {
                 vendor TEXT,
                 os TEXT,
                 hostname TEXT,
+                device_type TEXT,
                 open_ports TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(scan_id) REFERENCES scans(id)
@@ -81,6 +85,8 @@ impl ScanStore {
                 severity TEXT NOT NULL,
                 port INTEGER,
                 service TEXT,
+                description TEXT,
+                remediation TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(scan_id) REFERENCES scans(id),
                 FOREIGN KEY(device_id) REFERENCES devices(id)
@@ -91,6 +97,18 @@ impl ScanStore {
             CREATE INDEX IF NOT EXISTS idx_devices_scan_id ON devices(scan_id);
             CREATE INDEX IF NOT EXISTS idx_findings_severity ON findings(severity);",
         )?;
+
+        // Databases created before these columns existed need them added in
+        // place; the exports select them. A duplicate-column error just means
+        // the migration already ran.
+        for column in ["description", "remediation"] {
+            let _ = self
+                .conn
+                .execute(&format!("ALTER TABLE findings ADD COLUMN {column} TEXT"), []);
+        }
+        let _ = self
+            .conn
+            .execute("ALTER TABLE devices ADD COLUMN device_type TEXT", []);
 
         Ok(())
     }
@@ -140,8 +158,8 @@ impl ScanStore {
                 .join(",");
 
             let mut device_stmt = self.conn.prepare(
-                "INSERT INTO devices (id, scan_id, ip, mac, vendor, os, hostname, open_ports, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO devices (id, scan_id, ip, mac, vendor, os, hostname, device_type, open_ports, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )?;
 
             device_stmt.execute(params![
@@ -152,16 +170,19 @@ impl ScanStore {
                 device.vendor.clone(),
                 device.os.to_string(),
                 device.hostname.clone(),
+                device.device_type.clone(),
                 open_ports,
                 now
             ])?;
 
-            // Save findings for this device
+            // Save findings for this device. `INSERT OR REPLACE` keeps two
+            // checks that produce the same finding id from colliding.
             for finding in &device.findings {
                 let finding_id = format!("{}-{}", device_id, finding.id);
                 let mut finding_stmt = self.conn.prepare(
-                    "INSERT INTO findings (id, scan_id, device_id, title, severity, port, service, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT OR REPLACE INTO findings
+                       (id, scan_id, device_id, title, severity, port, service, description, remediation, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )?;
 
                 finding_stmt.execute(params![
@@ -172,12 +193,138 @@ impl ScanStore {
                     finding.severity.to_string(),
                     finding.port,
                     &finding.service,
+                    &finding.description,
+                    &finding.remediation,
                     now
                 ])?;
             }
         }
 
         Ok(scan_id)
+    }
+
+    /// Rebuild a full [`ScanResult`] from storage.
+    ///
+    /// Lets `netgap report` render any of the formatters against a saved scan
+    /// instead of re-running one.
+    pub fn load_scan(&self, scan_id: &str) -> Result<ScanResult> {
+        use netgap_core::Severity as CoreSeverity;
+
+        let metadata = self
+            .load_scan_metadata(scan_id)?
+            .ok_or_else(|| anyhow!("Scan not found: {}", scan_id))?;
+
+        // Findings are stored flat; group them by device first.
+        let mut findings_by_device: HashMap<String, Vec<(Finding, CoreSeverity)>> = HashMap::new();
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT device_id, id, title, severity, port, service, description, remediation
+                 FROM findings WHERE scan_id = ? ORDER BY severity DESC, title",
+            )?;
+
+            let rows = stmt.query_map(params![scan_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                ))
+            })?;
+
+            for row in rows {
+                let (device_id, id, title, severity, port, service, description, remediation) = row?;
+                let severity = severity_from_str(&severity);
+                let finding = Finding {
+                    id,
+                    title,
+                    description: description.unwrap_or_default(),
+                    severity,
+                    // Filled in once the owning device's address is known.
+                    ip: IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+                    port: port.map(|port| port as u16),
+                    service,
+                    remediation: remediation.unwrap_or_default(),
+                    confidence: 1.0,
+                };
+                findings_by_device
+                    .entry(device_id)
+                    .or_default()
+                    .push((finding, severity));
+            }
+        }
+
+        let mut summary = FindingSummary::new();
+        let mut devices = Vec::new();
+
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, ip, mac, vendor, os, hostname, device_type, open_ports
+                 FROM devices WHERE scan_id = ? ORDER BY ip",
+            )?;
+
+            let rows = stmt.query_map(params![scan_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                ))
+            })?;
+
+            for row in rows {
+                let (device_id, ip, mac, vendor, os, hostname, device_type, open_ports) = row?;
+                let ip: IpAddr = ip
+                    .parse()
+                    .map_err(|_| anyhow!("Stored device address '{}' is not valid", ip))?;
+
+                let mut device = Device::new(ip);
+                device.mac = mac;
+                device.vendor = vendor;
+                device.os = os_from_str(os.as_deref());
+                device.hostname = hostname;
+                device.device_type = device_type;
+                device.open_ports = open_ports
+                    .as_deref()
+                    .unwrap_or_default()
+                    .split(',')
+                    .filter_map(|port| port.trim().parse::<u16>().ok())
+                    .collect();
+                device.open_ports.sort_unstable();
+
+                if let Some(findings) = findings_by_device.remove(&device_id) {
+                    for (mut finding, severity) in findings {
+                        finding.ip = ip;
+                        summary.add_finding(severity);
+                        device.findings.push(finding);
+                    }
+                }
+
+                devices.push(device);
+            }
+        }
+
+        let defaults = ScanConfig::default();
+
+        Ok(ScanResult {
+            started_at: metadata.started_at,
+            config: ScanConfig {
+                interface: metadata.interface,
+                target: metadata.target,
+                timeout_ms: defaults.timeout_ms,
+                concurrency: defaults.concurrency,
+                discovery_only: false,
+            },
+            devices,
+            summary,
+        })
     }
 
     /// Load scan metadata by ID
@@ -293,7 +440,7 @@ impl ScanStore {
             .ok_or(anyhow!("Scan not found: {}", scan_id))?;
 
         let mut md = String::new();
-        md.push_str(&format!("# Network Security Scan Report\n\n"));
+        md.push_str("# Network Security Scan Report\n\n");
         md.push_str(&format!("**Scan ID:** {}\n", metadata.id));
         md.push_str(&format!("**Date:** {}\n", metadata.created_at));
         md.push_str(&format!("**Interface:** {}\n", metadata.interface));
@@ -365,7 +512,7 @@ impl ScanStore {
                     if let Some(r) = remediation {
                         md.push_str(&format!("- Remediation: {}\n", r));
                     }
-                    md.push_str("\n");
+                    md.push('\n');
                 }
             }
         }
@@ -407,7 +554,7 @@ impl ScanStore {
         html.push_str("</style>\n</head>\n<body>\n");
 
         html.push_str("<div class='container'>\n");
-        html.push_str(&format!("<h1>🔍 Network Security Scan Report</h1>\n"));
+        html.push_str("<h1>🔍 Network Security Scan Report</h1>\n");
 
         // Metadata
         html.push_str("<div class='metadata'>\n");
@@ -583,14 +730,146 @@ pub struct ScanComparison {
     pub resolved_findings: Vec<(String, String)>,  // (finding_title, ip)
 }
 
+/// Map a stored severity string back to the core enum.
+fn severity_from_str(severity: &str) -> Severity {
+    match severity.to_ascii_uppercase().as_str() {
+        "CRITICAL" => Severity::Critical,
+        "HIGH" => Severity::High,
+        "MEDIUM" => Severity::Medium,
+        _ => Severity::Info,
+    }
+}
+
+/// Map a stored OS string back to the core enum.
+fn os_from_str(os: Option<&str>) -> OsType {
+    match os.unwrap_or_default() {
+        "Windows" => OsType::Windows,
+        "Linux" => OsType::Linux,
+        "macOS" => OsType::MacOS,
+        "iOS" => OsType::iOS,
+        "Android" => OsType::Android,
+        _ => OsType::Unknown,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_result() -> ScanResult {
+        let mut device = Device::new("192.168.1.10".parse().expect("valid ip"));
+        device.mac = Some("AA:BB:CC:DD:EE:FF".to_string());
+        device.vendor = Some("Acme".to_string());
+        device.os = OsType::Linux;
+        device.hostname = Some("nas.local".to_string());
+        device.device_type = Some("NAS / file server".to_string());
+        device.open_ports = vec![22, 80];
+        device.add_finding(Finding {
+            id: "open_port_23".to_string(),
+            title: "TELNET EXPOSED".to_string(),
+            description: "Telnet is open in cleartext.".to_string(),
+            severity: Severity::Critical,
+            ip: device.ip,
+            port: Some(23),
+            service: Some("Telnet".to_string()),
+            remediation: "Disable Telnet.".to_string(),
+            confidence: 1.0,
+        });
+
+        let mut summary = FindingSummary::new();
+        summary.add_finding(Severity::Critical);
+
+        ScanResult {
+            started_at: Utc::now().to_rfc3339(),
+            config: ScanConfig {
+                interface: "wlan0".to_string(),
+                target: "192.168.1.0/24".to_string(),
+                timeout_ms: 2000,
+                concurrency: 32,
+                discovery_only: false,
+            },
+            devices: vec![device],
+            summary,
+        }
+    }
 
     #[test]
     fn test_scan_store_creation() {
         let result = ScanStore::open(Path::new(":memory:"));
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_save_and_load_scan_roundtrip() {
+        let mut store = ScanStore::open(Path::new(":memory:")).expect("open store");
+        let result = sample_result();
+
+        let scan_id = store.save_scan(&result).expect("save scan");
+        let loaded = store.load_scan(&scan_id).expect("load scan");
+
+        assert_eq!(loaded.devices.len(), 1);
+        assert_eq!(loaded.config.interface, "wlan0");
+        assert_eq!(loaded.config.target, "192.168.1.0/24");
+
+        let device = &loaded.devices[0];
+        assert_eq!(device.mac.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
+        assert_eq!(device.vendor.as_deref(), Some("Acme"));
+        assert_eq!(device.hostname.as_deref(), Some("nas.local"));
+        assert_eq!(device.device_type.as_deref(), Some("NAS / file server"));
+        assert_eq!(device.os, OsType::Linux);
+        assert_eq!(device.open_ports, vec![22, 80]);
+
+        assert_eq!(device.findings.len(), 1);
+        let finding = &device.findings[0];
+        assert_eq!(finding.severity, Severity::Critical);
+        assert_eq!(finding.title, "TELNET EXPOSED");
+        assert_eq!(finding.description, "Telnet is open in cleartext.");
+        assert_eq!(finding.remediation, "Disable Telnet.");
+        assert_eq!(finding.port, Some(23));
+        // The IP is reconstructed from the owning device.
+        assert_eq!(finding.ip, device.ip);
+
+        assert_eq!(loaded.summary.critical, 1);
+        assert_eq!(loaded.summary.total(), 1);
+    }
+
+    /// Regression: the markdown/HTML exports select `f.description` and
+    /// `f.remediation`, which the schema did not store. This failed the moment
+    /// scans were actually persisted.
+    #[test]
+    fn test_exports_include_description_and_remediation() {
+        let mut store = ScanStore::open(Path::new(":memory:")).expect("open store");
+        let scan_id = store.save_scan(&sample_result()).expect("save scan");
+
+        let markdown = store.export_markdown(&scan_id).expect("markdown export");
+        assert!(markdown.contains("Telnet is open in cleartext."));
+        assert!(markdown.contains("Disable Telnet."));
+
+        let html = store.export_html(&scan_id).expect("html export");
+        assert!(html.contains("TELNET EXPOSED"));
+
+        let csv = store.export_csv(&scan_id).expect("csv export");
+        assert!(csv.contains("TELNET EXPOSED"));
+    }
+
+    #[test]
+    fn test_duplicate_finding_ids_do_not_collide() {
+        let mut store = ScanStore::open(Path::new(":memory:")).expect("open store");
+        let mut result = sample_result();
+        // Same id twice on the same device: the composite primary key would
+        // previously have rejected the second insert.
+        let duplicate = result.devices[0].findings[0].clone();
+        result.devices[0].findings.push(duplicate);
+
+        let scan_id = store.save_scan(&result).expect("save scan");
+        let loaded = store.load_scan(&scan_id).expect("load scan");
+        assert_eq!(loaded.devices[0].findings.len(), 1);
+    }
+
+    #[test]
+    fn test_load_scan_missing_id_errors() {
+        let store = ScanStore::open(Path::new(":memory:")).expect("open store");
+        assert!(store.load_scan("scan-does-not-exist").is_err());
     }
 
     #[test]

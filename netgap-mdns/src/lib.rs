@@ -3,13 +3,10 @@
 //! This module discovers services advertised via mDNS (Multicast DNS),
 //! allowing detection of printers, AirPlay speakers, cameras, web servers, etc.
 
-use anyhow::{anyhow, Result};
-use mdns_sd::{ServiceDaemon, ServiceEvent};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
-use std::time::Duration;
-use tokio::time::sleep;
 
 /// Represents a discovered mDNS service.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,10 +114,16 @@ impl ServiceType {
 pub struct MdnsDiscovery;
 
 impl MdnsDiscovery {
+    /// Whether mDNS discovery is actually implemented.
+    ///
+    /// Callers should check this before reporting "no services found", which
+    /// would otherwise be indistinguishable from a working but empty network.
+    pub const IMPLEMENTED: bool = false;
+
     /// Discover all services on the LAN via mDNS.
     /// Note: This is a framework implementation. Full mDNS discovery requires
     /// platform-specific socket and event handling.
-    pub async fn discover_services(timeout_secs: u64) -> Result<Vec<MdnsService>> {
+    pub async fn discover_services(_timeout_secs: u64) -> Result<Vec<MdnsService>> {
         let services = Vec::new();
 
         // TODO: Full implementation using mdns-sd crate:
@@ -149,7 +152,7 @@ impl MdnsDiscovery {
 
         for service in services {
             if let Some(ip) = service.ip {
-                grouped.entry(ip).or_insert_with(Vec::new).push(service.clone());
+                grouped.entry(ip).or_default().push(service.clone());
             }
         }
 

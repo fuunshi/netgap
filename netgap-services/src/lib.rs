@@ -442,7 +442,7 @@ impl ConfidenceScorer {
             }
         }
 
-        score.min(1.0).max(0.0)
+        score.clamp(0.0, 1.0)
     }
 
     /// Check if port is well-known (reliable for service identification).
@@ -538,8 +538,10 @@ mod tests {
 
     #[test]
     fn test_health_score_critical_vuln() {
-        let mut service = ServiceInfo::default();
-        service.confidence = 1.0;  // Set high confidence
+        let mut service = ServiceInfo {
+            confidence: 1.0,
+            ..ServiceInfo::default()
+        };
         service.vulnerabilities.push(VulnerabilityFinding {
             cve_id: "CVE-TEST".to_string(),
             severity: Severity::Critical,

@@ -11,4 +11,5 @@ ratatui.workspace = true
 crossterm.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
+colored.workspace = true
 thiserror.workspace = true

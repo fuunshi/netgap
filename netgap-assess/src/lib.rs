@@ -4,8 +4,6 @@
 //! discovered devices and services to identify security issues.
 
 use netgap_core::{Device, Finding, Severity};
-use anyhow::Result;
-use std::net::IpAddr;
 
 /// Trait for implementing vulnerability checks.
 pub trait VulnerabilityCheck: Send + Sync {
@@ -51,7 +49,7 @@ impl AssessmentRunner {
     }
 
     /// Run all checks on multiple devices
-    pub fn assess_all(&self, devices: &mut Vec<Device>) {
+    pub fn assess_all(&self, devices: &mut [Device]) {
         for device in devices.iter_mut() {
             let findings = self.assess(device);
             for finding in findings {
@@ -315,7 +313,7 @@ mod tests {
 
         runner.assess_all(&mut devices);
 
-        assert!(devices[0].findings.len() >= 1);
+        assert!(!devices[0].findings.is_empty());
         assert!(devices[1].findings.is_empty() || devices[1].findings.len() < devices[0].findings.len());
     }
 }

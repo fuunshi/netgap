@@ -1,18 +1,23 @@
 use clap::{Parser, Subcommand};
-use netgap_core::{ScanConfig, ScanResult, FindingSummary};
-use netgap_discover::DiscoveryConfig;
-use netgap_scan::{PortScanner, ScanConfig as PortScanConfig};
-use netgap_fingerprint::Fingerprinter;
+use netgap_assess::AssessmentRunner;
+use netgap_core::{Device, Finding, FindingSummary, ScanConfig, ScanResult, Severity};
+use netgap_fingerprint::{classify_device, BannerGrabResult, ClassifyContext, Fingerprinter};
 use netgap_mdns::MdnsDiscovery;
-use netgap_services::{VulnerabilityCheck, ServiceInfo};
-use netgap_trends::{ChangeDetection, HealthScore, ScanHistory, AlertRule};
-use netgap_report::ReportFormatter;
+use netgap_report::discovery::DiscoveryContext;
+use netgap_report::{format_discovery, ReportFormatter};
+use netgap_scan::{PortScanner, ScanConfig as PortScanConfig};
+use netgap_services::{ServiceInfo, VulnerabilityCheck, VulnerabilityFinding};
+use netgap_trends::{AlertRule, ChangeDetection, HealthScore, ScanHistory};
 use chrono::Local;
-use std::net::Ipv4Addr;
+use std::collections::HashSet;
+use std::net::IpAddr;
 use std::time::Duration;
-use netgap_interfaces::{get_interface_auto, get_interface_cidr};
 
+mod discovery;
 mod interactive;
+mod trust;
+
+use discovery::DiscoveryPlan;
 
 #[derive(Parser)]
 #[command(name = "netgap")]
@@ -24,45 +29,108 @@ struct Cli {
     command: Commands,
 }
 
+/// Arguments shared by every command that performs discovery.
+#[derive(clap::Args, Clone)]
+struct DiscoveryArgs {
+    /// Network interface to use (auto-detected if not specified)
+    #[arg(short, long)]
+    interface: Option<String>,
+
+    /// Target network in CIDR notation (default: derived from the interface)
+    #[arg(short, long)]
+    target: Option<String>,
+
+    /// Discovery method: auto, arp, or tcp
+    #[arg(long, default_value = "auto")]
+    discovery: String,
+
+    /// Continue without prompting when root is unavailable (use the TCP fallback)
+    #[arg(short = 'y', long)]
+    yes: bool,
+
+    /// Refuse to scan more hosts than this in one sweep
+    #[arg(long, default_value_t = netgap_discover::DEFAULT_MAX_HOSTS)]
+    max_hosts: usize,
+}
+
+impl DiscoveryArgs {
+    /// Resolve the interface, target and discovery method for this run.
+    ///
+    /// `non_interactive` keeps machine-readable output clean by suppressing the
+    /// privilege prompt.
+    fn resolve(&self, non_interactive: bool) -> Result<DiscoveryPlan, Box<dyn std::error::Error>> {
+        let requested = if self.discovery.eq_ignore_ascii_case("auto") {
+            None
+        } else {
+            Some(discovery::parse_method(&self.discovery)?)
+        };
+
+        Ok(discovery::resolve_plan(
+            self.interface.clone(),
+            self.target.clone(),
+            requested,
+            self.yes,
+            non_interactive,
+            self.max_hosts,
+        )?)
+    }
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// List available network interfaces
     Interfaces,
 
-    /// Discover devices on the selected network without scanning ports
+    /// Discover devices on the local network and report what they are
     Discover {
-        /// Network interface to use (auto-detected if not specified)
-        #[arg(short, long)]
-        interface: Option<String>,
+        #[command(flatten)]
+        discovery: DiscoveryArgs,
 
-        /// Target network in CIDR notation (default: derived from interface)
-        #[arg(short, long)]
-        target: Option<String>,
-
-        /// Output format: table, json
-        #[arg(short, long, default_value = "table")]
+        /// Output format: report, json
+        #[arg(short, long, default_value = "report")]
         format: String,
+
+        /// Mark every device found as trusted (useful for a first run)
+        #[arg(long)]
+        trust_all: bool,
+
+        /// Probe common service ports to identify device types (extra traffic)
+        #[arg(long)]
+        identify: bool,
     },
+
+    /// Add a device to the trusted list (by MAC, or by IP if it is known)
+    Trust {
+        /// MAC address (aa:bb:cc:dd:ee:ff) or an IP that is already known
+        device: String,
+
+        /// Optional human-readable label
+        label: Option<String>,
+    },
+
+    /// Remove a device from the trusted list
+    Untrust {
+        /// MAC address or an IP that is already known
+        device: String,
+    },
+
+    /// List trusted devices
+    Trusted,
 
     /// Run a security scan on the selected network
     Scan {
-        /// Network interface to scan (e.g., eth0)
-        #[arg(short, long)]
-        interface: Option<String>,
+        #[command(flatten)]
+        discovery: DiscoveryArgs,
 
-        /// Target network in CIDR notation (default: auto-detect)
-        #[arg(short, long)]
-        target: Option<String>,
-
-        /// Quick scan mode (ARP + top 20 ports only)
+        /// Quick scan mode: discovery only, no port scanning (fastest)
         #[arg(long)]
         quick: bool,
 
-        /// Deep scan mode (all checks enabled)
+        /// Deep scan mode: implies --fingerprint and --assess
         #[arg(long)]
         deep: bool,
 
-        /// Include mDNS service discovery
+        /// Include mDNS service discovery (not yet implemented)
         #[arg(long)]
         mdns: bool,
 
@@ -70,13 +138,17 @@ enum Commands {
         #[arg(long)]
         fingerprint: bool,
 
-        /// Include vulnerability assessment (requires --deep or --fingerprint)
+        /// Include vulnerability assessment
         #[arg(long)]
         assess: bool,
 
         /// Show an interactive dashboard with per-host scan progress
         #[arg(long)]
         interactive: bool,
+
+        /// Do not write the result to the scan history database
+        #[arg(long)]
+        no_save: bool,
 
         /// Output format: table, json, summary
         #[arg(short, long, default_value = "table")]
@@ -104,13 +176,8 @@ enum Commands {
 
     /// Continuous monitoring mode (watch for network changes)
     Watch {
-        /// Network interface to scan (e.g., eth0)
-        #[arg(short, long)]
-        interface: Option<String>,
-
-        /// Target network in CIDR notation (default: auto-detect)
-        #[arg(short, long)]
-        target: Option<String>,
+        #[command(flatten)]
+        discovery: DiscoveryArgs,
 
         /// Interval in seconds between scans (default: 60)
         #[arg(long, default_value = "60")]
@@ -126,27 +193,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Interfaces => {
             cmd_interfaces()?;
         }
-        Commands::Discover { interface, target, format } => {
-            cmd_discover(interface, target, &format).await?;
+        Commands::Discover {
+            discovery,
+            format,
+            trust_all,
+            identify,
+        } => {
+            cmd_discover(discovery, &format, trust_all, identify).await?;
+        }
+        Commands::Trust { device, label } => {
+            cmd_trust(device, label)?;
+        }
+        Commands::Untrust { device } => {
+            cmd_untrust(device)?;
+        }
+        Commands::Trusted => {
+            cmd_trusted()?;
         }
         Commands::Scan {
-            interface,
-            target,
+            discovery,
             quick,
             deep,
             mdns,
             fingerprint,
             assess,
             interactive,
+            no_save,
             format,
         } => {
-            cmd_scan(interface, target, quick, deep, mdns, fingerprint, assess, interactive, &format).await?;
+            cmd_scan(
+                discovery,
+                quick,
+                deep,
+                mdns,
+                fingerprint,
+                assess,
+                interactive,
+                no_save,
+                &format,
+            )
+            .await?;
         }
-        Commands::Report { scan_id, compare, format, history } => {
+        Commands::Report {
+            scan_id,
+            compare,
+            format,
+            history,
+        } => {
             cmd_report(scan_id, compare, &format, history)?;
         }
-        Commands::Watch { interface, target, interval } => {
-            cmd_watch(interface, target, interval).await?;
+        Commands::Watch {
+            discovery,
+            interval,
+        } => {
+            cmd_watch(discovery, interval).await?;
         }
     }
 
@@ -158,29 +258,61 @@ fn cmd_interfaces() -> Result<(), Box<dyn std::error::Error>> {
     let interfaces = netgap_interfaces::get_interfaces()?;
 
     for (idx, iface) in interfaces.iter().enumerate() {
-        println!("  {}. {} {}", idx + 1, iface.name, if iface.is_up { "✓" } else { "✗" });
+        let mut notes = Vec::new();
+        if iface.is_loopback {
+            notes.push("loopback".to_string());
+        } else if iface.is_virtual() {
+            notes.push("virtual".to_string());
+        }
+        if iface.is_default_route {
+            notes.push("default route".to_string());
+        }
+        if iface.is_scannable() && !iface.is_virtual() && !iface.is_loopback {
+            notes.push("scannable".to_string());
+        }
+
+        println!(
+            "  {}. {} {}",
+            idx + 1,
+            iface.name,
+            if iface.is_up { "✓" } else { "✗" }
+        );
         if let Some(ipv4) = &iface.ipv4 {
             println!("     IPv4: {}", ipv4);
+        }
+        if let Some(cidr) = &iface.cidr {
+            println!("     CIDR: {}", cidr);
         }
         if let Some(mac) = &iface.mac {
             println!("     MAC:  {}", mac);
         }
+        if !notes.is_empty() {
+            println!("     Notes: {}", notes.join(", "));
+        }
     }
 
+    println!("\nInterfaces marked 'scannable' are candidates for auto-selection.\n");
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn cmd_scan(
-    interface: Option<String>,
-    target: Option<String>,
+    discovery_args: DiscoveryArgs,
     quick: bool,
     deep: bool,
     mdns: bool,
-    fingerprint: bool,
-    assess: bool,
+    mut fingerprint: bool,
+    mut assess: bool,
     interactive: bool,
+    no_save: bool,
     format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // --deep is a shorthand for turning on everything.
+    if deep {
+        fingerprint = true;
+        assess = true;
+    }
+
     let mode = if quick {
         "quick"
     } else if deep {
@@ -191,32 +323,33 @@ async fn cmd_scan(
         "standard"
     };
 
-    println!("🔍 Starting {} scan...", mode);
+    eprintln!("🔍 Starting {} scan...", mode);
     if mdns {
-        println!("   📡 mDNS discovery enabled");
+        eprintln!("   📡 mDNS discovery requested");
     }
     if fingerprint {
-        println!("   🔎 Service fingerprinting enabled");
+        eprintln!("   🔎 Service fingerprinting enabled");
     }
     if assess {
-        println!("   ⚠️  Vulnerability assessment enabled");
+        eprintln!("   ⚠️  Vulnerability assessment enabled");
     }
-    println!();
+    eprintln!();
 
-    let iface_name = resolve_interface(interface)?;
+    let plan = discovery_args.resolve(format == "json")?;
 
-    println!("📍 Interface: {}", iface_name);
-
-    let target_cidr = resolve_target(target, &iface_name)?;
-
-    println!("🎯 Target: {}\n", target_cidr);
+    eprintln!("📍 Interface: {}", plan.interface.name);
+    if let Some(cidr) = &plan.interface.cidr {
+        eprintln!("   Network:   {}", cidr);
+    }
+    eprintln!("🎯 Target:  {}", plan.target);
+    eprintln!("🛰️  Discovery: {}\n", plan.method.label());
 
     // Create scan result
     let mut result = ScanResult {
         started_at: Local::now().to_rfc3339(),
         config: ScanConfig {
-            interface: iface_name.clone(),
-            target: target_cidr.clone(),
+            interface: plan.interface.name.clone(),
+            target: plan.target.clone(),
             timeout_ms: if quick { 1000 } else { 2000 },
             concurrency: if quick { 16 } else { 32 },
             discovery_only: quick,
@@ -225,33 +358,45 @@ async fn cmd_scan(
         summary: FindingSummary::new(),
     };
 
-    let mut devices = run_discovery_and_port_scan(&iface_name, &target_cidr, quick, interactive).await?;
+    let mut devices = run_discovery_and_port_scan(&plan, quick, interactive).await?;
+
+    // Name and classify the devices we found; port data is available by now,
+    // which is what makes the type guess worthwhile.
+    if !devices.is_empty() {
+        enrich_devices(&plan, &mut devices, false).await;
+    }
 
     if devices.is_empty() {
-        println!("\n✗ No devices discovered on target network");
+        eprintln!("\n✗ No devices discovered on target network");
     } else {
-        // mDNS discovery phase (if mdns flag enabled)
         if mdns {
-            println!("Phase 2b: mDNS Service Discovery");
-            println!("────────────────────────────────");
+            eprintln!("Phase 2b: mDNS Service Discovery");
+            eprintln!("────────────────────────────────");
 
-            match MdnsDiscovery::discover_services(3).await {
-                Ok(services) => {
-                    if services.is_empty() {
-                        println!("  No mDNS services discovered");
-                    } else {
-                        println!("  Discovered {} mDNS service(s):", services.len());
+            if !MdnsDiscovery::IMPLEMENTED {
+                // Saying "no services found" here would be a lie: the search
+                // never happens.
+                eprintln!("  ⚠️  mDNS discovery is not implemented in this build; skipping");
+            } else {
+                match MdnsDiscovery::discover_services(3).await {
+                    Ok(services) if services.is_empty() => {
+                        eprintln!("  No mDNS services discovered");
+                    }
+                    Ok(services) => {
+                        eprintln!("  Discovered {} mDNS service(s):", services.len());
                         for service in &services {
-                            println!("    • {} ({})", service.name, service.service_type.display_name());
+                            println!(
+                                "    • {} ({})",
+                                service.name,
+                                service.service_type.display_name()
+                            );
                             if let Some(ip) = &service.ip {
-                                println!("      IP: {}", ip);
+                                eprintln!("      IP: {}", ip);
                             }
-                            println!("      Port: {}", service.port);
+                            eprintln!("      Port: {}", service.port);
                         }
                     }
-                }
-                Err(e) => {
-                    println!("  ⚠️  mDNS discovery error: {}", e);
+                    Err(e) => eprintln!("  ⚠️  mDNS discovery error: {}", e),
                 }
             }
 
@@ -259,131 +404,33 @@ async fn cmd_scan(
         }
 
         // Banner grabbing phase (if fingerprint flag enabled)
-        if fingerprint {
-            println!("Phase 3: Service Fingerprinting");
-            println!("──────────────────────────────");
-
-            for device in &mut devices {
-                for port in &device.open_ports {
-                    // Try to grab banners for common services
-                    let banner_result = if *port == 80 || *port == 8080 {
-                        Fingerprinter::grab_http_banner(
-                            &device.ip.to_string(),
-                            *port,
-                        )
-                        .await
-                    } else if *port == 22 {
-                        Fingerprinter::grab_ssh_banner(
-                            &device.ip.to_string(),
-                            *port,
-                        )
-                        .await
-                    } else if *port == 21 {
-                        Fingerprinter::grab_ftp_banner(
-                            &device.ip.to_string(),
-                            *port,
-                        )
-                        .await
-                    } else {
-                        None
-                    };
-
-                    // If banner was grabbed, display it
-                    if let Some(banner) = banner_result {
-                        println!(
-                            "  {}:{} ({}) - {}",
-                            device.ip, banner.port, banner.protocol, banner.service_name
-                                .as_ref()
-                                .unwrap_or(&"Unknown".to_string())
-                        );
-                        if let Some(v) = &banner.version {
-                            println!("    Version: {}", v);
-                        }
-                    }
-                }
-            }
-
+        let banners = if fingerprint {
+            eprintln!("Phase 3: Service Fingerprinting");
+            eprintln!("──────────────────────────────");
+            let banners = fingerprint_devices(&mut devices).await;
             println!();
-        }
+            banners
+        } else {
+            Vec::new()
+        };
 
         // Vulnerability assessment (if assess flag enabled)
         if assess {
-            println!("Phase 4: Vulnerability Assessment");
-            println!("─────────────────────────────────");
+            eprintln!("Phase 4: Vulnerability Assessment");
+            eprintln!("─────────────────────────────────");
 
-            let mut has_findings = false;
+            let found = apply_assessment(&mut devices, &banners);
 
-            for device in &devices {
-                // For each open port, try to assess vulnerabilities
-                for port in &device.open_ports {
-                    // Map port to service name for vulnerability lookup
-                    let service_name = match *port {
-                        21 => Some("FTP"),
-                        22 => Some("OpenSSH"),
-                        23 => Some("Telnet"),
-                        80 | 8080 => Some("Apache"),
-                        443 | 8443 => Some("Apache"),
-                        3306 => Some("MySQL"),
-                        5432 => Some("PostgreSQL"),
-                        _ => None,
-                    };
-
-                    if let Some(svc_name) = service_name {
-                        // Create a basic service info for vulnerability check
-                        let service_info = ServiceInfo {
-                            ip: if let std::net::IpAddr::V4(v4) = device.ip {
-                                v4
-                            } else {
-                                Ipv4Addr::UNSPECIFIED
-                            },
-                            port: *port,
-                            name: svc_name.to_string(),
-                            version: None, // Would need banner grabbing for actual version
-                            service_type: match *port {
-                                21 => "ftp".to_string(),
-                                22 => "ssh".to_string(),
-                                23 => "telnet".to_string(),
-                                _ => "http".to_string(),
-                            },
-                            banner: None,
-                            confidence: 0.75,
-                            vulnerabilities: Vec::new(),
-                        };
-
-                        // Check for vulnerabilities
-                        let vulns = VulnerabilityCheck::check_version(&service_info);
-                        if !vulns.is_empty() {
-                            has_findings = true;
-                            println!("  {}:{} ({}) - {} finding(s):", device.ip, port, svc_name, vulns.len());
-                            for vuln in vulns {
-                                let severity_emoji = match vuln.severity.as_str() {
-                                    "Critical" => "🔴",
-                                    "High" => "🟠",
-                                    "Medium" => "🟡",
-                                    _ => "🔵",
-                                };
-                                println!(
-                                    "    {} [{}] {}: {}",
-                                    severity_emoji, vuln.cve_id, vuln.severity.as_str(), vuln.description
-                                );
-                                println!("       Affected: {}", vuln.affected_versions);
-                                println!("       Fix: {}", vuln.remediation);
-                            }
-                        }
-                    }
-                }
-            }
-
-            if !has_findings {
-                println!("  ✓ No known vulnerabilities detected for open ports");
+            if found == 0 {
+                eprintln!("  ✓ No known vulnerabilities detected for open ports");
             }
 
             println!();
         }
     }
 
-    // Update results
-    result.devices = devices.clone();
+    // Update results and count every finding now attached to a device.
+    result.devices = devices;
     for device in &result.devices {
         for finding in &device.findings {
             result.summary.add_finding(finding.severity);
@@ -391,9 +438,9 @@ async fn cmd_scan(
     }
 
     // Output results
-    println!("\n{}", "─".repeat(70));
-    println!("SCAN RESULTS");
-    println!("{}\n", "─".repeat(70));
+    eprintln!("\n{}", "─".repeat(70));
+    eprintln!("SCAN RESULTS");
+    eprintln!("{}\n", "─".repeat(70));
 
     let output = match format {
         "json" => ReportFormatter::format_json(&result)?,
@@ -403,78 +450,245 @@ async fn cmd_scan(
 
     println!("{}", output);
 
+    if !no_save && !result.devices.is_empty() {
+        match netgap_storage::ScanStore::open_default()
+            .and_then(|mut store| store.save_scan(&result))
+        {
+            Ok(scan_id) => {
+                eprintln!("💾 Saved as '{}' — view it with: netgap report", scan_id);
+            }
+            Err(error) => eprintln!("⚠️  Could not save scan to history: {}", error),
+        }
+    }
+
     Ok(())
 }
 
 async fn cmd_discover(
-    interface: Option<String>,
-    target: Option<String>,
+    discovery_args: DiscoveryArgs,
     format: &str,
+    trust_all: bool,
+    identify: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let iface_name = resolve_interface(interface)?;
-    let target_cidr = resolve_target(target, &iface_name)?;
+    let plan = discovery_args.resolve(format == "json")?;
 
-    println!("🔍 Discovering devices on {} ({})\n", iface_name, target_cidr);
+    eprintln!(
+        "🔍 Discovering devices on {} ({})\n",
+        plan.interface.name, plan.target
+    );
 
-    let discovery_config = DiscoveryConfig {
-        interface_name: iface_name,
-        target_cidr,
-        timeout_ms: 1000,
-    };
+    let mut devices = discovery::run(&plan).await?;
+    enrich_devices(&plan, &mut devices, identify).await;
 
-    let discovery = netgap_discover::ArpDiscovery::new(discovery_config);
-    let devices = discovery.scan().await?;
+    let mut trust_list = trust::TrustList::load()?;
+
+    if trust_all && !devices.is_empty() {
+        let mut added = 0;
+        for device in &devices {
+            if let Some(mac) = device.mac.as_deref() {
+                if trust_list.trust(mac, None) {
+                    added += 1;
+                }
+            }
+        }
+        trust_list.save()?;
+        eprintln!(
+            "✓ Trusted {} new device(s) ({} total)",
+            added,
+            trust_list.entries().len()
+        );
+    }
 
     match format {
         "json" => {
             println!("{}", serde_json::to_string_pretty(&devices)?);
         }
         _ => {
-            if devices.is_empty() {
-                println!("No devices discovered");
-            } else {
-                println!("Discovered {} device(s):", devices.len());
-                for device in &devices {
-                    println!("  {}{}", device.ip, device.mac.as_ref().map(|mac| format!("  [{}]", mac)).unwrap_or_default());
-                }
-            }
+            // The report is the result, so it goes to stdout.
+            let context = DiscoveryContext {
+                interface: &plan.interface.name,
+                target: &plan.target,
+                trusted: &trust_list.macs(),
+                labels: &trust_list.labels(),
+                gateway: netgap_interfaces::default_gateway_ipv4().map(std::net::IpAddr::V4),
+                local: plan
+                    .interface
+                    .ipv4_network()
+                    .map(|network| std::net::IpAddr::V4(network.ip())),
+            };
+            println!("{}", format_discovery(&devices, &context));
         }
     }
 
     Ok(())
 }
 
-async fn run_discovery_and_port_scan(
-    iface_name: &str,
-    target_cidr: &str,
-    quick: bool,
-    interactive: bool,
-) -> Result<Vec<netgap_core::Device>, Box<dyn std::error::Error>> {
-    println!("Phase 1: Device Discovery");
-    println!("─────────────────────────");
-
-    if interactive {
-        return interactive::run(Some(iface_name.to_string()), Some(target_cidr.to_string()), quick).await.map_err(Into::into);
+/// Fill in the details that turn a bare IP and MAC into something a person can
+/// recognise: a name, a vendor, and a device type.
+async fn enrich_devices(plan: &DiscoveryPlan, devices: &mut [Device], identify: bool) {
+    if devices.is_empty() {
+        return;
     }
 
-    let discovery_config = DiscoveryConfig {
-        interface_name: iface_name.to_string(),
-        target_cidr: target_cidr.to_string(),
-        timeout_ms: 1000,
+    // Names first: reverse DNS is unreliable on many networks, so it gets a
+    // bounded budget and stays quiet when it finds nothing.
+    let named = netgap_discover::resolve_hostnames(devices, Duration::from_secs(3)).await;
+    if named > 0 {
+        eprintln!("   Resolved {} hostname(s)", named);
+    }
+
+    // Optionally probe service ports, which is what makes type guesses useful.
+    if identify {
+        eprintln!(
+            "   Identifying device types (probing {} port(s) on {} host(s))...",
+            IDENTIFY_PORTS.len(),
+            devices.len()
+        );
+
+        let ipv4_targets: Vec<std::net::Ipv4Addr> = devices
+            .iter()
+            .filter_map(|device| match device.ip {
+                std::net::IpAddr::V4(ipv4) => Some(ipv4),
+                std::net::IpAddr::V6(_) => None,
+            })
+            .collect();
+
+        let sweep = netgap_discover::TcpSweeper::new(netgap_discover::TcpSweepConfig {
+            targets: ipv4_targets,
+            ports: IDENTIFY_PORTS.to_vec(),
+            timeout_ms: 400,
+            concurrency: 128,
+            include_neighbors: false,
+            interface_name: Some(plan.interface.name.clone()),
+            quiet: true,
+        });
+
+        match sweep.scan().await {
+            Ok(probed) => {
+                for probe in &probed {
+                    if let Some(device) = devices.iter_mut().find(|device| device.ip == probe.ip) {
+                        for port in &probe.open_ports {
+                            device.add_open_port(*port);
+                        }
+                    }
+                }
+            }
+            Err(error) => eprintln!("   ⚠️  Identification probe failed: {}", error),
+        }
+    }
+
+    // Vendor and type. `fingerprint_device` no longer clobbers a known OS, so
+    // it is safe to call on already-enriched devices.
+    let fingerprinter = Fingerprinter::new();
+    let context = ClassifyContext {
+        gateway: netgap_interfaces::default_gateway_ipv4().map(std::net::IpAddr::V4),
+        local: plan
+            .interface
+            .ipv4_network()
+            .map(|network| std::net::IpAddr::V4(network.ip())),
     };
 
-    let discovery = netgap_discover::ArpDiscovery::new(discovery_config);
-    let mut devices = discovery.scan().await?;
+    for device in devices.iter_mut() {
+        fingerprinter.fingerprint_device(device);
+        let classification = classify_device(device, &context);
+        device.device_type = Some(classification.label);
+    }
+}
+
+/// Ports probed by `--identify`, chosen to distinguish common device classes.
+const IDENTIFY_PORTS: &[u16] = &[
+    21, 22, 23, 53, 80, 139, 443, 445, 515, 554, 631, 1883, 2049, 3389, 5000, 8080, 9100,
+];
+
+fn cmd_trust(device: String, label: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+    let mac = resolve_mac(&device)?;
+    let mut list = trust::TrustList::load()?;
+
+    let added = list.trust(&mac, label.clone());
+    list.save()?;
+
+    match (added, label) {
+        (true, Some(label)) => println!("✓ Trusted {} ({})", mac, label),
+        (true, None) => println!("✓ Trusted {}", mac),
+        (false, Some(label)) => println!("✓ Updated {} label to '{}'", mac, label),
+        (false, None) => println!("Already trusted: {}", mac),
+    }
+
+    Ok(())
+}
+
+fn cmd_untrust(device: String) -> Result<(), Box<dyn std::error::Error>> {
+    let mac = resolve_mac(&device)?;
+    let mut list = trust::TrustList::load()?;
+
+    if list.untrust(&mac) {
+        list.save()?;
+        println!("✓ Removed {} from the trusted list", mac);
+    } else {
+        println!("{} was not in the trusted list", mac);
+    }
+
+    Ok(())
+}
+
+fn cmd_trusted() -> Result<(), Box<dyn std::error::Error>> {
+    let list = trust::TrustList::load()?;
+
+    if list.is_empty() {
+        println!("No trusted devices yet. Run 'netgap discover' and then:");
+        println!("  netgap trust <mac> \"label\"");
+        return Ok(());
+    }
+
+    println!("📋 Trusted devices ({})\n", list.entries().len());
+    for entry in list.entries() {
+        match entry.label {
+            Some(label) => println!("  {}  {}", entry.mac, label),
+            None => println!("  {}", entry.mac),
+        }
+    }
+    println!(
+        "\nStored in {}",
+        trust::trust_file_path()?.display()
+    );
+
+    Ok(())
+}
+
+/// Accept either a MAC or an IP address, resolving the latter via the kernel
+/// neighbour table so the user does not have to look it up manually.
+fn resolve_mac(identifier: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let trimmed = identifier.trim();
+    if trimmed.contains(':') {
+        Ok(trust::resolve_identifier(trimmed)?)
+    } else {
+        Ok(trust::mac_for_ip(trimmed)?)
+    }
+}
+
+async fn run_discovery_and_port_scan(
+    plan: &DiscoveryPlan,
+    quick: bool,
+    interactive: bool,
+) -> Result<Vec<Device>, Box<dyn std::error::Error>> {
+    eprintln!("Phase 1: Device Discovery");
+    eprintln!("─────────────────────────");
+
+    if interactive {
+        return interactive::run(plan, quick).await.map_err(Into::into);
+    }
+
+    let mut devices = discovery::run(plan).await?;
 
     if devices.is_empty() {
         return Ok(devices);
     }
 
-    println!("✓ Discovered {} device(s)\n", devices.len());
+    eprintln!("✓ Discovered {} device(s)\n", devices.len());
 
     if !quick {
-        println!("Phase 2: Port Scanning");
-        println!("─────────────────────");
+        eprintln!("Phase 2: Port Scanning");
+        eprintln!("─────────────────────");
 
         let port_config = PortScanConfig {
             ports: netgap_scan::TOP_DANGEROUS_PORTS.to_vec(),
@@ -491,24 +705,194 @@ async fn run_discovery_and_port_scan(
     Ok(devices)
 }
 
-fn resolve_interface(interface: Option<String>) -> Result<String, Box<dyn std::error::Error>> {
-    Ok(match interface {
-        Some(iface) => iface,
-        None => get_interface_auto()?,
-    })
+/// Grab service banners for the open ports of each device and fold the result
+/// into the device (vendor/OUI and OS heuristics).
+async fn fingerprint_devices(devices: &mut [Device]) -> Vec<(IpAddr, BannerGrabResult)> {
+    let fingerprinter = Fingerprinter::new();
+    let mut banners = Vec::new();
+
+    for device in devices.iter_mut() {
+        for port in device.open_ports.clone() {
+            let banner = match port {
+                80 | 8080 => {
+                    Fingerprinter::grab_http_banner(&device.ip.to_string(), port).await
+                }
+                22 => Fingerprinter::grab_ssh_banner(&device.ip.to_string(), port).await,
+                21 => Fingerprinter::grab_ftp_banner(&device.ip.to_string(), port).await,
+                _ => None,
+            };
+
+            if let Some(banner) = banner {
+                let service = banner
+                    .service_name
+                    .clone()
+                    .unwrap_or_else(|| "Unknown".to_string());
+                eprintln!("  {}:{} ({}) - {}", device.ip, banner.port, banner.protocol, service);
+                if let Some(version) = &banner.version {
+                    eprintln!("    Version: {}", version);
+                }
+                banners.push((device.ip, banner));
+            }
+        }
+
+        let previous_vendor = device.vendor.clone();
+        fingerprinter.fingerprint_device(device);
+        if device.vendor != previous_vendor {
+            if let Some(vendor) = &device.vendor {
+                eprintln!("  {} - Vendor: {}", device.ip, vendor);
+            }
+        }
+    }
+
+    banners
 }
 
-fn resolve_target(target: Option<String>, iface_name: &str) -> Result<String, Box<dyn std::error::Error>> {
-    Ok(match target {
-        Some(target) => target,
-        None => get_interface_cidr(iface_name)?,
-    })
+/// Run vulnerability checks and attach every finding to its device.
+///
+/// Findings must live on `Device` to reach reports, the summary, trends and
+/// the scan database — printing them alone loses them.
+fn apply_assessment(devices: &mut [Device], banners: &[(IpAddr, BannerGrabResult)]) -> usize {
+    let runner = AssessmentRunner::new();
+    let mut total = 0;
+
+    for device in devices.iter_mut() {
+        let known: HashSet<String> = device.findings.iter().map(|finding| finding.id.clone()).collect();
+        // The port scanner already reports exposure for the dangerous ports it
+        // scans; repeating them here would double every SMB/Telnet finding.
+        let already_reported: HashSet<u16> = device
+            .findings
+            .iter()
+            .filter_map(|finding| finding.port)
+            .collect();
+
+        for finding in runner.assess(device) {
+            if known.contains(&finding.id) {
+                continue;
+            }
+            if finding.port.is_some_and(|port| already_reported.contains(&port)) {
+                continue;
+            }
+            eprintln!(
+                "  {}:{} [{}] {}",
+                device.ip,
+                finding.port.map(|port| port.to_string()).unwrap_or_else(|| "-".to_string()),
+                finding.severity,
+                finding.title
+            );
+            device.add_finding(finding);
+            total += 1;
+        }
+    }
+
+    // Version-specific CVEs, using versions recovered by banner grabbing.
+    for device in devices.iter_mut() {
+        let IpAddr::V4(ipv4) = device.ip else { continue };
+
+        for port in device.open_ports.clone() {
+            let Some(service_name) = service_name_for_port(port) else {
+                continue;
+            };
+
+            let version = banners
+                .iter()
+                .find(|(ip, banner)| *ip == device.ip && banner.port == port)
+                .and_then(|(_, banner)| banner.version.clone());
+
+            let service_info = ServiceInfo {
+                ip: ipv4,
+                port,
+                name: service_name.to_string(),
+                version,
+                service_type: service_type_for_port(port).to_string(),
+                banner: None,
+                confidence: 0.75,
+                vulnerabilities: Vec::new(),
+            };
+
+            for vulnerability in VulnerabilityCheck::check_version(&service_info) {
+                let finding = cve_finding(device.ip, port, service_name, &vulnerability);
+                if device.findings.iter().any(|existing| existing.id == finding.id) {
+                    continue;
+                }
+
+                eprintln!(
+                    "  {}:{} {} [{}] {}",
+                    device.ip, port, vulnerability.cve_id, finding.severity, finding.title
+                );
+                eprintln!("     Affected: {}", vulnerability.affected_versions);
+                eprintln!("     Fix: {}", vulnerability.remediation);
+
+                device.add_finding(finding);
+                total += 1;
+            }
+        }
+    }
+
+    total
 }
 
-fn cmd_report(scan_id: Option<String>, compare: Option<String>, format: &str, history: bool) -> Result<(), Box<dyn std::error::Error>> {
+/// Convert a service-crate vulnerability into a core finding.
+fn cve_finding(
+    ip: IpAddr,
+    port: u16,
+    service: &str,
+    vulnerability: &VulnerabilityFinding,
+) -> Finding {
+    Finding {
+        id: format!("cve-{}", vulnerability.cve_id),
+        title: format!("{} in {}", vulnerability.cve_id, service),
+        description: format!(
+            "{} Affected versions: {}.",
+            vulnerability.description, vulnerability.affected_versions
+        ),
+        // The services crate has five levels; core has four.
+        severity: match vulnerability.severity {
+            netgap_services::Severity::Critical => Severity::Critical,
+            netgap_services::Severity::High => Severity::High,
+            netgap_services::Severity::Medium => Severity::Medium,
+            netgap_services::Severity::Low | netgap_services::Severity::Info => Severity::Info,
+        },
+        ip,
+        port: Some(port),
+        service: Some(service.to_string()),
+        remediation: vulnerability.remediation.clone(),
+        confidence: vulnerability.confidence,
+    }
+}
+
+/// Service name used for vulnerability lookups.
+fn service_name_for_port(port: u16) -> Option<&'static str> {
+    match port {
+        21 => Some("FTP"),
+        22 => Some("OpenSSH"),
+        23 => Some("Telnet"),
+        80 | 8080 => Some("Apache"),
+        443 | 8443 => Some("Apache"),
+        3306 => Some("MySQL"),
+        5432 => Some("PostgreSQL"),
+        _ => None,
+    }
+}
+
+/// Service type used for vulnerability lookups.
+fn service_type_for_port(port: u16) -> &'static str {
+    match port {
+        21 => "ftp",
+        22 => "ssh",
+        23 => "telnet",
+        _ => "http",
+    }
+}
+
+fn cmd_report(
+    scan_id: Option<String>,
+    compare: Option<String>,
+    format: &str,
+    history: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     use netgap_storage::ScanStore;
 
-    let store = ScanStore::default()?;
+    let store = ScanStore::open_default()?;
 
     if history {
         println!("📋 Scan History\n");
@@ -517,8 +901,10 @@ fn cmd_report(scan_id: Option<String>, compare: Option<String>, format: &str, hi
             println!("  No scans found. Run 'netgap scan' to start scanning.");
         } else {
             for scan in scans {
-                println!("  {} - {} ({} devices, {} findings)", 
-                    scan.id, scan.started_at, scan.device_count, scan.finding_count);
+                println!(
+                    "  {} - {} ({} devices, {} findings)",
+                    scan.id, scan.started_at, scan.device_count, scan.finding_count
+                );
                 if scan.critical_count > 0 {
                     println!("    🔴 {} critical issues", scan.critical_count);
                 }
@@ -530,7 +916,7 @@ fn cmd_report(scan_id: Option<String>, compare: Option<String>, format: &str, hi
     if let (Some(id1), Some(id2)) = (scan_id.as_ref(), compare.as_ref()) {
         println!("🔄 Comparing scans {} → {}\n", id1, id2);
         let comparison = store.compare_scans(id1, id2)?;
-        
+
         println!("Scan 1: {} ({})", comparison.scan1_id, comparison.scan1_date);
         println!("Scan 2: {} ({})\n", comparison.scan2_id, comparison.scan2_date);
 
@@ -580,20 +966,18 @@ fn cmd_report(scan_id: Option<String>, compare: Option<String>, format: &str, hi
     };
 
     match format {
-        "markdown" => {
-            let md = store.export_markdown(&scan_to_report)?;
-            println!("{}", md);
-        }
-        "html" => {
-            let html = store.export_html(&scan_to_report)?;
-            println!("{}", html);
-        }
-        "csv" => {
-            let csv = store.export_csv(&scan_to_report)?;
-            println!("{}", csv);
-        }
-        _ => {
-            println!("❌ Format '{}' not yet supported for reports. Use: markdown, html, csv", format);
+        "table" => println!("{}", ReportFormatter::format_terminal(&store.load_scan(&scan_to_report)?)?),
+        "json" => println!("{}", ReportFormatter::format_json(&store.load_scan(&scan_to_report)?)?),
+        "summary" => println!("{}", ReportFormatter::format_summary(&store.load_scan(&scan_to_report)?)?),
+        "markdown" => println!("{}", store.export_markdown(&scan_to_report)?),
+        "html" => println!("{}", store.export_html(&scan_to_report)?),
+        "csv" => println!("{}", store.export_csv(&scan_to_report)?),
+        other => {
+            return Err(format!(
+                "unknown report format '{}'; expected table, json, summary, markdown, html or csv",
+                other
+            )
+            .into())
         }
     }
 
@@ -601,11 +985,20 @@ fn cmd_report(scan_id: Option<String>, compare: Option<String>, format: &str, hi
 }
 
 async fn cmd_watch(
-    interface: Option<String>,
-    target: Option<String>,
+    discovery_args: DiscoveryArgs,
     interval_secs: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Resolve once: re-detecting the interface every cycle would also make the
+    // scan target wander between cycles.
+    let plan = discovery_args.resolve(true)?;
+
     println!("👁️  Continuous Monitoring Mode");
+    println!(
+        "Interface: {} | Target: {} | Discovery: {}",
+        plan.interface.name,
+        plan.target,
+        plan.method.label()
+    );
     println!("Interval: {}s | Press Ctrl+C to stop\n", interval_secs);
 
     let mut last_history: Option<ScanHistory> = None;
@@ -615,17 +1008,7 @@ async fn cmd_watch(
         scan_count += 1;
         println!("📊 Scan #{} — {}", scan_count, Local::now().format("%H:%M:%S"));
 
-        // Run a standard scan without extra features for speed
-        let iface_name = interface.clone().unwrap_or_else(|| "eth0".to_string());
-        let target_cidr = target.clone().unwrap_or_else(|| "192.168.1.0/24".to_string());
-
-        let discovery_config = DiscoveryConfig {
-            interface_name: iface_name,
-            target_cidr,
-            timeout_ms: 1000,
-        };
-
-        match netgap_discover::ArpDiscovery::new(discovery_config).scan().await {
+        match discovery::run(&plan).await {
             Ok(mut devices) => {
                 // Port scanning
                 let port_config = PortScanConfig {
@@ -639,11 +1022,11 @@ async fn cmd_watch(
                 }
 
                 // Create scan result
-                let result = ScanResult {
+                let mut result = ScanResult {
                     started_at: Local::now().to_rfc3339(),
                     config: ScanConfig {
-                        interface: interface.clone().unwrap_or_default(),
-                        target: target.clone().unwrap_or_default(),
+                        interface: plan.interface.name.clone(),
+                        target: plan.target.clone(),
                         timeout_ms: 1500,
                         concurrency: 32,
                         discovery_only: false,
@@ -652,20 +1035,24 @@ async fn cmd_watch(
                     summary: FindingSummary::new(),
                 };
 
+                for device in &result.devices {
+                    for finding in &device.findings {
+                        result.summary.add_finding(finding.severity);
+                    }
+                }
+
                 // Create history snapshot
-                let current_history = ScanHistory::from_scan_result(
-                    format!("scan-{}", scan_count),
-                    &result,
-                );
+                let current_history =
+                    ScanHistory::from_scan_result(format!("scan-{}", scan_count), &result);
 
                 // Detect changes if we have previous history
                 if let Some(prev) = &last_history {
-                    let changes = ChangeDetection::detect_changes(&prev, &current_history);
-                    let prev_health = HealthScore::calculate(&prev);
+                    let changes = ChangeDetection::detect_changes(prev, &current_history);
+                    let prev_health = HealthScore::calculate(prev);
                     let curr_health = HealthScore::calculate(&current_history);
 
                     let health_drop = if curr_health.score < prev_health.score {
-                        Some((prev_health.score as i16 - curr_health.score as i16) as i16)
+                        Some(prev_health.score as i16 - curr_health.score as i16)
                     } else {
                         None
                     };
@@ -692,13 +1079,18 @@ async fn cmd_watch(
                         println!("  ✓ No changes detected");
                     }
 
+                    let trend = match curr_health.score.cmp(&prev_health.score) {
+                        std::cmp::Ordering::Greater => "↑",
+                        std::cmp::Ordering::Less => "↓",
+                        std::cmp::Ordering::Equal => "→",
+                    };
+
                     println!(
-                        "\nHealth Score: {}/100 {} ({}) → {}/100 {} ({})",
+                        "\nHealth Score: {}/100 ({}) {} {}/100 ({})",
                         prev_health.score,
-                        if curr_health.score >= prev_health.score { "↑" } else { "↓" },
                         prev_health.risk_level(),
+                        trend,
                         curr_health.score,
-                        if curr_health.score >= prev_health.score { "↑" } else { "↓" },
                         curr_health.risk_level(),
                     );
                 } else {
@@ -720,5 +1112,133 @@ async fn cmd_watch(
 
         // Sleep before next iteration
         tokio::time::sleep(Duration::from_secs(interval_secs)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn device_with_ports(ports: &[u16]) -> Device {
+        let mut device = Device::new("192.168.1.10".parse().expect("valid ip"));
+        for port in ports {
+            device.add_open_port(*port);
+        }
+        device
+    }
+
+    #[test]
+    fn test_service_lookup_helpers() {
+        assert_eq!(service_name_for_port(22), Some("OpenSSH"));
+        assert_eq!(service_name_for_port(23), Some("Telnet"));
+        assert_eq!(service_name_for_port(9999), None);
+        assert_eq!(service_type_for_port(21), "ftp");
+        assert_eq!(service_type_for_port(80), "http");
+    }
+
+    #[test]
+    fn test_cve_finding_maps_severity_into_core_levels() {
+        let ip: IpAddr = "192.168.1.10".parse().expect("valid ip");
+
+        for (service_severity, expected) in [
+            (netgap_services::Severity::Critical, Severity::Critical),
+            (netgap_services::Severity::High, Severity::High),
+            (netgap_services::Severity::Medium, Severity::Medium),
+            // Core has no `Low`; it must not be dropped or upgraded.
+            (netgap_services::Severity::Low, Severity::Info),
+            (netgap_services::Severity::Info, Severity::Info),
+        ] {
+            let vulnerability = VulnerabilityFinding {
+                cve_id: "CVE-2021-1234".to_string(),
+                severity: service_severity,
+                description: "A flaw.".to_string(),
+                affected_versions: "< 1.2.3".to_string(),
+                remediation: "Upgrade.".to_string(),
+                confidence: 0.8,
+            };
+
+            let finding = cve_finding(ip, 80, "Apache", &vulnerability);
+
+            assert_eq!(finding.severity, expected);
+            assert_eq!(finding.id, "cve-CVE-2021-1234");
+            assert_eq!(finding.port, Some(80));
+            assert_eq!(finding.service.as_deref(), Some("Apache"));
+            assert_eq!(finding.ip, ip);
+            assert!(finding.description.contains("< 1.2.3"));
+        }
+    }
+
+    /// Assessment findings must land on the device: anything kept only in a
+    /// `println!` never reaches the report, summary, trends or database.
+    #[test]
+    fn test_apply_assessment_attaches_findings_to_devices() {
+        let mut devices = vec![device_with_ports(&[23])];
+        let attached = apply_assessment(&mut devices, &[]);
+
+        assert!(attached > 0, "telnet exposure should be reported");
+        assert_eq!(devices[0].findings.len(), attached);
+        assert!(devices[0]
+            .findings
+            .iter()
+            .any(|finding| finding.severity == Severity::Critical));
+    }
+
+    #[test]
+    fn test_apply_assessment_does_not_duplicate_ports_already_reported() {
+        let mut devices = vec![device_with_ports(&[445])];
+
+        // Simulate the port scanner having already reported SMB exposure.
+        let ip = devices[0].ip;
+        devices[0].add_finding(Finding {
+            id: "open_port_445".to_string(),
+            title: "SMB exposed on port 445".to_string(),
+            description: "SMB is accessible.".to_string(),
+            severity: Severity::High,
+            ip,
+            port: Some(445),
+            service: Some("SMB".to_string()),
+            remediation: "Block SMB.".to_string(),
+            confidence: 1.0,
+        });
+
+        apply_assessment(&mut devices, &[]);
+
+        let smb_findings = devices[0]
+            .findings
+            .iter()
+            .filter(|finding| finding.port == Some(445))
+            .count();
+        assert_eq!(smb_findings, 1, "port 445 should be reported once");
+    }
+
+    #[test]
+    fn test_apply_assessment_adds_version_specific_cves() {
+        // An old Apache version with a banner-supplied version string.
+        let mut devices = vec![device_with_ports(&[80])];
+        let banners = vec![(
+            devices[0].ip,
+            BannerGrabResult {
+                ip: devices[0].ip.to_string(),
+                port: 80,
+                protocol: "HTTP".to_string(),
+                banner: "Apache/2.4.49".to_string(),
+                service_name: Some("Apache".to_string()),
+                version: Some("2.4.49".to_string()),
+                confidence: 0.9,
+            },
+        )];
+
+        apply_assessment(&mut devices, &banners);
+
+        let cve_ids: Vec<&str> = devices[0]
+            .findings
+            .iter()
+            .map(|finding| finding.id.as_str())
+            .filter(|id| id.starts_with("cve-"))
+            .collect();
+        assert!(
+            !cve_ids.is_empty(),
+            "a vulnerable Apache version should produce CVE findings"
+        );
     }
 }

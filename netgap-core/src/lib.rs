@@ -6,6 +6,67 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::net::IpAddr;
+use std::path::PathBuf;
+
+/// MAC address helpers.
+pub mod mac {
+    /// Whether a MAC is locally administered, which in practice means the
+    /// device randomized it for privacy — phones and laptops mostly.
+    ///
+    /// Such an address deliberately carries no vendor information, so an
+    /// unknown vendor for it says nothing about the device being foreign.
+    pub fn is_randomized_mac(mac: &str) -> bool {
+        let Some(first_octet) = mac.split(':').next() else {
+            return false;
+        };
+        let Ok(octet) = u8::from_str_radix(first_octet.trim(), 16) else {
+            return false;
+        };
+        // Bit 1 of the first octet is the locally-administered flag.
+        octet & 0b0000_0010 != 0
+    }
+}
+
+/// Filesystem locations used by netgap.
+///
+/// Centralised so every crate resolves the config directory the same way and so
+/// tests can redirect it with `NETGAP_CONFIG_DIR` instead of writing to `$HOME`.
+pub mod paths {
+    use super::PathBuf;
+
+    /// Resolve the netgap configuration directory.
+    ///
+    /// Order: `NETGAP_CONFIG_DIR`, then `XDG_CONFIG_HOME/netgap`, then
+    /// `~/.config/netgap` (or `%USERPROFILE%\.config\netgap` on Windows).
+    pub fn config_dir() -> Option<PathBuf> {
+        if let Ok(dir) = std::env::var("NETGAP_CONFIG_DIR") {
+            if !dir.trim().is_empty() {
+                return Some(PathBuf::from(dir));
+            }
+        }
+
+        if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+            if !xdg.trim().is_empty() {
+                return Some(PathBuf::from(xdg).join("netgap"));
+            }
+        }
+
+        home_dir().map(|home| home.join(".config").join("netgap"))
+    }
+
+    /// Path to the SQLite scan database.
+    pub fn scans_db_path() -> Option<PathBuf> {
+        config_dir().map(|dir| dir.join("scans.db"))
+    }
+
+    fn home_dir() -> Option<PathBuf> {
+        std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .ok()
+            .filter(|home| !home.trim().is_empty())
+            .map(PathBuf::from)
+    }
+}
 
 /// Severity level of a finding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -94,8 +155,14 @@ pub struct Device {
     pub os: OsType,
     /// Confidence in OS guess (0.0 to 1.0).
     pub os_confidence: f32,
-    /// Hostname (if available via mDNS/DNS).
+    /// Hostname (if available via reverse DNS).
     pub hostname: Option<String>,
+    /// Best-effort device classification (router, printer, phone, ...).
+    ///
+    /// A heuristic guess, never a certainty: MAC randomization and the size of
+    /// the OUI database both limit what can be inferred.
+    #[serde(default)]
+    pub device_type: Option<String>,
     /// Open ports discovered on this device.
     pub open_ports: Vec<u16>,
     /// Findings related to this device.
@@ -112,6 +179,7 @@ impl Device {
             os: OsType::Unknown,
             os_confidence: 0.0,
             hostname: None,
+            device_type: None,
             open_ports: Vec::new(),
             findings: Vec::new(),
         }
@@ -183,6 +251,12 @@ pub struct FindingSummary {
     pub high: usize,
     pub medium: usize,
     pub info: usize,
+}
+
+impl Default for FindingSummary {
+    fn default() -> Self {
+        FindingSummary::new()
+    }
 }
 
 impl FindingSummary {

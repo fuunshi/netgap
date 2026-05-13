@@ -4,8 +4,8 @@
 //! It handles concurrent connections with tight timeouts and service detection.
 
 use netgap_core::{Device, Finding, Severity};
-use anyhow::{anyhow, Result};
-use std::net::{IpAddr, SocketAddr, Ipv4Addr};
+use anyhow::Result;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::UnboundedSender;
@@ -72,6 +72,12 @@ pub struct PortScanner {
     config: ScanConfig,
 }
 
+impl Default for PortScanner {
+    fn default() -> Self {
+        PortScanner::with_default_config()
+    }
+}
+
 impl PortScanner {
     /// Create a new port scanner with custom configuration.
     pub fn new(config: ScanConfig) -> Self {
@@ -79,7 +85,7 @@ impl PortScanner {
     }
 
     /// Create with default configuration (top 20 ports, 2s timeout, 32 concurrent).
-    pub fn default() -> Self {
+    pub fn with_default_config() -> Self {
         PortScanner::new(ScanConfig::default())
     }
 
@@ -141,18 +147,18 @@ impl PortScanner {
     }
 
     /// Scan multiple devices.
-    pub async fn scan_devices(&self, devices: &mut Vec<Device>) -> Result<()> {
+    pub async fn scan_devices(&self, devices: &mut [Device]) -> Result<()> {
         self.scan_devices_with_progress(devices, None).await
     }
 
     /// Scan multiple devices while emitting progress events.
     pub async fn scan_devices_with_progress(
         &self,
-        devices: &mut Vec<Device>,
+        devices: &mut [Device],
         progress: Option<UnboundedSender<PortScanEvent>>,
     ) -> Result<()> {
         for device in devices.iter_mut() {
-            println!("🔍 Scanning {} for open ports...", device.ip);
+            eprintln!("🔍 Scanning {} for open ports...", device.ip);
             let open_ports = self
                 .scan_ip_with_progress(device.ip, progress.clone())
                 .await?;
@@ -195,9 +201,9 @@ impl PortScanner {
             }
 
             if device.open_ports.is_empty() {
-                println!("  ✓ No dangerous open ports found");
+                eprintln!("  ✓ No dangerous open ports found");
             } else {
-                println!("  ⚠ Found {} open port(s)", device.open_ports.len());
+                eprintln!("  ⚠ Found {} open port(s)", device.open_ports.len());
             }
         }
 

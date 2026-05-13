@@ -5,9 +5,11 @@
 //! - JSON for machine-readable output and piping
 //! - Human-readable summary
 
-use netgap_core::{Device, Finding, Severity, ScanResult};
+use netgap_core::{Severity, ScanResult};
+
+pub mod discovery;
+pub use discovery::{format_discovery, DiscoveryContext};
 use anyhow::Result;
-use std::io;
 
 /// Report formatter with multiple output options.
 pub struct ReportFormatter;
@@ -22,7 +24,7 @@ impl ReportFormatter {
         output.push_str("╚════════════════════════════════════════════════════════════════════╝\n\n");
 
         // Summary statistics
-        output.push_str(&format!("📊 Scan Summary\n"));
+        output.push_str("📊 Scan Summary\n");
         output.push_str(&format!("  Started:  {}\n", result.started_at));
         output.push_str(&format!("  Target:   {}\n", result.config.target));
         output.push_str(&format!("  Interface: {}\n\n", result.config.interface));
@@ -43,9 +45,9 @@ impl ReportFormatter {
         }
 
         for device in &result.devices {
-            output.push_str(&format!(
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            ));
+            output.push_str(
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n",
+            );
             output.push_str(&format!("Device: {}\n", device.ip));
 
             if let Some(mac) = &device.mac {
@@ -54,6 +56,14 @@ impl ReportFormatter {
 
             if let Some(vendor) = &device.vendor {
                 output.push_str(&format!("  Vendor: {}\n", vendor));
+            }
+
+            if let Some(device_type) = &device.device_type {
+                output.push_str(&format!("  Type: {}\n", device_type));
+            }
+
+            if let Some(hostname) = &device.hostname {
+                output.push_str(&format!("  Name: {}\n", hostname));
             }
 
             if !device.open_ports.is_empty() {
@@ -68,7 +78,7 @@ impl ReportFormatter {
                 ));
             }
 
-            output.push_str("\n");
+            output.push('\n');
 
             if device.findings.is_empty() {
                 output.push_str("  ✓ No security findings\n");
@@ -94,7 +104,7 @@ impl ReportFormatter {
 
                     output.push_str(&format!("       {}\n", finding.description));
                     output.push_str(&format!("       ⚒ Fix: {}\n", finding.remediation));
-                    output.push_str("\n");
+                    output.push('\n');
                 }
             }
         }
@@ -115,8 +125,8 @@ impl ReportFormatter {
     pub fn format_summary(result: &ScanResult) -> Result<String> {
         let mut output = String::new();
 
-        output.push_str(&format!("Netgap Scan Results\n"));
-        output.push_str(&format!("===================\n\n"));
+        output.push_str("Netgap Scan Results\n");
+        output.push_str("===================\n\n");
 
         output.push_str(&format!("Target: {}\n", result.config.target));
         output.push_str(&format!("Devices scanned: {}\n", result.devices.len()));
@@ -147,12 +157,11 @@ impl ReportFormatter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use netgap_core::{Finding, ScanConfig, FindingSummary};
-    use std::net::IpAddr;
+    use netgap_core::{ScanConfig, FindingSummary};
 
     #[test]
     fn test_format_terminal_empty() {
-        let mut result = ScanResult {
+        let result = ScanResult {
             started_at: "2024-05-04T00:00:00Z".to_string(),
             config: ScanConfig {
                 interface: "eth0".to_string(),

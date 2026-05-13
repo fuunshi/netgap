@@ -141,7 +141,7 @@ impl ChangeDetection {
         }
 
         // Detect offline devices
-        for (ip, _) in &previous.devices_by_ip {
+        for ip in previous.devices_by_ip.keys() {
             if !current.devices_by_ip.contains_key(ip) {
                 changes.push(NetworkChange::DeviceGone { ip: ip.clone() });
             }

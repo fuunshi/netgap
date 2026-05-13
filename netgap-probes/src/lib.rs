@@ -160,7 +160,7 @@ pub async fn probe_telnet(ip: IpAddr, port: u16) -> Result<ProbeResult> {
 }
 
 /// SNMP service probe (sends GetRequest for system description)
-pub async fn probe_snmp(ip: IpAddr, port: u16) -> Result<ProbeResult> {
+pub async fn probe_snmp(ip: IpAddr, _port: u16) -> Result<ProbeResult> {
     // SNMP uses UDP, skip for now (TCP-focused in Phase 2)
     Ok(ProbeResult {
         service: "SNMP".to_string(),

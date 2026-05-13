@@ -47,7 +47,7 @@ socket2 = "0.5"
 thiserror = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "sync", "io-util"] }
 toml = "0.8"
-
-[workspace.dev-dependencies]
+# Test-only helpers. Declared here so members can opt in with `workspace = true`;
+# this key is a catalog, so nothing is built unless a crate asks for it.
 assert_cmd = "2"
 predicates = "3"

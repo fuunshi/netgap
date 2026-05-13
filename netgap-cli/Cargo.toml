@@ -20,6 +20,7 @@ netgap-services = { path = "../netgap-services" }
 netgap-trends = { path = "../netgap-trends" }
 netgap-report = { path = "../netgap-report" }
 netgap-storage = { path = "../netgap-storage" }
+netgap-assess = { path = "../netgap-assess" }
 clap.workspace = true
 tokio.workspace = true
 anyhow.workspace = true

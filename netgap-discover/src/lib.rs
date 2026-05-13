@@ -1,19 +1,33 @@
 //! Network device discovery engine.
 //!
-//! This module performs ARP-based host discovery on the selected LAN subnet.
-//! It sends broadcast ARP requests and records any replies, so it discovers
-//! peers on the network instead of only reporting the local host.
+//! Two discovery strategies are provided:
+//!
+//! * [`ArpDiscovery`] — an ARP sweep that finds peers directly on the LAN. It
+//!   needs a raw socket (root or `CAP_NET_RAW`) but reaches hosts that never
+//!   answer TCP.
+//! * [`TcpSweeper`] — an unprivileged fallback that probes the subnet with TCP
+//!   connects and enriches results from the kernel neighbour table.
+//!
+//! Use [`privilege::has_cap_net_raw`] to decide which to run.
 
 use anyhow::{anyhow, Result};
-use netgap_core::Device;
-use pnet::datalink::{self, Channel::Ethernet, Config};
-use pnet::packet::arp::{ArpHardwareTypes, ArpOperations, ArpPacket, MutableArpPacket};
-use pnet::packet::ethernet::{EtherTypes, EthernetPacket, MutableEthernetPacket};
-use pnet::packet::{MutablePacket, Packet};
-use pnet::util::MacAddr;
-use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr};
-use std::time::{Duration, Instant};
+use std::net::Ipv4Addr;
+
+pub mod arp;
+pub mod names;
+pub mod neighbor;
+pub mod privilege;
+pub mod tcp_sweep;
+
+pub use arp::ArpDiscovery;
+pub use names::resolve_hostnames;
+pub use tcp_sweep::{TcpSweepConfig, TcpSweeper};
+
+/// Default ceiling on how many hosts a single scan may target.
+///
+/// A `/16` holds 65k addresses; sweeping one by accident (a docker bridge, a
+/// mistyped netmask) would flood the network for minutes.
+pub const DEFAULT_MAX_HOSTS: usize = 4096;
 
 /// Configuration for ARP discovery.
 #[derive(Debug, Clone)]
@@ -24,123 +38,79 @@ pub struct DiscoveryConfig {
     pub target_cidr: String,
     /// Timeout per ARP request in milliseconds.
     pub timeout_ms: u64,
+    /// Maximum number of hosts this scan may target.
+    pub max_hosts: usize,
+    /// How many times to sweep the network. More passes reach hosts that miss
+    /// the first broadcast (sleeping Wi-Fi stations, congested links).
+    pub retries: u32,
 }
 
-/// Represents an ARP discovery session.
-pub struct ArpDiscovery {
-    config: DiscoveryConfig,
-}
-
-impl ArpDiscovery {
-    /// Create a new ARP discovery session.
-    pub fn new(config: DiscoveryConfig) -> Self {
-        ArpDiscovery { config }
+impl Default for DiscoveryConfig {
+    fn default() -> Self {
+        DiscoveryConfig {
+            interface_name: String::new(),
+            target_cidr: String::new(),
+            timeout_ms: 1000,
+            max_hosts: DEFAULT_MAX_HOSTS,
+            retries: 2,
+        }
     }
+}
 
-    /// Run ARP sweep on the configured network.
-    /// Returns list of discovered devices with MAC addresses.
-    pub async fn scan(&self) -> Result<Vec<Device>> {
-        let interface = datalink::interfaces()
-            .into_iter()
-            .find(|iface| iface.name == self.config.interface_name)
-            .ok_or_else(|| anyhow!("Interface '{}' not found", self.config.interface_name))?;
+/// Errors a caller may need to branch on.
+#[derive(Debug, thiserror::Error)]
+pub enum DiscoveryError {
+    /// Raw ARP discovery needs privileges this process does not have.
+    #[error("raw ARP discovery requires root or CAP_NET_RAW")]
+    PrivilegeRequired,
+    /// The target subnet is larger than the configured host limit.
+    #[error(
+        "target {target} contains {hosts} hosts, which exceeds the limit of {limit}; \
+         narrow --target or raise --max-hosts"
+    )]
+    TargetTooLarge {
+        target: String,
+        hosts: usize,
+        limit: usize,
+    },
+    /// The named interface does not exist.
+    #[error("interface '{0}' not found")]
+    InterfaceNotFound(String),
+}
 
-        let (network, prefix) = parse_cidr(&self.config.target_cidr)?;
-        let target_hosts = generate_ips(network, prefix);
+/// Whether an error chain indicates a raw-socket permission failure.
+///
+/// Lets the CLI offer the unprivileged fallback instead of string-matching
+/// "Operation not permitted".
+pub fn is_privilege_error(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| matches!(cause.downcast_ref::<DiscoveryError>(), Some(DiscoveryError::PrivilegeRequired)))
+}
 
-        let source_ip = interface
-            .ips
-            .iter()
-            .find_map(|ip| match ip {
-                pnet::ipnetwork::IpNetwork::V4(ipv4) => Some(ipv4.ip()),
-                _ => None,
-            })
-            .ok_or_else(|| anyhow!("No IPv4 address on interface '{}'", self.config.interface_name))?;
-
-        let source_mac = interface
-            .mac
-            .ok_or_else(|| anyhow!("No MAC address on interface '{}'", self.config.interface_name))?;
-
-        println!(
-            "🔍 ARP discovery starting on {} (target: {})",
-            self.config.interface_name, self.config.target_cidr
-        );
-        println!("   Will scan {} hosts...", target_hosts.len());
-
-        let mut config = Config::default();
-        config.read_timeout = Some(Duration::from_millis(self.config.timeout_ms));
-
-        let (mut tx, mut rx) = match datalink::channel(&interface, config)? {
-            Ethernet(tx, rx) => (tx, rx),
-            _ => return Err(anyhow!("unsupported datalink channel")),
-        };
-
-        for target_ip in &target_hosts {
-            let mut frame = [0u8; 42];
-            let mut ethernet = MutableEthernetPacket::new(&mut frame).unwrap();
-            ethernet.set_destination(MacAddr::broadcast());
-            ethernet.set_source(source_mac);
-            ethernet.set_ethertype(EtherTypes::Arp);
-
-            let mut arp = MutableArpPacket::new(ethernet.payload_mut()).unwrap();
-            arp.set_hardware_type(ArpHardwareTypes::Ethernet);
-            arp.set_protocol_type(EtherTypes::Ipv4);
-            arp.set_hw_addr_len(6);
-            arp.set_proto_addr_len(4);
-            arp.set_operation(ArpOperations::Request);
-            arp.set_sender_hw_addr(source_mac);
-            arp.set_sender_proto_addr(source_ip);
-            arp.set_target_hw_addr(MacAddr::zero());
-            arp.set_target_proto_addr(*target_ip);
-
-            tx.send_to(&frame, None)
-                .ok_or_else(|| anyhow!("failed to send ARP request"))??;
-        }
-
-        let mut discovered: HashMap<Ipv4Addr, Device> = HashMap::new();
-        let deadline = Instant::now() + Duration::from_millis(self.config.timeout_ms);
-
-        while Instant::now() < deadline {
-            match rx.next() {
-                Ok(packet) => {
-                    if let Some(ethernet) = EthernetPacket::new(packet) {
-                        if ethernet.get_ethertype() != EtherTypes::Arp {
-                            continue;
-                        }
-
-                        if let Some(arp) = ArpPacket::new(ethernet.payload()) {
-                            if arp.get_operation() != ArpOperations::Reply {
-                                continue;
-                            }
-
-                            let ip = arp.get_sender_proto_addr();
-                            let mut device = Device::new(IpAddr::V4(ip));
-                            device.mac = Some(arp.get_sender_hw_addr().to_string());
-                            discovered.insert(ip, device);
-                        }
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-
-        let mut results: Vec<Device> = discovered.into_values().collect();
-        results.sort_by_key(|device| device.ip.to_string());
-
-        println!("✓ Discovery complete: found {} host(s)", results.len());
-        Ok(results)
+/// Map a `datalink::channel` failure to a typed privilege error when the
+/// kernel refused the raw socket.
+pub(crate) fn classify_channel_error(error: std::io::Error) -> anyhow::Error {
+    if error.kind() == std::io::ErrorKind::PermissionDenied {
+        DiscoveryError::PrivilegeRequired.into()
+    } else {
+        error.into()
     }
 }
 
 /// Parse CIDR notation (e.g., "192.168.1.0/24") into network and prefix.
-fn parse_cidr(cidr: &str) -> Result<(Ipv4Addr, u32)> {
+pub fn parse_cidr(cidr: &str) -> Result<(Ipv4Addr, u8)> {
     let parts: Vec<&str> = cidr.split('/').collect();
     if parts.len() != 2 {
         return Err(anyhow!("Invalid CIDR format: expected 'X.X.X.X/prefix'"));
     }
 
-    let network: Ipv4Addr = parts[0].parse()?;
-    let prefix: u32 = parts[1].parse()?;
+    let network: Ipv4Addr = parts[0]
+        .parse()
+        .map_err(|_| anyhow!("Invalid IPv4 address syntax: '{}'", parts[0]))?;
+    let prefix: u8 = parts[1]
+        .parse()
+        .map_err(|_| anyhow!("Invalid prefix length: '{}'", parts[1]))?;
 
     if prefix > 32 {
         return Err(anyhow!("Prefix must be between 0 and 32"));
@@ -149,8 +119,11 @@ fn parse_cidr(cidr: &str) -> Result<(Ipv4Addr, u32)> {
     Ok((network, prefix))
 }
 
-/// Generate all IP addresses in a network given CIDR.
-fn generate_ips(network: Ipv4Addr, prefix: u32) -> Vec<Ipv4Addr> {
+/// Generate the host addresses in a network, bounded by `limit`.
+///
+/// `/31` and `/32` networks have no network/broadcast addresses to skip, so
+/// every address is a host (point-to-point links and single hosts).
+pub fn hosts_in_cidr(network: Ipv4Addr, prefix: u8, limit: usize) -> Result<Vec<Ipv4Addr>> {
     let mask = if prefix == 0 {
         0u32
     } else {
@@ -159,18 +132,27 @@ fn generate_ips(network: Ipv4Addr, prefix: u32) -> Vec<Ipv4Addr> {
 
     let start = u32::from(network) & mask;
     let end = start | (!mask);
-    let mut ips = Vec::new();
+    let total = (end - start) as usize + 1;
 
-    if end <= start + 1 {
-        return ips;
+    // A /31 is a point-to-point link and a /32 is one host: all addresses count.
+    let host_count = if prefix >= 31 { total } else { total.saturating_sub(2) };
+
+    if host_count > limit {
+        return Err(DiscoveryError::TargetTooLarge {
+            target: format!("{}/{}", Ipv4Addr::from(start), prefix),
+            hosts: host_count,
+            limit,
+        }
+        .into());
     }
 
-    // Skip network address and broadcast
-    for i in (start + 1)..end {
-        ips.push(Ipv4Addr::from(i));
-    }
+    let ips = if prefix >= 31 {
+        (start..=end).map(Ipv4Addr::from).collect()
+    } else {
+        ((start + 1)..end).map(Ipv4Addr::from).collect()
+    };
 
-    ips
+    Ok(ips)
 }
 
 #[cfg(test)]
@@ -190,20 +172,46 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_ips_24_subnet() {
-        let ips = generate_ips(Ipv4Addr::new(192, 168, 1, 0), 24);
-        // Should have 254 hosts (skip .0 and .255)
+    fn test_parse_cidr_rejects_truncated_octet() {
+        // Regression: auto-detection used to emit "127.0.0/24".
+        let error = parse_cidr("127.0.0/24").expect_err("should reject");
+        assert!(error.to_string().contains("Invalid IPv4 address syntax"));
+    }
+
+    #[test]
+    fn test_hosts_in_cidr_24_subnet() {
+        let ips = hosts_in_cidr(Ipv4Addr::new(192, 168, 1, 0), 24, DEFAULT_MAX_HOSTS)
+            .expect("should generate");
         assert_eq!(ips.len(), 254);
         assert_eq!(ips[0], Ipv4Addr::new(192, 168, 1, 1));
         assert_eq!(ips[253], Ipv4Addr::new(192, 168, 1, 254));
     }
 
     #[test]
-    fn test_generate_ips_30_subnet() {
-        let ips = generate_ips(Ipv4Addr::new(10, 0, 0, 0), 30);
-        // /30 has 4 addresses total, 2 usable (skip .0 and .3)
+    fn test_hosts_in_cidr_30_subnet() {
+        let ips = hosts_in_cidr(Ipv4Addr::new(10, 0, 0, 0), 30, DEFAULT_MAX_HOSTS)
+            .expect("should generate");
         assert_eq!(ips.len(), 2);
         assert_eq!(ips[0], Ipv4Addr::new(10, 0, 0, 1));
         assert_eq!(ips[1], Ipv4Addr::new(10, 0, 0, 2));
+    }
+
+    #[test]
+    fn test_hosts_in_cidr_31_and_32() {
+        let point_to_point =
+            hosts_in_cidr(Ipv4Addr::new(10, 0, 0, 0), 31, DEFAULT_MAX_HOSTS).expect("should generate");
+        assert_eq!(point_to_point.len(), 2);
+
+        let single = hosts_in_cidr(Ipv4Addr::new(10, 0, 0, 7), 32, DEFAULT_MAX_HOSTS)
+            .expect("should generate");
+        assert_eq!(single, vec![Ipv4Addr::new(10, 0, 0, 7)]);
+    }
+
+    #[test]
+    fn test_hosts_in_cidr_enforces_limit() {
+        let error = hosts_in_cidr(Ipv4Addr::new(172, 17, 0, 0), 16, DEFAULT_MAX_HOSTS)
+            .expect_err("should refuse an oversized target");
+        assert!(!is_privilege_error(&error));
+        assert!(error.to_string().contains("exceeds the limit"));
     }
 }

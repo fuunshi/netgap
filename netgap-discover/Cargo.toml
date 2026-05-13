@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 netgap-core = { path = "../netgap-core" }
+dns-lookup.workspace = true
 pnet.workspace = true
 pnet_datalink.workspace = true
 pnet_packet.workspace = true

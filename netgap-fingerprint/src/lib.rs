@@ -14,6 +14,182 @@ use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+/// Network positions that identify a device without guessing.
+#[derive(Debug, Clone, Default)]
+pub struct ClassifyContext {
+    /// The network's default gateway, if known.
+    pub gateway: Option<IpAddr>,
+    /// The address of the machine running the scan.
+    pub local: Option<IpAddr>,
+}
+
+/// A best-effort device classification.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeviceClassification {
+    /// Human-readable label, e.g. "Router / gateway".
+    pub label: String,
+    /// How much to trust the label (0.0-1.0).
+    pub confidence: f32,
+}
+
+impl DeviceClassification {
+    /// A label the caller should present as a guess rather than a fact.
+    pub fn is_guess(&self) -> bool {
+        self.confidence < 0.9
+    }
+}
+
+/// Whether a MAC was randomized by the device for privacy.
+pub use netgap_core::mac::is_randomized_mac;
+
+/// Classify a device from its network position, services, MAC and vendor.
+///
+/// Signals are applied most-reliable first: position and open ports are
+/// observed facts, vendor and MAC randomization are inferences, and the result
+/// says which it is via [`DeviceClassification::confidence`].
+pub fn classify_device(device: &Device, context: &ClassifyContext) -> DeviceClassification {
+    // Positions are facts.
+    if context.local == Some(device.ip) {
+        return DeviceClassification {
+            label: "This device".to_string(),
+            confidence: 1.0,
+        };
+    }
+    if context.gateway == Some(device.ip) {
+        return DeviceClassification {
+            label: "Router / gateway".to_string(),
+            confidence: 1.0,
+        };
+    }
+
+    // Open ports are observed facts about what the host offers.
+    if let Some(classification) = classify_by_ports(&device.open_ports) {
+        return classification;
+    }
+
+    // Vendor OUI, when the vendor is in the database at all.
+    if let Some(label) = device.vendor.as_deref().and_then(classify_vendor) {
+        return DeviceClassification {
+            label: label.to_string(),
+            confidence: 0.5,
+        };
+    }
+
+    // Hostname often names the device class outright.
+    if let Some(label) = device.hostname.as_deref().and_then(classify_hostname) {
+        return DeviceClassification {
+            label: label.to_string(),
+            confidence: 0.4,
+        };
+    }
+
+    if device.mac.as_deref().is_some_and(is_randomized_mac) {
+        return DeviceClassification {
+            label: "Phone / laptop (private MAC)".to_string(),
+            confidence: 0.4,
+        };
+    }
+
+    DeviceClassification {
+        label: "Unknown device".to_string(),
+        confidence: 0.1,
+    }
+}
+
+/// Classify from the services a host exposes.
+fn classify_by_ports(ports: &[u16]) -> Option<DeviceClassification> {
+    if ports.is_empty() {
+        return None;
+    }
+
+    let has = |port: u16| ports.contains(&port);
+    let label = if has(9100) || has(631) || has(515) || has(5357) {
+        "Printer"
+    } else if has(554) || has(8554) {
+        "IP camera"
+    } else if has(2049) || has(548) || has(5000) {
+        "NAS / file server"
+    } else {
+        match Fingerprinter::guess_device_type(ports) {
+            "Unknown Device" => return None,
+            other => other,
+        }
+    };
+
+    Some(DeviceClassification {
+        label: label.to_string(),
+        confidence: 0.8,
+    })
+}
+
+/// Map a vendor name to a device class.
+fn classify_vendor(vendor: &str) -> Option<&'static str> {
+    let vendor = vendor.to_ascii_lowercase();
+
+    const ROUTERS: &[&str] = &["cisco", "netgear", "tp-link", "d-link", "asus", "avm", "ubiquiti", "mikrotik", "aruba", "juniper"];
+    const PRINTERS: &[&str] = &["canon", "epson", "brother", "xerox", "lexmark", "ricoh", "kyocera"];
+    const COMPUTERS: &[&str] = &["dell", "lenovo", "supermicro", "intel", "realtek", "microsoft", "oracle", "qemu", "vmware"];
+    const IOT: &[&str] = &["espressif", "tuya", "shelly", "sonoff", "raspberry"];
+    const SMART: &[&str] = &["amazon", "roku", "sonos", "nest"];
+
+    if ROUTERS.iter().any(|needle| vendor.contains(needle)) {
+        return Some("Router / access point");
+    }
+    if PRINTERS.iter().any(|needle| vendor.contains(needle)) {
+        return Some("Printer");
+    }
+    if COMPUTERS.iter().any(|needle| vendor.contains(needle)) {
+        return Some("Computer");
+    }
+    if IOT.iter().any(|needle| vendor.contains(needle)) {
+        return Some("IoT device");
+    }
+    if SMART.iter().any(|needle| vendor.contains(needle)) {
+        return Some("Smart home device");
+    }
+    if vendor.contains("apple") || vendor.contains("samsung") || vendor.contains("google") {
+        return Some("Phone / tablet / computer");
+    }
+    if vendor.contains("docker") || vendor.contains("iana") || vendor.contains("virtualbox") {
+        return Some("Virtual interface");
+    }
+
+    None
+}
+
+/// Classify from a hostname's conventional prefixes.
+fn classify_hostname(hostname: &str) -> Option<&'static str> {
+    let name = hostname.to_ascii_lowercase();
+
+    const PATTERNS: &[(&str, &str)] = &[
+        ("iphone", "Phone"),
+        ("ipad", "Tablet"),
+        ("android", "Phone / tablet"),
+        ("galaxy", "Phone / tablet"),
+        ("pixel", "Phone"),
+        ("macbook", "Laptop"),
+        ("imac", "Desktop"),
+        ("laptop", "Laptop"),
+        ("desktop", "Desktop"),
+        ("printer", "Printer"),
+        ("hp-", "Printer"),
+        ("cam", "IP camera"),
+        ("tv", "Smart TV"),
+        ("chromecast", "Media device"),
+        ("router", "Router / gateway"),
+        ("gateway", "Router / gateway"),
+        ("nas", "NAS / file server"),
+        ("server", "Server"),
+        ("raspberry", "Single-board computer"),
+        ("esp", "IoT device"),
+    ];
+
+    PATTERNS
+        .iter()
+        .find(|(needle, _)| name.contains(needle))
+        .map(|(_, label)| *label)
+}
+
 /// Fingerprinter for device OS and vendor identification.
 pub struct Fingerprinter {
     oui_database: HashMap<String, String>,
@@ -109,10 +285,12 @@ impl Fingerprinter {
             }
         }
 
-        // For now, TTL detection would require ICMP echo, which we'll implement in a follow-up
-        // Here we just set it to Unknown with low confidence
-        device.os = OsType::Unknown;
-        device.os_confidence = 0.0;
+        // TTL-based OS detection needs an ICMP echo, which is a follow-up.
+        // Only record "unknown" when nothing better has been established —
+        // overwriting a real guess here would discard it.
+        if device.os == OsType::Unknown {
+            device.os_confidence = 0.0;
+        }
     }
 
     /// Extract HTTP server header to identify service version.
@@ -423,6 +601,101 @@ mod tests {
         let ports = vec![22, 445, 139];
         let device_type = Fingerprinter::guess_device_type(&ports);
         assert_eq!(device_type, "Network Attached Storage (NAS)");
+    }
+
+    #[test]
+    fn test_is_randomized_mac() {
+        // Locally administered bit set: privacy addresses seen on real LANs.
+        for mac in ["A2:2D:98:D1:F6:8F", "fa:b6:9b:92:72:8d", "4A:6A:DA:CF:4A:B5", "EE:5F:71:AA:ED:D0"] {
+            assert!(is_randomized_mac(mac), "{mac} should be randomized");
+        }
+        // Globally unique, vendor-assigned.
+        for mac in ["C4:B2:5B:0A:03:26", "90:61:0C:A3:12:94", "DC:46:28:56:3B:9B"] {
+            assert!(!is_randomized_mac(mac), "{mac} should not be randomized");
+        }
+        assert!(!is_randomized_mac("nonsense"));
+    }
+
+    fn device(ip: &str, mac: Option<&str>, ports: &[u16]) -> Device {
+        let mut device = Device::new(ip.parse().expect("valid ip"));
+        device.mac = mac.map(str::to_string);
+        device.open_ports = ports.to_vec();
+        device
+    }
+
+    #[test]
+    fn test_classify_network_position_is_certain() {
+        let context = ClassifyContext {
+            gateway: Some("192.168.1.1".parse().unwrap()),
+            local: Some("192.168.1.50".parse().unwrap()),
+        };
+
+        let gateway = classify_device(&device("192.168.1.1", None, &[]), &context);
+        assert_eq!(gateway.label, "Router / gateway");
+        assert_eq!(gateway.confidence, 1.0);
+        assert!(!gateway.is_guess());
+
+        let local = classify_device(&device("192.168.1.50", None, &[]), &context);
+        assert_eq!(local.label, "This device");
+        assert_eq!(local.confidence, 1.0);
+    }
+
+    #[test]
+    fn test_classify_by_ports() {
+        let context = ClassifyContext::default();
+
+        let printer = classify_device(&device("192.168.1.20", None, &[9100, 631]), &context);
+        assert_eq!(printer.label, "Printer");
+
+        let camera = classify_device(&device("192.168.1.21", None, &[554]), &context);
+        assert_eq!(camera.label, "IP camera");
+
+        let nas = classify_device(&device("192.168.1.22", None, &[2049, 445]), &context);
+        assert_eq!(nas.label, "NAS / file server");
+
+        let windows = classify_device(&device("192.168.1.23", None, &[3389, 445]), &context);
+        assert_eq!(windows.label, "Windows Workstation");
+    }
+
+    #[test]
+    fn test_classify_falls_back_to_randomized_mac() {
+        let context = ClassifyContext::default();
+        // No ports, no vendor, no name: the private MAC is the only signal.
+        let classification =
+            classify_device(&device("192.168.1.30", Some("A2:2D:98:D1:F6:8F"), &[]), &context);
+        assert_eq!(classification.label, "Phone / laptop (private MAC)");
+        assert!(classification.is_guess());
+    }
+
+    #[test]
+    fn test_classify_unknown_device() {
+        let context = ClassifyContext::default();
+        let classification =
+            classify_device(&device("192.168.1.40", Some("C4:B2:5B:0A:03:26"), &[]), &context);
+        assert_eq!(classification.label, "Unknown device");
+        assert!(classification.is_guess());
+    }
+
+    #[test]
+    fn test_classify_from_hostname() {
+        let context = ClassifyContext::default();
+        let mut device = device("192.168.1.41", Some("C4:B2:5B:0A:03:26"), &[]);
+        device.hostname = Some("android-7f3a".to_string());
+        assert_eq!(classify_device(&device, &context).label, "Phone / tablet");
+    }
+
+    #[test]
+    fn test_fingerprint_device_preserves_detected_os() {
+        let fingerprinter = Fingerprinter::new();
+        let mut device = Device::new("192.168.1.1".parse().expect("valid ip"));
+        device.mac = Some("00:11:22:33:44:55".to_string());
+        device.os = OsType::Linux;
+        device.os_confidence = 0.8;
+
+        fingerprinter.fingerprint_device(&mut device);
+
+        assert_eq!(device.os, OsType::Linux);
+        assert_eq!(device.os_confidence, 0.8);
     }
 
     #[test]

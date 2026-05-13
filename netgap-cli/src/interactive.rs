@@ -1,3 +1,4 @@
+use crate::discovery::{self, DiscoveryPlan};
 use anyhow::Result;
 use crossterm::{
     cursor,
@@ -6,8 +7,6 @@ use crossterm::{
     terminal::{self, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use netgap_core::Device;
-use netgap_discover::{ArpDiscovery, DiscoveryConfig};
-use netgap_interfaces::{get_interface_auto, get_interface_cidr};
 use netgap_scan::{PortScanEvent, ScanConfig as PortScanConfig, PortScanner, TOP_DANGEROUS_PORTS};
 use std::io::{stdout, Write};
 use std::time::Duration;
@@ -55,26 +54,11 @@ impl HostState {
     }
 }
 
-pub async fn run(
-    interface_name: Option<String>,
-    target_cidr: Option<String>,
-    quick: bool,
-) -> Result<Vec<Device>> {
-    let iface_name = interface_name.unwrap_or_else(|| {
-        get_interface_auto().unwrap_or_else(|_| "eth0".to_string())
-    });
-    let resolved_target = target_cidr.unwrap_or_else(|| {
-        get_interface_cidr(&iface_name).unwrap_or_else(|_| "192.168.1.0/24".to_string())
-    });
+pub async fn run(plan: &DiscoveryPlan, quick: bool) -> Result<Vec<Device>> {
+    let iface_name = plan.interface.name.clone();
+    let resolved_target = plan.target.clone();
 
-    let discovery_config = DiscoveryConfig {
-        interface_name: iface_name.clone(),
-        target_cidr: resolved_target.clone(),
-        timeout_ms: 1000,
-    };
-
-    let discovery = ArpDiscovery::new(discovery_config);
-    let devices = discovery.scan().await?;
+    let devices = discovery::run(plan).await?;
 
     if devices.is_empty() {
         println!("\n✗ No devices discovered on target network");
