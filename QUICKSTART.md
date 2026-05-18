@@ -21,30 +21,78 @@ cargo build --release
 
 Shows:
 - Interface names (eth0, wlan0, etc.)
-- IPv4 addresses
+- IPv4 addresses and the CIDR netgap will scan
 - MAC addresses
 - UP/DOWN status
 
-Allows interactive selection with persistent preferences.
+Each interface is annotated as `loopback`, `virtual` (docker bridges, veth
+pairs, VPN tunnels) or `default route`. Only real LAN interfaces are considered
+for auto-selection; the choice is remembered in
+`~/.config/netgap/interface_preference`.
 
 ### Run a Security Scan
 
 ```bash
-# Standard scan (auto-detects interface)
+# Standard scan (auto-detects interface and target network)
 ./target/release/netgap scan
 
 # Specify interface and target
 ./target/release/netgap scan -i eth0 -t 192.168.1.0/24
 
-# Quick scan (ARP + top 20 ports)
+# Quick scan: find devices, skip port scanning
 ./target/release/netgap scan --quick
 
-# Deep scan (all checks enabled)
+# Deep scan: implies --fingerprint and --assess
 ./target/release/netgap scan --deep
+
+# Non-interactive (accept the unprivileged TCP fallback without prompting)
+./target/release/netgap scan -y
 
 # JSON output for piping
 ./target/release/netgap scan --format json | jq .
+
+# Force a discovery method
+./target/release/netgap scan --discovery arp   # root/CAP_NET_RAW only
+./target/release/netgap scan --discovery tcp   # never needs privileges
 ```
+
+### Discover What Is On Your Network
+
+```bash
+# Colourised report: device count, names, MACs, types and trust status
+./target/release/netgap discover
+
+# Probe service ports to identify device types more precisely
+./target/release/netgap discover --identify
+
+# Machine-readable, including hostname, vendor, type and open ports
+./target/release/netgap discover --format json | jq .
+
+# Trust the devices currently connected (then review the rest)
+./target/release/netgap discover --trust-all
+```
+
+The report distinguishes three things that are easy to confuse:
+
+- **Trusted** — the device's MAC is in your trusted list
+  (`~/.config/netgap/trusted_devices`, editable by hand).
+- **Unrecognized** — not in that list. This is *not* proof of an intruder: a
+  guest's phone or your own device with a randomized MAC lands here too.
+- **Private MAC** — the address is randomized by the device for privacy. Such
+  devices have no vendor name and change address over time, so trusting them by
+  MAC only lasts while the address holds.
+
+```bash
+# Manage the trusted list
+./target/release/netgap trusted
+./target/release/netgap trust C4:B2:5B:0A:03:26 "living room router"
+./target/release/netgap trust 192.168.111.1 "gateway"   # IP resolved via the ARP table
+./target/release/netgap untrust C4:B2:5B:0A:03:26
+```
+
+Device types are inferred from network position (gateway/this host are exact),
+open ports, vendor OUI and hostname. Treat them as hints: "Unknown device" is a
+normal result, especially for phones with private MACs.
 
 ### Generate Reports
 
@@ -56,7 +104,6 @@ Allows interactive selection with persistent preferences.
 ./target/release/netgap report --history
 
 # Export as Markdown
-./target/release/netgap scan --format table
 ./target/release/netgap report --format markdown > report.md
 
 # Export as HTML
@@ -74,8 +121,11 @@ Allows interactive selection with persistent preferences.
 Netgap performs a multi-layer assessment:
 
 ### 1. **Device Discovery**
-- Uses ARP scanning to find all active devices on the network
-- Extracts MAC addresses and IP information
+- ARP sweep when running as root — finds every host that answers ARP
+- Unprivileged fallback: TCP connect sweep, where a refused connection still
+  proves the host exists, enriched with MAC addresses from `/proc/net/arp`
+- Targets are validated: a sweep larger than `--max-hosts` (default 4096) is
+  refused rather than flooding the network
 
 ### 2. **Device Fingerprinting**
 - **MAC OUI Lookup:** Identifies device manufacturer from MAC address
@@ -220,13 +270,16 @@ All scan results are automatically saved to SQLite:
 - Your system has no active network interfaces
 - Check network status: `ip link show` (Linux) or `ipconfig` (Windows)
 
-### "Permission denied" on raw sockets
-- Some features require elevated privileges
-- Try: `sudo ./target/release/netgap scan`
+### "ARP discovery needs root"
+- Netgap switched to the unprivileged TCP fallback. It finds fewer hosts and
+  MAC addresses only for hosts the kernel already knows.
+- For a complete sweep: `sudo ./target/release/netgap scan`
+- Or grant the capability once:
+  `sudo setcap cap_net_raw+ep ./target/release/netgap`
 
 ### Scan is slow
-- Use `--quick` flag for faster scans
-- Reduce target CIDR range (e.g., /25 instead of /24)
+- Use `--quick` to skip port scanning entirely
+- Reduce the target CIDR range (e.g. /25 instead of /24)
 
 ### False positives in fingerprinting
 - Confidence scores (0.0-1.0) indicate reliability

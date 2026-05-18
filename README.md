@@ -2,16 +2,17 @@
 
 A production-ready network security scanner written in Rust. Discover devices on your local network, identify vulnerabilities, and generate comprehensive security reports.
 
-**Current Status:** ✅ Phase 2 Complete | 38 tests passing | Production-ready
+**Current Status:** ✅ Phases 1-3 complete | 126 tests passing | LAN scanning verified on Linux
 
 ## Quick Features
 
-- 📡 **Device Discovery** - ARP scanning to find all active devices
+- 📡 **Device Discovery** - ARP sweep with root, unprivileged TCP fallback without
 - 🔐 **Vulnerability Assessment** - Detects Telnet, FTP, SMB, SNMP, HTTP exposure
 - 📊 **Device Fingerprinting** - MAC OUI, TTL-based OS detection, banner grabbing
 - 💾 **Result Persistence** - SQLite-backed scan history with analysis
 - 📈 **Report Generation** - Multiple formats: Terminal, JSON, Markdown, HTML, CSV
 - 🔄 **Scan Comparison** - Detect network changes between scans
+- 🏷️ **Device Identification** - Names, vendors and types, with a trusted-device list
 
 ## Getting Started
 
@@ -22,7 +23,30 @@ cargo build --release
 
 ### Run a Scan
 ```bash
-./target/release/netgap scan --quick
+# Auto-detects the LAN interface and target network
+./target/release/netgap scan
+
+# Fastest: find devices, skip port scanning
+./target/release/netgap scan --quick -y
+
+# Everything: banners + vulnerability assessment
+./target/release/netgap scan --deep -y
+```
+
+Discovery uses ARP when run as root (most complete), and falls back to an
+unprivileged TCP sweep otherwise. When root is missing, netgap explains the
+trade-off and lets you continue or re-run under sudo.
+
+### See What's On Your Network
+```bash
+# Colourised table: who is connected, what each device is, what's unrecognised
+./target/release/netgap discover
+
+# Add device names and types by probing service ports too
+./target/release/netgap discover --identify
+
+# Mark everything currently connected as trusted
+./target/release/netgap discover --trust-all
 ```
 
 ### View Results
@@ -45,7 +69,7 @@ cargo build --release
 
 ## Architecture
 
-10 specialized Rust crates working in harmony:
+16 specialized Rust crates working in harmony:
 
 ```
 netgap-cli ── netgap-report ── netgap-storage
@@ -82,19 +106,26 @@ netgap-discover ── netgap-scan ── netgap-interfaces
 
 ## Test Coverage
 
-**38 tests passing** across 10 crates:
+**126 tests passing** across the workspace:
 
 | Crate | Purpose | Tests |
 |-------|---------|-------|
 | netgap-core | Shared types | 6 |
-| netgap-interfaces | NIC enumeration | 5 |
-| netgap-discover | IP discovery | 4 |
+| netgap-interfaces | NIC enumeration, LAN-aware selection | 14 |
+| netgap-discover | ARP sweep, TCP fallback, neighbour table | 21 |
 | netgap-scan | Port scanning | 4 |
-| netgap-report | Output formatting | 2 |
-| netgap-fingerprint | Device fingerprinting | 7 |
+| netgap-report | Output formatting | 3 |
+| netgap-fingerprint | Device fingerprinting | 12 |
 | netgap-assess | Vulnerability checks | 6 |
 | netgap-probes | Protocol probes | 2 |
-| netgap-storage | Result persistence | 2 |
+| netgap-storage | Result persistence | 6 |
+| netgap-services | Service/CVE database | 13 |
+| netgap-trends | History and change detection | 8 |
+| netgap-mdns | mDNS framework (not yet implemented) | 8 |
+| netgap-raw-sockets | Raw ARP framework (not yet wired up) | 7 |
+| netgap-threat-intel | CVE/NVD lookups | 6 |
+| netgap-webhooks | Alert delivery | 6 |
+| netgap-cli | Assessment/severity mapping | 5 |
 
 ## Performance
 
@@ -114,27 +145,42 @@ netgap-discover ── netgap-scan ── netgap-interfaces
 ## CLI Commands
 
 ```bash
-# List interfaces
+# List interfaces (marks loopback, virtual and default-route devices)
 netgap interfaces
+
+# Discover devices and report what they are
+netgap discover                   # report for humans
+netgap discover --format json     # full metadata, machine-readable
+netgap discover --identify        # probe ports to sharpen device types
+
+# Trusted devices
+netgap trusted                    # list
+netgap trust <mac> "label"        # add (an IP works if it is already known)
+netgap untrust <mac>              # remove
 
 # Run scan
 netgap scan -i eth0 -t 192.168.1.0/24
-netgap scan --quick          # Fast mode
-netgap scan --deep           # All checks
+netgap scan --quick          # Discovery only, no port scanning
+netgap scan --deep           # Implies --fingerprint and --assess
+netgap scan -y               # Skip the sudo prompt, use the TCP fallback
+netgap scan --discovery arp  # Force a method: auto (default), arp or tcp
+netgap scan --no-save        # Do not write to scan history
 
-# Reports
-netgap report                # Latest scan
-netgap report --history      # All scans
-netgap report --format markdown  # Export format
+# Reports (scans are saved automatically)
+netgap report                    # Latest scan, terminal table
+netgap report --history          # All scans
+netgap report --format json      # json, summary, markdown, html, csv
 netgap report --scan-id <id1> --compare <id2>  # Compare
 ```
 
 ## Storage
 
-All scan results saved to:
+All scan results are saved automatically to:
 ```
 ~/.config/netgap/scans.db
 ```
+Override the location with `NETGAP_CONFIG_DIR`. `netgap watch` keeps history
+in memory only, to avoid writing a row every interval.
 
 SQLite database with tables:
 - `scans` - Metadata (date, interface, target)
@@ -183,9 +229,10 @@ IP            Device                OS        Findings
 
 ## Future Enhancements
 
-Phase 3 possibilities:
-- Raw socket ARP scanning (100% device discovery)
-- mDNS/Bonjour discovery
+Known gaps:
+- mDNS/Bonjour discovery is a stub (`MdnsDiscovery::IMPLEMENTED == false`)
+- `netgap-raw-sockets` is a framework stub, not yet wired into the CLI
+- TTL-based OS fingerprinting is not implemented
 - UPnP exposure scanning
 - Passive WiFi scanning
 - Mobile app bridges (uniffi-rs)
@@ -195,7 +242,10 @@ Phase 3 possibilities:
 
 - Rust 1.70+
 - Linux/macOS/Windows
-- Network access (no sudo required for basic scanning)
+- Network access
+- Root (or `setcap cap_net_raw+ep`) for full ARP discovery; without it netgap
+  falls back to an unprivileged TCP sweep that finds fewer hosts and resolves
+  MAC addresses only for hosts already in the kernel neighbour table
 
 ## Building
 
@@ -242,9 +292,10 @@ This allows the same scanning engine to power:
 - Use `--quick` flag to skip deep checks
 - Reduce target range (e.g., /25 instead of /24)
 
-**Permission issues**
-- Try: `sudo ./target/release/netgap scan`
-- Some raw socket operations need elevated privileges
+**"ARP discovery needs root"**
+- The unprivileged TCP fallback is running. For a complete sweep:
+  `sudo ./target/release/netgap scan`
+- Or grant the capability once: `sudo setcap cap_net_raw+ep ./target/release/netgap`
 
 ## Contributing
 
