@@ -24,7 +24,7 @@ pub struct DiscoveryContext<'a> {
 
 /// Width caps so one long hostname cannot wreck the layout.
 const MAX_NAME: usize = 22;
-const MAX_VENDOR: usize = 14;
+const MAX_VENDOR: usize = 20;
 const MAX_TYPE: usize = 30;
 
 /// Render the discovery report.

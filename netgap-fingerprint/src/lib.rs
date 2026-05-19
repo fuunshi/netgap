@@ -7,8 +7,9 @@
 //! - Device name and capability inference
 //! - Banner grabbing for HTTP, SSH, SMTP, FTP protocols
 
+pub mod oui;
+
 use netgap_core::{Device, OsType};
-use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use tokio::net::TcpStream;
@@ -126,7 +127,11 @@ fn classify_by_ports(ports: &[u16]) -> Option<DeviceClassification> {
 fn classify_vendor(vendor: &str) -> Option<&'static str> {
     let vendor = vendor.to_ascii_lowercase();
 
-    const ROUTERS: &[&str] = &["cisco", "netgear", "tp-link", "d-link", "asus", "avm", "ubiquiti", "mikrotik", "aruba", "juniper"];
+    const ROUTERS: &[&str] = &[
+        "cisco", "netgear", "tp-link", "d-link", "asus", "avm", "ubiquiti", "mikrotik", "aruba",
+        "juniper", "ruijie", "huawei", "zte", "ruckus", "extreme networks", "meraki", "cambium",
+        "sagemcom", "technicolor", "arcadyan", "sercomm",
+    ];
     const PRINTERS: &[&str] = &["canon", "epson", "brother", "xerox", "lexmark", "ricoh", "kyocera"];
     const COMPUTERS: &[&str] = &["dell", "lenovo", "supermicro", "intel", "realtek", "microsoft", "oracle", "qemu", "vmware"];
     const IOT: &[&str] = &["espressif", "tuya", "shelly", "sonoff", "raspberry"];
@@ -191,9 +196,11 @@ fn classify_hostname(hostname: &str) -> Option<&'static str> {
 }
 
 /// Fingerprinter for device OS and vendor identification.
-pub struct Fingerprinter {
-    oui_database: HashMap<String, String>,
-}
+///
+/// Vendor data comes from the bundled IEEE registry ([`oui`]), so this holds no
+/// per-instance state.
+#[derive(Debug, Clone, Copy)]
+pub struct Fingerprinter;
 
 /// Banner grabbing result with service identification.
 #[derive(Debug, Clone)]
@@ -208,52 +215,22 @@ pub struct BannerGrabResult {
 }
 
 impl Fingerprinter {
-    /// Create a new fingerprinter with built-in OUI database.
+    /// Create a new fingerprinter.
     pub fn new() -> Self {
-        Fingerprinter {
-            oui_database: Self::build_oui_db(),
-        }
-    }
-
-    /// Build a basic OUI database (real implementation would load from file).
-    fn build_oui_db() -> HashMap<String, String> {
-        let mut db = HashMap::new();
-
-        // Common vendors - MAC OUI prefixes (first 24 bits)
-        db.insert("00:00:00".to_string(), "Xerox".to_string());
-        db.insert("00:00:0C".to_string(), "Cisco".to_string());
-        db.insert("00:00:5E".to_string(), "IANA".to_string());
-        db.insert("00:05:00".to_string(), "Apple".to_string());
-        db.insert("00:0F:00".to_string(), "Apple".to_string());
-        db.insert("00:1E:33".to_string(), "Netgear".to_string());
-        db.insert("00:22:B0".to_string(), "Cisco".to_string());
-        db.insert("00:30:48".to_string(), "Supermicro".to_string());
-        db.insert("00:50:F2".to_string(), "Microsoft".to_string());
-        db.insert("08:00:27".to_string(), "Oracle".to_string()); // VirtualBox
-        db.insert("40:C2:BA".to_string(), "Realtek".to_string());
-        db.insert("52:54:00".to_string(), "QEMU".to_string());
-        db.insert("94:BB:43".to_string(), "Qualcomm".to_string());
-        db.insert("9E:FE:56".to_string(), "Docker".to_string());
-        db.insert("AC:DE:48".to_string(), "Google".to_string()); // Nest
-        db.insert("B4:2E:99".to_string(), "TP-Link".to_string());
-        db.insert("DC:A6:32".to_string(), "Tp-Link".to_string());
-        db.insert("D0:17:C2".to_string(), "D-Link".to_string());
-        db.insert("E0:91:F5".to_string(), "ASUS".to_string());
-        db.insert("F4:6D:04".to_string(), "AVM".to_string()); // Fritzbox
-
-        db
+        Fingerprinter
     }
 
     /// Look up vendor name from MAC address.
+    ///
+    /// Returns `None` for locally administered (randomized) addresses and for
+    /// assignments the IEEE has not published.
     pub fn lookup_vendor(&self, mac: &str) -> Option<String> {
-        // MAC format: XX:XX:XX:XX:XX:XX, OUI is first 3 octets
-        let parts: Vec<&str> = mac.split(':').collect();
-        if parts.len() < 3 {
-            return None;
-        }
+        oui::lookup(mac).map(str::to_string)
+    }
 
-        let oui = format!("{}:{}:{}", parts[0], parts[1], parts[2]).to_uppercase();
-        self.oui_database.get(&oui).cloned()
+    /// How many OUI assignments the bundled registry holds.
+    pub fn vendor_database_size() -> usize {
+        oui::vendor_count()
     }
 
     /// Detect OS type from TTL value.
@@ -537,11 +514,14 @@ mod tests {
     fn test_oui_lookup() {
         let fp = Fingerprinter::new();
 
-        // Test Cisco OUI
+        // From the bundled IEEE registry, not a hand-written table.
         let vendor = fp.lookup_vendor("00:00:0C:AA:BB:CC");
-        assert_eq!(vendor, Some("Cisco".to_string()));
+        assert_eq!(vendor, Some("Cisco Systems".to_string()));
 
-        // Test unknown OUI
+        // Locally administered: never in the registry by design.
+        let vendor = fp.lookup_vendor("A2:2D:98:D1:F6:8F");
+        assert_eq!(vendor, None);
+
         let vendor = fp.lookup_vendor("FF:FF:FF:AA:BB:CC");
         assert_eq!(vendor, None);
     }
@@ -552,7 +532,7 @@ mod tests {
 
         // Should work with lowercase
         let vendor = fp.lookup_vendor("00:00:0c:aa:bb:cc");
-        assert_eq!(vendor, Some("Cisco".to_string()));
+        assert_eq!(vendor, Some("Cisco Systems".to_string()));
     }
 
     #[test]
@@ -706,7 +686,7 @@ mod tests {
 
         fp.fingerprint_device(&mut device);
 
-        assert_eq!(device.vendor, Some("Cisco".to_string()));
+        assert_eq!(device.vendor, Some("Cisco Systems".to_string()));
     }
 
     #[test]
