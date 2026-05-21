@@ -45,6 +45,8 @@ pub struct DiscoveryPlan {
     /// Whether a failed ARP attempt may silently fall back to TCP. False when
     /// the user explicitly asked for ARP.
     pub allow_fallback: bool,
+    /// Whether to ask devices to identify themselves over mDNS.
+    pub mdns: bool,
 }
 
 impl DiscoveryPlan {
@@ -72,6 +74,7 @@ pub fn resolve_plan(
     assume_yes: bool,
     non_interactive: bool,
     max_hosts: usize,
+    mdns: bool,
 ) -> Result<DiscoveryPlan> {
     let interface_name = match interface {
         Some(name) => name,
@@ -107,6 +110,7 @@ pub fn resolve_plan(
         target,
         max_hosts,
         allow_fallback,
+        mdns,
     })
 }
 

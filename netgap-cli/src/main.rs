@@ -51,6 +51,10 @@ struct DiscoveryArgs {
     /// Refuse to scan more hosts than this in one sweep
     #[arg(long, default_value_t = netgap_discover::DEFAULT_MAX_HOSTS)]
     max_hosts: usize,
+
+    /// Also ask devices to name themselves over mDNS (printers, TVs, speakers)
+    #[arg(long)]
+    mdns: bool,
 }
 
 impl DiscoveryArgs {
@@ -72,6 +76,7 @@ impl DiscoveryArgs {
             self.yes,
             non_interactive,
             self.max_hosts,
+            self.mdns,
         )?)
     }
 }
@@ -129,10 +134,6 @@ enum Commands {
         /// Deep scan mode: implies --fingerprint and --assess
         #[arg(long)]
         deep: bool,
-
-        /// Include mDNS service discovery (not yet implemented)
-        #[arg(long)]
-        mdns: bool,
 
         /// Perform banner grabbing for service identification
         #[arg(long)]
@@ -214,7 +215,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             discovery,
             quick,
             deep,
-            mdns,
             fingerprint,
             assess,
             interactive,
@@ -225,7 +225,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 discovery,
                 quick,
                 deep,
-                mdns,
                 fingerprint,
                 assess,
                 interactive,
@@ -300,13 +299,14 @@ async fn cmd_scan(
     discovery_args: DiscoveryArgs,
     quick: bool,
     deep: bool,
-    mdns: bool,
     mut fingerprint: bool,
     mut assess: bool,
     interactive: bool,
     no_save: bool,
     format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let mdns = discovery_args.mdns;
+
     // --deep is a shorthand for turning on everything.
     if deep {
         fingerprint = true;
@@ -372,35 +372,8 @@ async fn cmd_scan(
         if mdns {
             eprintln!("Phase 2b: mDNS Service Discovery");
             eprintln!("────────────────────────────────");
-
-            if !MdnsDiscovery::IMPLEMENTED {
-                // Saying "no services found" here would be a lie: the search
-                // never happens.
-                eprintln!("  ⚠️  mDNS discovery is not implemented in this build; skipping");
-            } else {
-                match MdnsDiscovery::discover_services(3).await {
-                    Ok(services) if services.is_empty() => {
-                        eprintln!("  No mDNS services discovered");
-                    }
-                    Ok(services) => {
-                        eprintln!("  Discovered {} mDNS service(s):", services.len());
-                        for service in &services {
-                            println!(
-                                "    • {} ({})",
-                                service.name,
-                                service.service_type.display_name()
-                            );
-                            if let Some(ip) = &service.ip {
-                                eprintln!("      IP: {}", ip);
-                            }
-                            eprintln!("      Port: {}", service.port);
-                        }
-                    }
-                    Err(e) => eprintln!("  ⚠️  mDNS discovery error: {}", e),
-                }
-            }
-
-            println!();
+            run_mdns(&mut devices).await;
+            eprintln!();
         }
 
         // Banner grabbing phase (if fingerprint flag enabled)
@@ -480,6 +453,11 @@ async fn cmd_discover(
     let mut devices = discovery::run(&plan).await?;
     enrich_devices(&plan, &mut devices, identify).await;
 
+    if discovery_args.mdns {
+        eprintln!("   Asking devices to identify themselves over mDNS...");
+        run_mdns(&mut devices).await;
+    }
+
     let mut trust_list = trust::TrustList::load()?;
 
     if trust_all && !devices.is_empty() {
@@ -521,6 +499,56 @@ async fn cmd_discover(
     }
 
     Ok(())
+}
+
+/// Ask the network to name itself over mDNS, and fold the answers into the
+/// device list.
+///
+/// This is where "Unknown device" becomes "HP LaserJet MFP". It runs after the
+/// other enrichment so it fills gaps rather than overwriting observed facts.
+async fn run_mdns(devices: &mut Vec<Device>) {
+    // Long enough for devices to answer, short enough not to feel stuck.
+    const MDNS_TIMEOUT_SECS: u64 = 3;
+
+    match MdnsDiscovery::discover_services(MDNS_TIMEOUT_SECS).await {
+        Ok(services) if services.is_empty() => {
+            eprintln!(
+                "  No mDNS services answered (normal on networks that block multicast, \
+                 or when nothing advertises)"
+            );
+        }
+        Ok(services) => {
+            eprintln!("  Discovered {} mDNS service(s):", services.len());
+            for service in &services {
+                eprintln!(
+                    "    • {} ({}){}{}",
+                    service.name,
+                    service.service_type.display_name(),
+                    service
+                        .ip
+                        .map(|ip| format!(" @ {}", ip))
+                        .unwrap_or_default(),
+                    if service.port > 0 {
+                        format!(" :{}", service.port)
+                    } else {
+                        String::new()
+                    }
+                );
+            }
+
+            let outcome = netgap_mdns::merge_into_devices(devices, &services);
+            if outcome.named > 0 {
+                eprintln!("  Named {} device(s) from mDNS", outcome.named);
+            }
+            if outcome.classified > 0 {
+                eprintln!("  Identified {} device type(s) from mDNS", outcome.classified);
+            }
+            if outcome.added > 0 {
+                eprintln!("  Added {} device(s) only mDNS knew about", outcome.added);
+            }
+        }
+        Err(error) => eprintln!("  ⚠️  mDNS discovery failed: {}", error),
+    }
 }
 
 /// Fill in the details that turn a bare IP and MAC into something a person can
@@ -1010,6 +1038,10 @@ async fn cmd_watch(
 
         match discovery::run(&plan).await {
             Ok(mut devices) => {
+                if plan.mdns {
+                    run_mdns(&mut devices).await;
+                }
+
                 // Port scanning
                 let port_config = PortScanConfig {
                     ports: netgap_scan::TOP_DANGEROUS_PORTS.to_vec(),

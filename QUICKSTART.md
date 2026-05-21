@@ -65,6 +65,9 @@ for auto-selection; the choice is remembered in
 # Probe service ports to identify device types more precisely
 ./target/release/netgap discover --identify
 
+# Ask devices to name themselves over mDNS (printers, TVs, speakers)
+./target/release/netgap discover --mdns
+
 # Machine-readable, including hostname, vendor, type and open ports
 ./target/release/netgap discover --format json | jq .
 

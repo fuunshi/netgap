@@ -13,6 +13,7 @@ A production-ready network security scanner written in Rust. Discover devices on
 - 📈 **Report Generation** - Multiple formats: Terminal, JSON, Markdown, HTML, CSV
 - 🔄 **Scan Comparison** - Detect network changes between scans
 - 🏷️ **Device Identification** - Names, vendors and types, with a trusted-device list
+- 📡 **mDNS Discovery** - Asks devices to name themselves (printers, TVs, speakers)
 
 ## Getting Started
 
@@ -106,7 +107,7 @@ netgap-discover ── netgap-scan ── netgap-interfaces
 
 ## Test Coverage
 
-**126 tests passing** across the workspace:
+**164 tests passing** across the workspace:
 
 | Crate | Purpose | Tests |
 |-------|---------|-------|
@@ -121,7 +122,7 @@ netgap-discover ── netgap-scan ── netgap-interfaces
 | netgap-storage | Result persistence | 6 |
 | netgap-services | Service/CVE database | 13 |
 | netgap-trends | History and change detection | 8 |
-| netgap-mdns | mDNS framework (not yet implemented) | 8 |
+| netgap-mdns | mDNS service discovery | 15 |
 | netgap-raw-sockets | Raw ARP framework (not yet wired up) | 7 |
 | netgap-threat-intel | CVE/NVD lookups | 6 |
 | netgap-webhooks | Alert delivery | 6 |
@@ -152,6 +153,7 @@ netgap interfaces
 netgap discover                   # report for humans
 netgap discover --format json     # full metadata, machine-readable
 netgap discover --identify        # probe ports to sharpen device types
+netgap discover --mdns            # ask devices to name themselves over mDNS
 
 # Trusted devices
 netgap trusted                    # list
@@ -230,7 +232,6 @@ IP            Device                OS        Findings
 ## Future Enhancements
 
 Known gaps:
-- mDNS/Bonjour discovery is a stub (`MdnsDiscovery::IMPLEMENTED == false`)
 - `netgap-raw-sockets` is a framework stub, not yet wired into the CLI
 - TTL-based OS fingerprinting is not implemented
 - UPnP exposure scanning

@@ -29,15 +29,30 @@ device classification, so `Intel Corporate` reads as "Computer".
 Still open: names for the devices that randomize their MAC, which no OUI
 database can supply. That is what mDNS is for (next).
 
-### 2. Implement mDNS discovery
+### 2. Implement mDNS discovery — ✅ done
 
-`netgap-mdns` is a stub returning an empty `Vec`, and `MdnsDiscovery::IMPLEMENTED`
-is `false`. The `mdns-sd` dependency is already declared and unused.
+`netgap-mdns` browsed nothing and returned an empty `Vec`; it now browses ~21
+service types with `mdns-sd`, converts resolved records into `MdnsService`, and
+merges them into the device list: naming hosts, filling in device types, and
+adding hosts only mDNS knew about.
 
-This is the single biggest "what is this device?" win for a normal user,
-because devices name *themselves*: `HP LaserJet MFP`, `Chromecast`,
-`Sonos Play:5` instead of "Unknown device" and a randomized MAC. It also covers
-exactly the devices OUI lookup cannot reach.
+This is the biggest "what is this device?" win for a normal user, because
+devices name *themselves*: `HP LaserJet MFP`, `Chromecast`, `Sonos Play:5`
+instead of "Unknown device" and a randomized MAC. It also covers exactly the
+devices OUI lookup cannot reach.
+
+**Caveat: not yet observed working on a real network.** The development machine
+does not deliver multicast back to its own sockets — verified with a bare socket
+pair, no library involved — so a service announced locally is never seen by a
+browser on the same host. That makes the loopback integration test (`#[ignore]`d
+in `netgap-mdns`) unable to pass there, and left the browse path validated only
+by unit tests over real `ServiceInfo` values. It needs a run on a network where
+mDNS actually flows; the same networks where AirPlay and Chromecast discovery
+work in a browser is the practical test.
+
+That also means the "no mDNS services answered" message is currently the honest
+output on this network — worth checking whether the AP filters multicast between
+clients, since that breaks other discovery protocols too.
 
 ### 3. Service and version detection, then real CVE data
 
