@@ -107,7 +107,7 @@ netgap-discover ── netgap-scan ── netgap-interfaces
 
 ## Test Coverage
 
-**164 tests passing** across the workspace:
+**182 tests passing** across the workspace:
 
 | Crate | Purpose | Tests |
 |-------|---------|-------|
@@ -118,7 +118,7 @@ netgap-discover ── netgap-scan ── netgap-interfaces
 | netgap-report | Output formatting | 3 |
 | netgap-fingerprint | Device fingerprinting | 12 |
 | netgap-assess | Vulnerability checks | 6 |
-| netgap-probes | Protocol probes | 2 |
+| netgap-probes | Service and version probes | 11 |
 | netgap-storage | Result persistence | 6 |
 | netgap-services | Service/CVE database | 13 |
 | netgap-trends | History and change detection | 8 |

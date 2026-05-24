@@ -54,21 +54,38 @@ That also means the "no mDNS services answered" message is currently the honest
 output on this network — worth checking whether the AP filters multicast between
 clients, since that breaks other discovery protocols too.
 
-### 3. Service and version detection, then real CVE data
+### 3. Service and version detection, then real CVE data — partially done
 
-Two halves of one project:
+**Probes: done.** `--fingerprint` now goes through `netgap-probes` instead of
+re-implementing banner grabbing inline for four ports. The crate separates
+*product* from *version* (`nginx` `1.18.0`, not "HTTP/1.1"), covers HTTP, HTTPS,
+SSH, FTP, Telnet, SMTP, IMAP, POP3, VNC, MySQL/MariaDB, PostgreSQL, Redis and a
+generic TCP fallback, and dispatches by port. Verified end to end against a
+real server: `Server: Apache/2.4.49` produced exactly the two CVEs that affect
+2.4.49, and nothing else.
 
-- `netgap-probes` implements 7 protocol probes (http, https, ssh, ftp, telnet,
-  snmp, tcp) and has **no caller**. `--fingerprint` re-implements banner
-  grabbing inline for four ports instead. Route both through the probes crate,
-  and extend coverage to TLS certificates, SMTP, IMAP and databases.
-- `ServiceInfo.version` is `None` unless a banner happens to parse, and the
-  bundled CVE list is **6 entries**. CVE matching is currently close to
-  decoration. `netgap-threat-intel` already has a working NVD client with a
-  local cache and 6 tests — and no caller either.
+Three correctness problems surfaced while wiring it and are fixed:
 
-Do the probes first. Enriching six hardcoded CVEs with live NVD data would only
-produce a more sophisticated guess.
+- **Version comparison was a string compare.** `"2.4.9" < "2.4.10"` is false as
+  text, so a vulnerable host was reported clean. Comparison is now numeric,
+  component by component.
+- **Ranges could only be one-sided.** `< X` cannot express a real CVE window,
+  so the format now accepts `>= 2.4.49, < 2.4.51`.
+- **One entry was fabricated.** CVE-2021-44228 is Log4Shell — a Log4j issue
+  with no httpd version range — and was listed as affecting Apache `< 2.4.50`.
+  Replaced with CVE-2021-42013, which is the httpd flaw in that window.
+
+**Still to do:**
+
+- The bundled database is still **6 entries** and hand-written; several of the
+  remaining ranges should be checked against NVD (CVE-2021-26691's fixed
+  version in particular).
+- `netgap-threat-intel` has a working NVD client with a local cache and 6 tests
+  — still **no caller**. That is the real fix for the database.
+- TLS is detected but not inspected: `probe_https` confirms the port speaks TLS
+  and stops there. Certificates (issuer, expiry, self-signed) and protocol
+  version (flagging TLS 1.0/1.1) need `rustls`, which is already in the
+  dependency tree via reqwest.
 
 ### 4. "New since your last scan"
 

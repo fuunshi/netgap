@@ -18,6 +18,7 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::net::Ipv4Addr;
 
 /// Detailed service information with version and vulnerability data.
@@ -59,6 +60,149 @@ pub struct VulnerabilityFinding {
     pub confidence: f32,
 }
 
+/// Map a product name reported by a probe onto the name this crate's CVE
+/// database is keyed by.
+///
+/// Probes report what the service calls itself ("Microsoft-IIS", "Apache"),
+/// while the database groups by canonical product ("IIS", "Apache"). Getting
+/// this wrong means looking up the right version in the wrong table and
+/// reporting nothing at all.
+pub fn canonical_service_name(product: &str) -> Option<&'static str> {
+    let lowered = product.trim().to_ascii_lowercase();
+    if lowered.is_empty() {
+        return None;
+    }
+
+    // Longest/most specific matches first, so "microsoft-iis" is not read as a
+    // generic Microsoft product.
+    const ALIASES: &[(&str, &str)] = &[
+        ("microsoft-iis", "IIS"),
+        ("iis", "IIS"),
+        ("apache", "Apache"),
+        ("httpd", "Apache"),
+        ("nginx", "nginx"),
+        ("openssh", "OpenSSH"),
+        ("dropbear", "OpenSSH"),
+        ("sun_ssh", "OpenSSH"),
+        ("mysql", "MySQL"),
+        ("mariadb", "MariaDB"),
+        ("postgres", "PostgreSQL"),
+        ("proftpd", "ProFTPD"),
+        ("vsftpd", "vsftpd"),
+        ("pure-ftpd", "vsftpd"),
+    ];
+
+    ALIASES
+        .iter()
+        .find(|(needle, _)| lowered.contains(needle))
+        .map(|(_, canonical)| *canonical)
+}
+
+/// Compare two version strings the way a person would.
+///
+/// Versions are split into digit and non-digit runs; digit runs compare as
+/// numbers, the rest case-insensitively. This is what makes "2.4.9" older than
+/// "2.4.10" — a plain string comparison puts it after, which turns a real
+/// vulnerability into a clean bill of health.
+///
+/// Trailing zero components are ignored, so "1.18.0" and "1.18" compare equal.
+/// Pre-release suffixes ("1.0rc1") are treated as *newer* than the plain
+/// release, the opposite of their usual meaning; no range in the bundled
+/// database depends on that distinction.
+pub fn compare_versions(left: &str, right: &str) -> Ordering {
+    let left_parts = version_parts(left);
+    let right_parts = version_parts(right);
+
+    for index in 0..left_parts.len().max(right_parts.len()) {
+        match (left_parts.get(index), right_parts.get(index)) {
+            (Some(left_part), Some(right_part)) => {
+                let ordering = compare_part(left_part, right_part);
+                if ordering != Ordering::Equal {
+                    return ordering;
+                }
+            }
+            (Some(_), None) => {
+                // One version has components the other lacks. That only means
+                // anything if they carry information: the "0" in "1.18.0"
+                // does not make it newer than "1.18".
+                if !left_parts[index..].iter().all(is_insignificant) {
+                    return Ordering::Greater;
+                }
+            }
+            (None, Some(_)) => {
+                if !right_parts[index..].iter().all(is_insignificant) {
+                    return Ordering::Less;
+                }
+            }
+            (None, None) => break,
+        }
+    }
+
+    Ordering::Equal
+}
+
+/// One run of digits or non-digits within a version string.
+#[derive(Debug, PartialEq, Eq)]
+enum VersionPart {
+    Number(u64),
+    Text(String),
+}
+
+/// Split a version into alternating digit and non-digit runs.
+fn version_parts(version: &str) -> Vec<VersionPart> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut current_is_digit: Option<bool> = None;
+
+    for character in version.trim().chars() {
+        let is_digit = character.is_ascii_digit();
+        if let Some(previous) = current_is_digit {
+            if previous != is_digit {
+                push_part(&mut parts, &mut current, previous);
+            }
+        }
+        current_is_digit = Some(is_digit);
+        current.push(character);
+    }
+
+    if let Some(is_digit) = current_is_digit {
+        push_part(&mut parts, &mut current, is_digit);
+    }
+
+    parts
+}
+
+fn push_part(parts: &mut Vec<VersionPart>, current: &mut String, is_digit: bool) {
+    if current.is_empty() {
+        return;
+    }
+
+    if is_digit {
+        parts.push(VersionPart::Number(current.parse().unwrap_or(u64::MAX)));
+    } else if current.chars().any(|c| c.is_alphanumeric()) {
+        // Punctuation is a separator, not a component: dropping it here is what
+        // lets "7.4p1" line up against "7.4.1" component by component.
+        parts.push(VersionPart::Text(current.to_ascii_lowercase()));
+    }
+
+    current.clear();
+}
+
+/// Whether a component says nothing about which version is newer.
+fn is_insignificant(part: &VersionPart) -> bool {
+    matches!(part, VersionPart::Number(0))
+}
+
+fn compare_part(left: &VersionPart, right: &VersionPart) -> Ordering {
+    match (left, right) {
+        (VersionPart::Number(a), VersionPart::Number(b)) => a.cmp(b),
+        (VersionPart::Text(a), VersionPart::Text(b)) => a.cmp(b),
+        // A numeric component outranks a textual one, so "7.4.1" > "7.4p1".
+        (VersionPart::Number(_), VersionPart::Text(_)) => Ordering::Greater,
+        (VersionPart::Text(_), VersionPart::Number(_)) => Ordering::Less,
+    }
+}
+
 /// Severity rating for vulnerabilities.
 #[derive(
     Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
@@ -90,23 +234,27 @@ impl VulnerabilityDatabase {
     /// Known vulnerabilities for Apache HTTP Server.
     pub fn apache_vulns() -> Vec<(String, String, Severity, String)> {
         vec![
+            // Was CVE-2021-44228 with a 2.4.50 range. That is Log4Shell, a
+            // Log4j (Java) issue with no httpd version range at all: the entry
+            // was wrong and would have been acted on. The httpd flaw in that
+            // range is the incomplete fix for the path traversal below.
             (
-                "CVE-2021-44228".to_string(),
-                "< 2.4.50".to_string(),
+                "CVE-2021-42013".to_string(),
+                ">= 2.4.49, < 2.4.51".to_string(),
                 Severity::Critical,
-                "Upgrade to Apache 2.4.50 or later; this is the Log4Shell vulnerability impacting many services".to_string(),
+                "Path traversal and remote code execution; upgrade to Apache 2.4.51 or later".to_string(),
             ),
             (
                 "CVE-2021-26691".to_string(),
                 "< 2.4.49".to_string(),
                 Severity::High,
-                "Upgrade to Apache 2.4.49 or later".to_string(),
+                "Heap overflow in mod_session; upgrade to Apache 2.4.49 or later".to_string(),
             ),
             (
                 "CVE-2021-41773".to_string(),
-                "< 2.4.50".to_string(),
+                ">= 2.4.49, < 2.4.50".to_string(),
                 Severity::Critical,
-                "Path traversal vulnerability; upgrade to 2.4.50+".to_string(),
+                "Path traversal vulnerability; upgrade to Apache 2.4.50 or later".to_string(),
             ),
             (
                 "CVE-2020-1927".to_string(),
@@ -307,19 +455,47 @@ impl VulnerabilityCheck {
 
     /// Simple version comparison. Real implementation would use proper semver.
     fn version_matches_affected(current: &str, affected_pattern: &str) -> bool {
-        // Check if "ALL" affects all versions
-        if affected_pattern == "ALL" {
+        let pattern = affected_pattern.trim();
+
+        if pattern.eq_ignore_ascii_case("ALL") {
             return true;
         }
 
-        // Very simplified: just check if "< X" pattern matches
-        if affected_pattern.starts_with("< ") {
-            let target = affected_pattern.trim_start_matches("< ");
-            // Naive string comparison: "2.4.41" < "2.4.50"
-            current < target
-        } else {
-            false
+        // A range may be bounded at both ends: ">= 2.4.49, < 2.4.51". Every
+        // clause must hold, which is what lets an entry describe a window
+        // rather than everything older than a version.
+        if pattern.contains(',') {
+            return pattern
+                .split(',')
+                .map(str::trim)
+                .filter(|clause| !clause.is_empty())
+                .all(|clause| Self::version_matches_affected(current, clause));
         }
+
+        // Single clauses are written "< 2.4.50", "<= 9.3", ">= 1.2" or "1.2.3".
+        // Two-character operators first, so "<=" is not read as "<".
+        type OperatorCheck = fn(Ordering) -> bool;
+        let operators: [(&str, OperatorCheck); 5] = [
+            ("<=", |ordering| ordering != Ordering::Greater),
+            (">=", |ordering| ordering != Ordering::Less),
+            ("<", |ordering| ordering == Ordering::Less),
+            (">", |ordering| ordering == Ordering::Greater),
+            ("=", |ordering| ordering == Ordering::Equal),
+        ];
+
+        for (prefix, matches) in operators {
+            let Some(target) = pattern.strip_prefix(prefix) else {
+                continue;
+            };
+            let target = target.trim();
+            if target.is_empty() {
+                return false;
+            }
+            return matches(compare_versions(current, target));
+        }
+
+        // No operator: an exact version.
+        compare_versions(current, pattern) == Ordering::Equal
     }
 
     /// Check for insecure configurations (no encryption, default ports, etc).
@@ -487,7 +663,25 @@ mod tests {
 
         let vulns = VulnerabilityCheck::check_version(&service);
         assert!(!vulns.is_empty());
-        assert!(vulns.iter().any(|v| v.cve_id == "CVE-2021-44228"));
+        // 2.4.41 predates the 2.4.49-2.4.50 window, so the path traversal must
+        // not be reported for it.
+        assert!(!vulns.iter().any(|v| v.cve_id == "CVE-2021-42013"));
+        assert!(vulns.iter().any(|v| v.cve_id == "CVE-2021-26691"));
+    }
+
+    #[test]
+    fn test_vulnerability_check_apache_2429_window() {
+        // 2.4.49 is inside the affected window and must be reported.
+        let service = ServiceInfo {
+            name: "Apache".to_string(),
+            version: Some("2.4.49".to_string()),
+            service_type: "http".to_string(),
+            ..Default::default()
+        };
+
+        let vulns = VulnerabilityCheck::check_version(&service);
+        assert!(vulns.iter().any(|v| v.cve_id == "CVE-2021-42013"));
+        assert!(vulns.iter().any(|v| v.cve_id == "CVE-2021-41773"));
     }
 
     #[test]
@@ -569,6 +763,84 @@ mod tests {
     }
 
     #[test]
+    fn test_version_comparison_is_numeric_not_lexicographic() {
+        // The bug this replaces: as strings, "2.4.9" sorts *after* "2.4.10".
+        assert_eq!(compare_versions("2.4.9", "2.4.10"), Ordering::Less);
+        assert_eq!(compare_versions("2.4.10", "2.4.9"), Ordering::Greater);
+
+        // Any leading-digit comparison: 10 is newer than 9, not older.
+        assert_eq!(compare_versions("10.6.12", "9.6"), Ordering::Greater);
+        assert_eq!(compare_versions("8.0.32", "15.1"), Ordering::Less);
+
+        assert_eq!(compare_versions("9.3", "9.3"), Ordering::Equal);
+        // Trailing zeros carry no information.
+        assert_eq!(compare_versions("1.18.0", "1.18"), Ordering::Equal);
+        // A textual component is older than a numeric one.
+        assert_eq!(compare_versions("7.4p1", "7.4.1"), Ordering::Less);
+    }
+
+    #[test]
+    fn test_two_sided_ranges() {
+        // CVE-2021-42013 affects exactly 2.4.49 and 2.4.50.
+        let range = ">= 2.4.49, < 2.4.51";
+
+        assert!(VulnerabilityCheck::version_matches_affected("2.4.49", range));
+        assert!(VulnerabilityCheck::version_matches_affected("2.4.50", range));
+        assert!(!VulnerabilityCheck::version_matches_affected("2.4.48", range));
+        assert!(!VulnerabilityCheck::version_matches_affected("2.4.51", range));
+        assert!(!VulnerabilityCheck::version_matches_affected("2.2.0", range));
+    }
+
+    #[test]
+    fn test_apache_findings_do_not_cite_log4shell() {
+        // CVE-2021-44228 is Log4Shell, a Log4j issue with no httpd version
+        // range. Reporting it against an Apache version would be fabrication.
+        let cves: Vec<String> = VulnerabilityDatabase::apache_vulns()
+            .into_iter()
+            .map(|(cve, ..)| cve)
+            .collect();
+
+        assert!(
+            !cves.iter().any(|cve| cve == "CVE-2021-44228"),
+            "Log4Shell must not be attributed to an Apache httpd version"
+        );
+        assert!(cves.iter().any(|cve| cve == "CVE-2021-42013"));
+    }
+
+    #[test]
+    fn test_version_matching_uses_the_comparison() {
+        // Regression: this returned false, so a vulnerable host looked clean.
+        assert!(VulnerabilityCheck::version_matches_affected("2.4.9", "< 2.4.10"));
+        assert!(VulnerabilityCheck::version_matches_affected("2.4.49", "< 2.4.50"));
+        assert!(VulnerabilityCheck::version_matches_affected("7.4p1", "< 9.3"));
+
+        assert!(!VulnerabilityCheck::version_matches_affected("9.6", "< 9.3"));
+        assert!(!VulnerabilityCheck::version_matches_affected("15.1", "< 15.1"));
+
+        // Other range forms.
+        assert!(VulnerabilityCheck::version_matches_affected("9.3", "<= 9.3"));
+        assert!(VulnerabilityCheck::version_matches_affected("9.4", ">= 9.3"));
+        assert!(VulnerabilityCheck::version_matches_affected("2.4.41", "2.4.41"));
+        assert!(!VulnerabilityCheck::version_matches_affected("2.4.41", "2.4.42"));
+        assert!(VulnerabilityCheck::version_matches_affected("anything", "ALL"));
+    }
+
+    #[test]
+    fn test_canonical_service_name_matches_the_database_vocabulary() {
+        // Products as probes report them.
+        assert_eq!(canonical_service_name("Apache"), Some("Apache"));
+        assert_eq!(canonical_service_name("Microsoft-IIS"), Some("IIS"));
+        assert_eq!(canonical_service_name("OpenSSH"), Some("OpenSSH"));
+        assert_eq!(canonical_service_name("nginx"), Some("nginx"));
+        assert_eq!(canonical_service_name("MariaDB"), Some("MariaDB"));
+        assert_eq!(canonical_service_name("ProFTPD"), Some("ProFTPD"));
+
+        // Unknown products must not be forced into a bucket.
+        assert_eq!(canonical_service_name("cloudflare"), None);
+        assert_eq!(canonical_service_name(""), None);
+    }
+
+    #[test]
     fn test_version_matching() {
         assert!(VulnerabilityCheck::version_matches_affected("2.4.41", "< 2.4.50"));
         assert!(!VulnerabilityCheck::version_matches_affected("2.4.50", "< 2.4.50"));
@@ -584,13 +856,13 @@ mod tests {
     #[test]
     fn test_confidence_score_mdns() {
         let score = ConfidenceScorer::calculate_confidence(false, false, true, 80);
-        assert!(score >= 0.85 && score < 0.95);
+        assert!((0.85..0.95).contains(&score));
     }
 
     #[test]
     fn test_confidence_score_port_heuristic() {
         let score = ConfidenceScorer::calculate_confidence(false, false, false, 22);
-        assert!(score >= 0.70 && score < 0.85);
+        assert!((0.70..0.85).contains(&score));
     }
 
     #[test]

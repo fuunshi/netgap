@@ -996,6 +996,7 @@ dependencies = [
  "netgap-fingerprint",
  "netgap-interfaces",
  "netgap-mdns",
+ "netgap-probes",
  "netgap-report",
  "netgap-scan",
  "netgap-services",

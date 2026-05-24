@@ -1,10 +1,11 @@
 use clap::{Parser, Subcommand};
 use netgap_assess::AssessmentRunner;
 use netgap_core::{Device, Finding, FindingSummary, ScanConfig, ScanResult, Severity};
-use netgap_fingerprint::{classify_device, BannerGrabResult, ClassifyContext, Fingerprinter};
+use netgap_fingerprint::{classify_device, ClassifyContext, Fingerprinter};
 use netgap_mdns::MdnsDiscovery;
 use netgap_report::discovery::DiscoveryContext;
 use netgap_report::{format_discovery, ReportFormatter};
+use netgap_probes::{ProbeResult, probe_ports};
 use netgap_scan::{PortScanner, ScanConfig as PortScanConfig};
 use netgap_services::{ServiceInfo, VulnerabilityCheck, VulnerabilityFinding};
 use netgap_trends::{AlertRule, ChangeDetection, HealthScore, ScanHistory};
@@ -733,33 +734,43 @@ async fn run_discovery_and_port_scan(
     Ok(devices)
 }
 
-/// Grab service banners for the open ports of each device and fold the result
-/// into the device (vendor/OUI and OS heuristics).
-async fn fingerprint_devices(devices: &mut [Device]) -> Vec<(IpAddr, BannerGrabResult)> {
+/// A probe result tied to the device and port it came from.
+struct ServiceProbe {
+    ip: IpAddr,
+    port: u16,
+    result: ProbeResult,
+}
+
+/// Identify the service behind each open port, and fold vendor data into the
+/// device.
+///
+/// This is what turns a port number into a product and version, which is what
+/// vulnerability matching needs to be anything more than a guess.
+async fn fingerprint_devices(devices: &mut [Device]) -> Vec<ServiceProbe> {
     let fingerprinter = Fingerprinter::new();
-    let mut banners = Vec::new();
+    let mut probes = Vec::new();
 
     for device in devices.iter_mut() {
-        for port in device.open_ports.clone() {
-            let banner = match port {
-                80 | 8080 => {
-                    Fingerprinter::grab_http_banner(&device.ip.to_string(), port).await
-                }
-                22 => Fingerprinter::grab_ssh_banner(&device.ip.to_string(), port).await,
-                21 => Fingerprinter::grab_ftp_banner(&device.ip.to_string(), port).await,
-                _ => None,
-            };
+        if !device.open_ports.is_empty() {
+            let results = probe_ports(device.ip, &device.open_ports, 16).await;
 
-            if let Some(banner) = banner {
-                let service = banner
-                    .service_name
-                    .clone()
-                    .unwrap_or_else(|| "Unknown".to_string());
-                eprintln!("  {}:{} ({}) - {}", device.ip, banner.port, banner.protocol, service);
-                if let Some(version) = &banner.version {
-                    eprintln!("    Version: {}", version);
+            for (port, result) in results {
+                match result.product_version() {
+                    Some(identity) => eprintln!(
+                        "  {}:{} {} — {}",
+                        device.ip, port, result.service, identity
+                    ),
+                    None => eprintln!("  {}:{} {}", device.ip, port, result.service),
                 }
-                banners.push((device.ip, banner));
+                if let Some(details) = &result.details {
+                    eprintln!("    {}", details);
+                }
+
+                probes.push(ServiceProbe {
+                    ip: device.ip,
+                    port,
+                    result,
+                });
             }
         }
 
@@ -772,14 +783,14 @@ async fn fingerprint_devices(devices: &mut [Device]) -> Vec<(IpAddr, BannerGrabR
         }
     }
 
-    banners
+    probes
 }
 
 /// Run vulnerability checks and attach every finding to its device.
 ///
 /// Findings must live on `Device` to reach reports, the summary, trends and
 /// the scan database — printing them alone loses them.
-fn apply_assessment(devices: &mut [Device], banners: &[(IpAddr, BannerGrabResult)]) -> usize {
+fn apply_assessment(devices: &mut [Device], probes: &[ServiceProbe]) -> usize {
     let runner = AssessmentRunner::new();
     let mut total = 0;
 
@@ -812,28 +823,48 @@ fn apply_assessment(devices: &mut [Device], banners: &[(IpAddr, BannerGrabResult
         }
     }
 
-    // Version-specific CVEs, using versions recovered by banner grabbing.
+    // Version-specific CVEs, using what the probes identified.
     for device in devices.iter_mut() {
         let IpAddr::V4(ipv4) = device.ip else { continue };
 
         for port in device.open_ports.clone() {
-            let Some(service_name) = service_name_for_port(port) else {
+            // A version is the whole point: without one there is nothing to
+            // compare against a range, so an unidentified port is skipped
+            // rather than guessed at. Run --fingerprint to identify services.
+            let Some(probe) = probes
+                .iter()
+                .find(|probe| probe.ip == device.ip && probe.port == port)
+            else {
+                continue;
+            };
+            let Some(version) = probe.result.version.clone() else {
                 continue;
             };
 
-            let version = banners
-                .iter()
-                .find(|(ip, banner)| *ip == device.ip && banner.port == port)
-                .and_then(|(_, banner)| banner.version.clone());
+            // Prefer the product the service reported over a guess from the
+            // port number: "port 80, probably Apache" produces confident
+            // findings about software that may not be installed at all. The
+            // port only names the service when a version proved what it is but
+            // the product string was unparseable.
+            let service_name = probe
+                .result
+                .product
+                .as_deref()
+                .and_then(netgap_services::canonical_service_name)
+                .or_else(|| service_name_for_port(port));
+
+            let Some(service_name) = service_name else {
+                continue;
+            };
 
             let service_info = ServiceInfo {
                 ip: ipv4,
                 port,
                 name: service_name.to_string(),
-                version,
-                service_type: service_type_for_port(port).to_string(),
-                banner: None,
-                confidence: 0.75,
+                version: Some(version),
+                service_type: probe.result.service.to_lowercase(),
+                banner: probe.result.banner.clone(),
+                confidence: 0.95,
                 vulnerabilities: Vec::new(),
             };
 
@@ -888,7 +919,7 @@ fn cve_finding(
     }
 }
 
-/// Service name used for vulnerability lookups.
+/// Service name used for vulnerability lookups when a probe identified nothing.
 fn service_name_for_port(port: u16) -> Option<&'static str> {
     match port {
         21 => Some("FTP"),
@@ -899,16 +930,6 @@ fn service_name_for_port(port: u16) -> Option<&'static str> {
         3306 => Some("MySQL"),
         5432 => Some("PostgreSQL"),
         _ => None,
-    }
-}
-
-/// Service type used for vulnerability lookups.
-fn service_type_for_port(port: u16) -> &'static str {
-    match port {
-        21 => "ftp",
-        22 => "ssh",
-        23 => "telnet",
-        _ => "http",
     }
 }
 
@@ -1164,8 +1185,6 @@ mod tests {
         assert_eq!(service_name_for_port(22), Some("OpenSSH"));
         assert_eq!(service_name_for_port(23), Some("Telnet"));
         assert_eq!(service_name_for_port(9999), None);
-        assert_eq!(service_type_for_port(21), "ftp");
-        assert_eq!(service_type_for_port(80), "http");
     }
 
     #[test]
@@ -1243,34 +1262,96 @@ mod tests {
         assert_eq!(smb_findings, 1, "port 445 should be reported once");
     }
 
+    fn probe(ip: IpAddr, port: u16, product: &str, version: &str) -> ServiceProbe {
+        ServiceProbe {
+            ip,
+            port,
+            result: ProbeResult {
+                service: "HTTP".to_string(),
+                product: Some(product.to_string()),
+                version: Some(version.to_string()),
+                banner: Some(format!("{product}/{version}")),
+                details: None,
+            },
+        }
+    }
+
     #[test]
     fn test_apply_assessment_adds_version_specific_cves() {
-        // An old Apache version with a banner-supplied version string.
         let mut devices = vec![device_with_ports(&[80])];
-        let banners = vec![(
-            devices[0].ip,
-            BannerGrabResult {
-                ip: devices[0].ip.to_string(),
-                port: 80,
-                protocol: "HTTP".to_string(),
-                banner: "Apache/2.4.49".to_string(),
-                service_name: Some("Apache".to_string()),
-                version: Some("2.4.49".to_string()),
-                confidence: 0.9,
-            },
-        )];
+        let probes = vec![probe(devices[0].ip, 80, "Apache", "2.4.49")];
 
-        apply_assessment(&mut devices, &banners);
+        apply_assessment(&mut devices, &probes);
 
-        let cve_ids: Vec<&str> = devices[0]
-            .findings
-            .iter()
-            .map(|finding| finding.id.as_str())
-            .filter(|id| id.starts_with("cve-"))
-            .collect();
         assert!(
-            !cve_ids.is_empty(),
+            devices[0]
+                .findings
+                .iter()
+                .any(|finding| finding.id.starts_with("cve-")),
             "a vulnerable Apache version should produce CVE findings"
         );
+    }
+
+    #[test]
+    fn test_probed_product_overrides_the_port_guess() {
+        // Port 80 is usually assumed to be Apache. When the probe says nginx,
+        // the finding must be about nginx — guessing here is how a scanner ends
+        // up reporting CVEs for software that is not installed.
+        let mut devices = vec![device_with_ports(&[80])];
+        let probes = vec![probe(devices[0].ip, 80, "nginx", "1.14.0")];
+
+        apply_assessment(&mut devices, &probes);
+
+        let titles: Vec<String> = devices[0]
+            .findings
+            .iter()
+            .map(|finding| finding.title.clone())
+            .collect();
+        assert!(
+            titles.iter().any(|title| title.contains("nginx")),
+            "expected an nginx finding, got {titles:?}"
+        );
+        assert!(
+            !titles.iter().any(|title| title.contains("Apache")),
+            "must not report Apache for a port the probe identified as nginx"
+        );
+    }
+
+    #[test]
+    fn test_ports_without_a_version_produce_no_cve_findings() {
+        // No probe ran, so there is no version to compare against any range.
+        // Reporting a CVE here would mean inventing one.
+        let mut devices = vec![device_with_ports(&[3306])];
+        apply_assessment(&mut devices, &[]);
+
+        assert!(!devices[0]
+            .findings
+            .iter()
+            .any(|finding| finding.id.starts_with("cve-")));
+    }
+
+    #[test]
+    fn test_port_name_fills_in_when_the_product_is_unparseable() {
+        // A version without a product name: the port still identifies which
+        // table to consult, and a real version makes the range check meaningful.
+        let mut devices = vec![device_with_ports(&[3306])];
+        let probes = vec![ServiceProbe {
+            ip: devices[0].ip,
+            port: 3306,
+            result: ProbeResult {
+                service: "MySQL".to_string(),
+                product: None,
+                version: Some("5.7.30".to_string()),
+                banner: None,
+                details: None,
+            },
+        }];
+
+        apply_assessment(&mut devices, &probes);
+
+        assert!(devices[0]
+            .findings
+            .iter()
+            .any(|finding| finding.service.as_deref() == Some("MySQL")));
     }
 }
