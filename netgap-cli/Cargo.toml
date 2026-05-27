@@ -22,6 +22,7 @@ netgap-report = { path = "../netgap-report" }
 netgap-storage = { path = "../netgap-storage" }
 netgap-assess = { path = "../netgap-assess" }
 netgap-probes = { path = "../netgap-probes" }
+netgap-threat-intel = { path = "../netgap-threat-intel" }
 clap.workspace = true
 tokio.workspace = true
 anyhow.workspace = true

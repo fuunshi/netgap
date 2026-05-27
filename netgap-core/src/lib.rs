@@ -8,6 +8,146 @@ use std::fmt;
 use std::net::IpAddr;
 use std::path::PathBuf;
 
+pub mod version {
+    use std::cmp::Ordering;
+
+    /// Version string handling.
+    /// Compare two version strings the way a person would.
+    ///
+    /// Versions are split into digit and non-digit runs; digit runs compare as
+    /// numbers, the rest case-insensitively. This is what makes "2.4.9" older than
+    /// "2.4.10" — a plain string comparison puts it after, which turns a real
+    /// vulnerability into a clean bill of health.
+    ///
+    /// Trailing zero components are ignored, so "1.18.0" and "1.18" compare equal.
+    /// Pre-release suffixes ("1.0rc1") are treated as *newer* than the plain
+    /// release, the opposite of their usual meaning; no range in the bundled
+    /// database depends on that distinction.
+    pub fn compare_versions(left: &str, right: &str) -> Ordering {
+        let left_parts = version_parts(left);
+        let right_parts = version_parts(right);
+
+        for index in 0..left_parts.len().max(right_parts.len()) {
+            match (left_parts.get(index), right_parts.get(index)) {
+                (Some(left_part), Some(right_part)) => {
+                    let ordering = compare_part(left_part, right_part);
+                    if ordering != Ordering::Equal {
+                        return ordering;
+                    }
+                }
+                (Some(_), None) => {
+                    // One version has components the other lacks. That only means
+                    // anything if they carry information: the "0" in "1.18.0"
+                    // does not make it newer than "1.18".
+                    if !left_parts[index..].iter().all(is_insignificant) {
+                        return Ordering::Greater;
+                    }
+                }
+                (None, Some(_)) => {
+                    if !right_parts[index..].iter().all(is_insignificant) {
+                        return Ordering::Less;
+                    }
+                }
+                (None, None) => break,
+            }
+        }
+
+        Ordering::Equal
+    }
+
+    /// One run of digits or non-digits within a version string.
+    #[derive(Debug, PartialEq, Eq)]
+    enum VersionPart {
+        Number(u64),
+        Text(String),
+    }
+
+    /// Split a version into alternating digit and non-digit runs.
+    fn version_parts(version: &str) -> Vec<VersionPart> {
+        let mut parts = Vec::new();
+        let mut current = String::new();
+        let mut current_is_digit: Option<bool> = None;
+
+        for character in version.trim().chars() {
+            let is_digit = character.is_ascii_digit();
+            if let Some(previous) = current_is_digit {
+                if previous != is_digit {
+                    push_part(&mut parts, &mut current, previous);
+                }
+            }
+            current_is_digit = Some(is_digit);
+            current.push(character);
+        }
+
+        if let Some(is_digit) = current_is_digit {
+            push_part(&mut parts, &mut current, is_digit);
+        }
+
+        parts
+    }
+
+    fn push_part(parts: &mut Vec<VersionPart>, current: &mut String, is_digit: bool) {
+        if current.is_empty() {
+            return;
+        }
+
+        if is_digit {
+            parts.push(VersionPart::Number(current.parse().unwrap_or(u64::MAX)));
+        } else if current.chars().any(|c| c.is_alphanumeric()) {
+            // Punctuation is a separator, not a component: dropping it here is what
+            // lets "7.4p1" line up against "7.4.1" component by component.
+            parts.push(VersionPart::Text(current.to_ascii_lowercase()));
+        }
+
+        current.clear();
+    }
+
+    /// Whether a component says nothing about which version is newer.
+    fn is_insignificant(part: &VersionPart) -> bool {
+        matches!(part, VersionPart::Number(0))
+    }
+
+    fn compare_part(left: &VersionPart, right: &VersionPart) -> Ordering {
+        match (left, right) {
+            (VersionPart::Number(a), VersionPart::Number(b)) => a.cmp(b),
+            (VersionPart::Text(a), VersionPart::Text(b)) => a.cmp(b),
+            // A numeric component outranks a textual one, so "7.4.1" > "7.4p1".
+            (VersionPart::Number(_), VersionPart::Text(_)) => Ordering::Greater,
+            (VersionPart::Text(_), VersionPart::Number(_)) => Ordering::Less,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_numeric_not_lexicographic() {
+            // The reason this exists: as strings, "2.4.9" sorts after "2.4.10".
+            assert_eq!(compare_versions("2.4.9", "2.4.10"), Ordering::Less);
+            assert_eq!(compare_versions("2.4.10", "2.4.9"), Ordering::Greater);
+            assert_eq!(compare_versions("10.6.12", "9.6"), Ordering::Greater);
+            assert_eq!(compare_versions("8.0.32", "15.1"), Ordering::Less);
+            assert_eq!(compare_versions("9.3", "9.3"), Ordering::Equal);
+        }
+
+        #[test]
+        fn test_separators_and_trailing_zeros() {
+            assert_eq!(compare_versions("1.18.0", "1.18"), Ordering::Equal);
+            assert_eq!(compare_versions("7.4p1", "7.4.1"), Ordering::Less);
+            assert_eq!(compare_versions("2.9", "2.9.0"), Ordering::Equal);
+        }
+
+        #[test]
+        fn test_bounded_windows() {
+            // The shape NVD ranges need: >= start and < end.
+            assert_eq!(compare_versions("2.4.49", "2.4.49"), Ordering::Equal);
+            assert_eq!(compare_versions("2.4.50", "2.4.51"), Ordering::Less);
+            assert_eq!(compare_versions("2.4.48", "2.4.49"), Ordering::Less);
+        }
+    }
+}
+
 /// MAC address helpers.
 pub mod mac {
     /// Whether a MAC is locally administered, which in practice means the

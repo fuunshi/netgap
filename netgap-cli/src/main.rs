@@ -6,6 +6,7 @@ use netgap_mdns::MdnsDiscovery;
 use netgap_report::discovery::DiscoveryContext;
 use netgap_report::{format_discovery, ReportFormatter};
 use netgap_probes::{ProbeResult, probe_ports};
+use netgap_threat_intel::{CvssSeverity, LocalCacheManager, NvdClient, NvdDatabase};
 use netgap_scan::{PortScanner, ScanConfig as PortScanConfig};
 use netgap_services::{ServiceInfo, VulnerabilityCheck, VulnerabilityFinding};
 use netgap_trends::{AlertRule, ChangeDetection, HealthScore, ScanHistory};
@@ -123,6 +124,12 @@ enum Commands {
     /// List trusted devices
     Trusted,
 
+    /// Manage the local NVD vulnerability database
+    ThreatIntel {
+        #[command(subcommand)]
+        action: ThreatIntelAction,
+    },
+
     /// Run a security scan on the selected network
     Scan {
         #[command(flatten)]
@@ -147,6 +154,14 @@ enum Commands {
         /// Show an interactive dashboard with per-host scan progress
         #[arg(long)]
         interactive: bool,
+
+        /// Match findings against the local NVD database (see 'netgap threat-intel update')
+        #[arg(long)]
+        threat_intel: bool,
+
+        /// With --threat-intel: fetch data for the services found, then cache it
+        #[arg(long)]
+        threat_intel_update: bool,
 
         /// Do not write the result to the scan history database
         #[arg(long)]
@@ -187,6 +202,23 @@ enum Commands {
     },
 }
 
+/// What to do with the local NVD database.
+#[derive(Subcommand)]
+enum ThreatIntelAction {
+    /// Download CVE data from NVD into the local cache
+    Update {
+        /// Maximum CVEs to keep per product
+        #[arg(long, default_value_t = 500)]
+        per_product: usize,
+    },
+
+    /// Show what the local cache holds
+    Status,
+
+    /// Delete the local cache
+    Clear,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -212,6 +244,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Trusted => {
             cmd_trusted()?;
         }
+        Commands::ThreatIntel { action } => {
+            cmd_threat_intel(action).await?;
+        }
         Commands::Scan {
             discovery,
             quick,
@@ -219,6 +254,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             fingerprint,
             assess,
             interactive,
+            threat_intel,
+            threat_intel_update,
             no_save,
             format,
         } => {
@@ -229,6 +266,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 fingerprint,
                 assess,
                 interactive,
+                threat_intel,
+                threat_intel_update,
                 no_save,
                 &format,
             )
@@ -303,6 +342,8 @@ async fn cmd_scan(
     mut fingerprint: bool,
     mut assess: bool,
     interactive: bool,
+    threat_intel: bool,
+    threat_intel_update: bool,
     no_save: bool,
     format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -377,13 +418,13 @@ async fn cmd_scan(
             eprintln!();
         }
 
-        // Banner grabbing phase (if fingerprint flag enabled)
-        let banners = if fingerprint {
+        // Service identification (if fingerprint flag enabled)
+        let probes = if fingerprint {
             eprintln!("Phase 3: Service Fingerprinting");
             eprintln!("──────────────────────────────");
-            let banners = fingerprint_devices(&mut devices).await;
-            println!();
-            banners
+            let probes = fingerprint_devices(&mut devices).await;
+            eprintln!();
+            probes
         } else {
             Vec::new()
         };
@@ -393,7 +434,41 @@ async fn cmd_scan(
             eprintln!("Phase 4: Vulnerability Assessment");
             eprintln!("─────────────────────────────────");
 
-            let found = apply_assessment(&mut devices, &banners);
+            // Fetching for the services actually found keeps this to one
+            // request per identified product, instead of mirroring NVD.
+            if threat_intel && threat_intel_update && !probes.is_empty() {
+                if let Err(error) = update_cache_for_probes(&probes).await {
+                    eprintln!("  ⚠️  NVD update failed: {error}");
+                }
+            }
+
+            // Loading the cache is offline; fetching is a separate command.
+            let nvd = if threat_intel {
+                match LocalCacheManager::default_location().and_then(|cache| cache.load()) {
+                    Ok(database) if database.is_empty() => {
+                        eprintln!(
+                            "  ⚠️  NVD cache is empty — run 'netgap threat-intel update' for live CVE data"
+                        );
+                        None
+                    }
+                    Ok(database) => {
+                        eprintln!(
+                            "  NVD: {} entries (updated {})",
+                            database.entry_count,
+                            database.last_updated.as_deref().unwrap_or("unknown")
+                        );
+                        Some(database)
+                    }
+                    Err(error) => {
+                        eprintln!("  ⚠️  Could not read the NVD cache: {error}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            let found = apply_assessment(&mut devices, &probes, nvd.as_ref());
 
             if found == 0 {
                 eprintln!("  ✓ No known vulnerabilities detected for open ports");
@@ -790,7 +865,11 @@ async fn fingerprint_devices(devices: &mut [Device]) -> Vec<ServiceProbe> {
 ///
 /// Findings must live on `Device` to reach reports, the summary, trends and
 /// the scan database — printing them alone loses them.
-fn apply_assessment(devices: &mut [Device], probes: &[ServiceProbe]) -> usize {
+fn apply_assessment(
+    devices: &mut [Device],
+    probes: &[ServiceProbe],
+    nvd: Option<&NvdDatabase>,
+) -> usize {
     let runner = AssessmentRunner::new();
     let mut total = 0;
 
@@ -884,10 +963,259 @@ fn apply_assessment(devices: &mut [Device], probes: &[ServiceProbe]) -> usize {
                 device.add_finding(finding);
                 total += 1;
             }
+
+            // Live NVD data, when a cache is present. This runs alongside the
+            // bundled database rather than replacing it: the bundled entries
+            // are curated and the NVD cache may be partial.
+            if let Some(database) = nvd {
+                for finding in nvd_findings(device.ip, port, &probe.result, database) {
+                    if device
+                        .findings
+                        .iter()
+                        .any(|existing| existing.id == finding.id)
+                    {
+                        continue;
+                    }
+
+                    eprintln!(
+                        "  {}:{} [{}] {}",
+                        device.ip, port, finding.severity, finding.title
+                    );
+                    device.add_finding(finding);
+                    total += 1;
+                }
+            }
         }
     }
 
     total
+}
+
+/// Fetch NVD data for the products and versions a scan identified.
+///
+/// Only versions the cache has not already been populated for are requested, so
+/// repeat scans of the same network make no requests at all.
+async fn update_cache_for_probes(probes: &[ServiceProbe]) -> Result<usize, Box<dyn std::error::Error>> {
+    let cache = LocalCacheManager::default_location()?;
+    let mut database = cache.load()?;
+    let client = NvdClient::new();
+
+    // Distinct product/version pairs, so ten web servers cost one request.
+    let mut wanted: Vec<(&str, &str, &str)> = Vec::new();
+    for probe in probes {
+        let (Some(product), Some(version)) =
+            (probe.result.product.as_deref(), probe.result.version.as_deref())
+        else {
+            continue;
+        };
+        let Some((vendor, _)) = netgap_threat_intel::cpe_for_product(product) else {
+            continue;
+        };
+        if database.has_queried(vendor, cpe_product_for(product), version) {
+            continue;
+        }
+        let entry = (vendor, cpe_product_for(product), version);
+        if !wanted.contains(&entry) {
+            wanted.push(entry);
+        }
+    }
+
+    if wanted.is_empty() {
+        eprintln!("  NVD: cache already covers every identified service");
+        return Ok(0);
+    }
+
+    if !client.has_api_key() {
+        eprintln!(
+            "  ℹ️  No NVD_API_KEY set: {} request(s), rate limited to 5 per 30s",
+            wanted.len()
+        );
+    }
+
+    let total = wanted.len();
+    let mut fetched = 0;
+
+    for (index, (vendor, product, version)) in wanted.iter().enumerate() {
+        eprintln!("  [{}/{}] {product} {version}", index + 1, total);
+
+        match client.fetch_for_version(vendor, product, version, 2000).await {
+            Ok(entries) => {
+                let count = entries.len();
+                for entry in entries {
+                    database.add_entry(entry);
+                }
+                database.mark_queried(vendor, product, version);
+                fetched += count;
+            }
+            Err(error) => eprintln!("    ⚠️  {error}"),
+        }
+
+        if !client.has_api_key() && index + 1 < total {
+            tokio::time::sleep(std::time::Duration::from_secs(7)).await;
+        }
+    }
+
+    database.last_updated = Some(chrono::Utc::now().to_rfc3339());
+    cache.save(&database)?;
+
+    if fetched > 0 {
+        eprintln!(
+            "  NVD: cached {} entr(ies); {} total",
+            fetched, database.entry_count
+        );
+    }
+
+    Ok(fetched)
+}
+
+/// The CPE product name for a probe product, defaulting to the probe's own.
+fn cpe_product_for(product: &str) -> &str {
+    netgap_threat_intel::cpe_for_product(product)
+        .map(|(_, cpe)| cpe)
+        .unwrap_or(product)
+}
+
+/// Findings for one identified service, from the local NVD database.
+///
+/// A CVE already reported by the bundled database is skipped, so the same flaw
+/// is not listed twice under two identifiers.
+fn nvd_findings(
+    ip: IpAddr,
+    port: u16,
+    probe: &ProbeResult,
+    database: &NvdDatabase,
+) -> Vec<Finding> {
+    let (Some(product), Some(version)) = (probe.product.as_deref(), probe.version.as_deref())
+    else {
+        return Vec::new();
+    };
+
+    // NVD indexes by CPE product ("http_server"), not by the name a service
+    // reports ("Apache"). Without a mapping there is nothing to look up.
+    let Some((_vendor, cpe_product)) = netgap_threat_intel::cpe_for_product(product) else {
+        return Vec::new();
+    };
+
+    database
+        .matching(cpe_product, version)
+        .into_iter()
+        .map(|entry| {
+            let ranges = entry.ranges_for(cpe_product);
+            let reference = entry
+                .references
+                .first()
+                .map(|url| format!(" See {url}."))
+                .unwrap_or_default();
+
+            Finding {
+                id: format!("nvd-{}", entry.cve_id),
+                title: format!("{} in {} {}", entry.cve_id, product, version),
+                description: format!(
+                    "{} (NVD, CVSS {:.1} {}). Affected: {}.{}",
+                    entry.description,
+                    entry.cvss_score,
+                    entry.severity,
+                    if ranges.is_empty() {
+                        "see reference".to_string()
+                    } else {
+                        ranges.join("; ")
+                    },
+                    reference
+                ),
+                severity: match entry.severity {
+                    CvssSeverity::Critical => Severity::Critical,
+                    CvssSeverity::High => Severity::High,
+                    CvssSeverity::Medium => Severity::Medium,
+                    // Core has no separate Low; both fold into Info.
+                    CvssSeverity::Low | CvssSeverity::None => Severity::Info,
+                },
+                ip,
+                port: Some(port),
+                service: Some(product.to_string()),
+                remediation: format!(
+                    "Upgrade {} past the affected range, or restrict access to port {}.",
+                    product, port
+                ),
+                confidence: 0.95,
+            }
+        })
+        .collect()
+}
+
+async fn cmd_threat_intel(action: ThreatIntelAction) -> Result<(), Box<dyn std::error::Error>> {
+    let cache = LocalCacheManager::default_location()?;
+
+    match action {
+        ThreatIntelAction::Status => {
+            let database = cache.load()?;
+
+            println!("📚 NVD vulnerability database\n");
+            println!("  Cache:    {}", cache.path().display());
+            println!("  Entries:  {}", database.entry_count);
+            println!(
+                "  Updated:  {}",
+                database.last_updated.as_deref().unwrap_or("never")
+            );
+            println!(
+                "  Severity: {} critical, {} high or critical",
+                database.critical_count(),
+                database.high_or_critical_count()
+            );
+            println!(
+                "  Versions: {} product version(s) queried",
+                database.queried_versions.len()
+            );
+
+            if database.is_empty() {
+                println!("\n  Empty. Run 'netgap threat-intel update' to download CVE data.");
+            } else {
+                let mut products: Vec<(String, usize)> = database.products().into_iter().collect();
+                products.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+                println!("\n  Products covered:");
+                for (product, count) in products.iter().take(20) {
+                    println!("    {:<28} {}", product, count);
+                }
+                if products.len() > 20 {
+                    println!("    ... and {} more", products.len() - 20);
+                }
+            }
+        }
+
+        ThreatIntelAction::Clear => {
+            cache.clear()?;
+            println!("✓ Cleared the NVD cache");
+        }
+
+        ThreatIntelAction::Update { per_product } => {
+            let client = NvdClient::new();
+            if !client.has_api_key() {
+                println!(
+                    "ℹ️  No NVD_API_KEY set: limited to 5 requests per 30s, so this will take a \
+                     few minutes. Set NVD_API_KEY for a higher quota."
+                );
+            }
+            println!("⬇️  Fetching CVE data from NVD...\n");
+
+            let database = client
+                .fetch_known_products(per_product, |product, index, total| {
+                    println!("  [{index}/{total}] {product}");
+                })
+                .await?;
+
+            cache.save(&database)?;
+
+            println!(
+                "\n✓ Cached {} entries for {} product(s) at {}",
+                database.entry_count,
+                database.products().len(),
+                cache.path().display()
+            );
+            println!("  Scans can now use them with --threat-intel");
+        }
+    }
+
+    Ok(())
 }
 
 /// Convert a service-crate vulnerability into a core finding.
@@ -1224,7 +1552,7 @@ mod tests {
     #[test]
     fn test_apply_assessment_attaches_findings_to_devices() {
         let mut devices = vec![device_with_ports(&[23])];
-        let attached = apply_assessment(&mut devices, &[]);
+        let attached = apply_assessment(&mut devices, &[], None);
 
         assert!(attached > 0, "telnet exposure should be reported");
         assert_eq!(devices[0].findings.len(), attached);
@@ -1252,7 +1580,7 @@ mod tests {
             confidence: 1.0,
         });
 
-        apply_assessment(&mut devices, &[]);
+        apply_assessment(&mut devices, &[], None);
 
         let smb_findings = devices[0]
             .findings
@@ -1281,7 +1609,7 @@ mod tests {
         let mut devices = vec![device_with_ports(&[80])];
         let probes = vec![probe(devices[0].ip, 80, "Apache", "2.4.49")];
 
-        apply_assessment(&mut devices, &probes);
+        apply_assessment(&mut devices, &probes, None);
 
         assert!(
             devices[0]
@@ -1300,7 +1628,7 @@ mod tests {
         let mut devices = vec![device_with_ports(&[80])];
         let probes = vec![probe(devices[0].ip, 80, "nginx", "1.14.0")];
 
-        apply_assessment(&mut devices, &probes);
+        apply_assessment(&mut devices, &probes, None);
 
         let titles: Vec<String> = devices[0]
             .findings
@@ -1317,12 +1645,91 @@ mod tests {
         );
     }
 
+    fn nvd_entry(cve_id: &str, product: &str, start: &str, end: &str) -> netgap_threat_intel::CveEntry {
+        netgap_threat_intel::CveEntry {
+            cve_id: cve_id.to_string(),
+            cvss_score: 9.8,
+            cvss_vector: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H".to_string(),
+            severity: netgap_threat_intel::CvssSeverity::Critical,
+            description: "A live NVD entry.".to_string(),
+            affected: vec![netgap_threat_intel::AffectedProduct {
+                vendor: "apache".to_string(),
+                product: product.to_string(),
+                range: netgap_threat_intel::VersionRange {
+                    start_including: Some(start.to_string()),
+                    end_excluding: Some(end.to_string()),
+                    ..Default::default()
+                },
+            }],
+            references: vec!["https://nvd.nist.gov/vuln/detail/X".to_string()],
+            published_date: "2021-10-05T00:00:00.000".to_string(),
+            last_modified: "2025-01-01T00:00:00.000".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_nvd_findings_match_an_identified_version() {
+        let mut database = NvdDatabase::new();
+        database.add_entry(nvd_entry("CVE-2021-42013", "http_server", "2.4.49", "2.4.51"));
+
+        let mut devices = vec![device_with_ports(&[80])];
+        let probes = vec![probe(devices[0].ip, 80, "Apache", "2.4.50")];
+
+        apply_assessment(&mut devices, &probes, Some(&database));
+
+        let nvd: Vec<&Finding> = devices[0]
+            .findings
+            .iter()
+            .filter(|finding| finding.id.starts_with("nvd-"))
+            .collect();
+
+        assert_eq!(nvd.len(), 1, "expected one NVD finding, got {nvd:?}");
+        assert_eq!(nvd[0].severity, Severity::Critical);
+        assert!(nvd[0].title.contains("CVE-2021-42013"));
+        assert!(nvd[0].description.contains("2.4.49"));
+    }
+
+    #[test]
+    fn test_nvd_findings_respect_the_version_window() {
+        let mut database = NvdDatabase::new();
+        database.add_entry(nvd_entry("CVE-2021-42013", "http_server", "2.4.49", "2.4.51"));
+
+        // 2.4.51 is outside the window and must not be reported.
+        let mut devices = vec![device_with_ports(&[80])];
+        let probes = vec![probe(devices[0].ip, 80, "Apache", "2.4.51")];
+
+        apply_assessment(&mut devices, &probes, Some(&database));
+
+        assert!(!devices[0]
+            .findings
+            .iter()
+            .any(|finding| finding.id.starts_with("nvd-")));
+    }
+
+    #[test]
+    fn test_nvd_lookup_needs_a_known_cpe_product() {
+        let mut database = NvdDatabase::new();
+        database.add_entry(nvd_entry("CVE-2021-42013", "http_server", "2.4.49", "2.4.51"));
+
+        // A product with no CPE mapping cannot be looked up, and must not
+        // silently match something else.
+        let mut devices = vec![device_with_ports(&[80])];
+        let probes = vec![probe(devices[0].ip, 80, "Cloudflare", "2.4.50")];
+
+        apply_assessment(&mut devices, &probes, Some(&database));
+
+        assert!(!devices[0]
+            .findings
+            .iter()
+            .any(|finding| finding.id.starts_with("nvd-")));
+    }
+
     #[test]
     fn test_ports_without_a_version_produce_no_cve_findings() {
         // No probe ran, so there is no version to compare against any range.
         // Reporting a CVE here would mean inventing one.
         let mut devices = vec![device_with_ports(&[3306])];
-        apply_assessment(&mut devices, &[]);
+        apply_assessment(&mut devices, &[], None);
 
         assert!(!devices[0]
             .findings
@@ -1347,7 +1754,7 @@ mod tests {
             },
         }];
 
-        apply_assessment(&mut devices, &probes);
+        apply_assessment(&mut devices, &probes, None);
 
         assert!(devices[0]
             .findings

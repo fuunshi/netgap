@@ -1001,6 +1001,7 @@ dependencies = [
  "netgap-scan",
  "netgap-services",
  "netgap-storage",
+ "netgap-threat-intel",
  "netgap-trends",
  "ratatui",
  "serde_json",
@@ -1124,6 +1125,7 @@ dependencies = [
 name = "netgap-services"
 version = "0.1.0"
 dependencies = [
+ "netgap-core",
  "serde",
  "serde_json",
 ]
@@ -1147,14 +1149,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
- "regex",
+ "netgap-core",
  "reqwest",
- "semver",
  "serde",
  "serde_json",
- "thiserror",
  "tokio",
- "tokio-test",
 ]
 
 [[package]]
@@ -1590,12 +1589,6 @@ dependencies = [
  "ring",
  "untrusted",
 ]
-
-[[package]]
-name = "semver"
-version = "1.0.28"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
 name = "serde"

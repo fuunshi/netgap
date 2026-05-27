@@ -107,7 +107,7 @@ netgap-discover ── netgap-scan ── netgap-interfaces
 
 ## Test Coverage
 
-**182 tests passing** across the workspace:
+**199 tests passing** across the workspace:
 
 | Crate | Purpose | Tests |
 |-------|---------|-------|
@@ -124,7 +124,7 @@ netgap-discover ── netgap-scan ── netgap-interfaces
 | netgap-trends | History and change detection | 8 |
 | netgap-mdns | mDNS service discovery | 15 |
 | netgap-raw-sockets | Raw ARP framework (not yet wired up) | 7 |
-| netgap-threat-intel | CVE/NVD lookups | 6 |
+| netgap-threat-intel | NVD client and CVE cache | 17 |
 | netgap-webhooks | Alert delivery | 6 |
 | netgap-cli | Assessment/severity mapping | 5 |
 
@@ -154,6 +154,11 @@ netgap discover                   # report for humans
 netgap discover --format json     # full metadata, machine-readable
 netgap discover --identify        # probe ports to sharpen device types
 netgap discover --mdns            # ask devices to name themselves over mDNS
+
+# Live CVE data (optional; scanning works without it)
+netgap threat-intel update     # download CVE data for known products
+netgap threat-intel status     # inspect the local cache
+netgap scan --threat-intel     # match findings against it, offline
 
 # Trusted devices
 netgap trusted                    # list

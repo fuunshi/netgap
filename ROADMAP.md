@@ -75,17 +75,49 @@ Three correctness problems surfaced while wiring it and are fixed:
   with no httpd version range — and was listed as affecting Apache `< 2.4.50`.
   Replaced with CVE-2021-42013, which is the httpd flaw in that window.
 
+**NVD client: done.** `netgap-threat-intel` now queries the real API instead of
+returning three hardcoded entries, two of which had fabricated identifiers
+("CVE-2023-01234"). Three commands and one flag:
+
+```
+netgap threat-intel update     # fetch by product into the local cache
+netgap threat-intel status     # what the cache holds
+netgap scan --threat-intel     # match findings against the cache, offline
+netgap scan --threat-intel --threat-intel-update   # fetch for services found
+```
+
+Two design points that came out of testing against the live API:
+
+- **Lookups are per version, not per product.** `fetch_product` returns every
+  CVE ever filed against a product, oldest first, with no sort parameter
+  available — for Apache that is 351 entries starting in 1999, and a limit
+  truncates to the *oldest*. Querying `cpeName=...:http_server:2.4.49` instead
+  makes NVD apply its own version-window matching server-side and returns the
+  81 entries that actually apply. The bulk path now sorts newest-first and says
+  why it is second choice.
+- **The cache records which versions it was populated for.** It holds what was
+  asked for, not a mirror of NVD, so matching a version that was never queried
+  would silently under-report. `queried_versions` makes that detectable, and
+  scan-driven updates fetch only the versions not yet covered.
+
+Verified against a live server reporting `Server: Apache/2.4.49`: the probe read
+the banner, the CPE mapping resolved `apache:http_server`, and NVD returned 81
+CVEs whose top entries are the genuine 2.4.49 flaws — CVE-2021-41773,
+CVE-2021-42013, CVE-2021-44790, CVE-2022-22720.
+
 **Still to do:**
 
-- The bundled database is still **6 entries** and hand-written; several of the
-  remaining ranges should be checked against NVD (CVE-2021-26691's fixed
-  version in particular).
-- `netgap-threat-intel` has a working NVD client with a local cache and 6 tests
-  — still **no caller**. That is the real fix for the database.
-- TLS is detected but not inspected: `probe_https` confirms the port speaks TLS
-  and stops there. Certificates (issuer, expiry, self-signed) and protocol
-  version (flagging TLS 1.0/1.1) need `rustls`, which is already in the
-  dependency tree via reqwest.
+- The bundled six-entry database in `netgap-services` remains as a fallback for
+  when no NVD cache exists; several of its ranges should be checked against NVD
+  (CVE-2021-26691's fixed version in particular).
+- **Bulk coverage.** The per-version API only populates the cache for versions a
+  scan has seen. Covering a product wholesale means many date-windowed requests
+  (the API caps `pubStartDate`/`pubEndDate` at 120 days and has no descending
+  sort). The right answer is the NVD bulk feeds, which need gzip and streaming
+  JSON parsing.
+- TLS is still detected but not inspected: `probe_https` confirms the port
+  speaks TLS and stops there. Certificates (issuer, expiry, self-signed) and
+  protocol version (flagging TLS 1.0/1.1) need `rustls`, already in the tree.
 
 ### 4. "New since your last scan"
 
