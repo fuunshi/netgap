@@ -916,6 +916,26 @@ fn apply_assessment(
             else {
                 continue;
             };
+            // TLS findings describe the connection, not a software version, so
+            // they are collected before the version check that everything below
+            // depends on.
+            for finding in tls_findings(device.ip, port, &probe.result) {
+                if device
+                    .findings
+                    .iter()
+                    .any(|existing| existing.id == finding.id)
+                {
+                    continue;
+                }
+
+                eprintln!(
+                    "  {}:{} [{}] {}",
+                    device.ip, port, finding.severity, finding.title
+                );
+                device.add_finding(finding);
+                total += 1;
+            }
+
             let Some(version) = probe.result.version.clone() else {
                 continue;
             };
@@ -1073,6 +1093,99 @@ fn cpe_product_for(product: &str) -> &str {
     netgap_threat_intel::cpe_for_product(product)
         .map(|(_, cpe)| cpe)
         .unwrap_or(product)
+}
+
+/// Findings from what a TLS handshake revealed.
+///
+/// These are observations about the connection itself rather than about
+/// software versions, so they do not depend on any CVE data.
+fn tls_findings(ip: IpAddr, port: u16, probe: &ProbeResult) -> Vec<Finding> {
+    let Some(tls) = &probe.tls else {
+        return Vec::new();
+    };
+
+    let mut findings = Vec::new();
+    let mut finding = |id: &str, title: String, description: String, severity: Severity, remediation: String| {
+        findings.push(Finding {
+            id: id.to_string(),
+            title,
+            description,
+            severity,
+            ip,
+            port: Some(port),
+            service: Some("HTTPS".to_string()),
+            remediation,
+            confidence: 1.0,
+        });
+    };
+
+    // A protocol deprecated in 2021 and broken since POODLE. Servers that
+    // still accept it will use it with a client that offers only that.
+    if tls.supports_legacy_tls {
+        finding(
+            "tls_legacy_protocol",
+            "Legacy TLS accepted (TLS 1.0/1.1)".to_string(),
+            format!(
+                "The service negotiated {} but also answered a TLS 1.0 hello, so it still accepts a protocol with known attacks. Modern clients will use a newer version, but an attacker can force the downgrade.",
+                tls.protocol_version
+            ),
+            Severity::High,
+            "Disable TLS 1.0 and 1.1 in the service configuration, leaving TLS 1.2 or newer.".to_string(),
+        );
+    }
+
+    if !tls.has_forward_secrecy() {
+        finding(
+            "tls_no_forward_secrecy",
+            format!("Weak TLS cipher suite ({})", tls.cipher_suite),
+            "The negotiated suite uses static RSA key exchange, which has no forward secrecy: traffic recorded today can be decrypted later by anyone who obtains the server's private key.".to_string(),
+            Severity::Medium,
+            "Enable ECDHE cipher suites, which provide forward secrecy.".to_string(),
+        );
+    }
+
+    if let Some(certificate) = &tls.certificate {
+        if certificate.is_expired() {
+            finding(
+                "tls_certificate_expired",
+                format!("Expired TLS certificate ({})", certificate.subject),
+                format!(
+                    "The certificate for {} expired on {} ({} days ago). Browsers and clients will refuse or warn, and an expired certificate usually means the device is no longer maintained.",
+                    certificate.subject, certificate.not_after, -certificate.days_until_expiry
+                ),
+                Severity::High,
+                "Renew the certificate, or replace the device if it can no longer be updated.".to_string(),
+            );
+        } else if certificate.expires_soon() {
+            finding(
+                "tls_certificate_expiring",
+                format!("TLS certificate expires soon ({})", certificate.subject),
+                format!(
+                    "The certificate for {} expires on {}, in {} day(s).",
+                    certificate.subject, certificate.not_after, certificate.days_until_expiry
+                ),
+                Severity::Medium,
+                "Renew the certificate before it expires.".to_string(),
+            );
+        }
+
+        // Normal on a LAN, and worth stating plainly rather than alarming
+        // about: it is information, not a vulnerability.
+        if certificate.self_signed {
+            finding(
+                "tls_self_signed",
+                format!("Self-signed TLS certificate ({})", certificate.subject),
+                format!(
+                    "{} presents a certificate signed by itself, so nothing vouches for its identity. That is normal for a router or printer on a home network, but it also means a device impersonating it would look no different.",
+                    ip
+                ),
+                Severity::Info,
+                "Nothing to fix on a home network. Install a trusted certificate if the device is reached by name from outside.".to_string(),
+            );
+        }
+    }
+
+    findings
 }
 
 /// Findings for one identified service, from the local NVD database.
@@ -1600,6 +1713,7 @@ mod tests {
                 version: Some(version.to_string()),
                 banner: Some(format!("{product}/{version}")),
                 details: None,
+                tls: None,
             },
         }
     }
@@ -1643,6 +1757,150 @@ mod tests {
             !titles.iter().any(|title| title.contains("Apache")),
             "must not report Apache for a port the probe identified as nginx"
         );
+    }
+
+    fn tls_probe(
+        protocol: &str,
+        cipher: &str,
+        legacy: bool,
+        certificate: Option<netgap_probes::tls::CertificateInfo>,
+    ) -> ProbeResult {
+        ProbeResult {
+            service: "HTTPS".to_string(),
+            product: None,
+            version: None,
+            banner: None,
+            details: None,
+            tls: Some(netgap_probes::tls::TlsInspection {
+                protocol_version: protocol.to_string(),
+                cipher_suite: cipher.to_string(),
+                supports_legacy_tls: legacy,
+                certificate,
+            }),
+        }
+    }
+
+    fn certificate(days_until_expiry: i64, self_signed: bool) -> netgap_probes::tls::CertificateInfo {
+        netgap_probes::tls::CertificateInfo {
+            subject: "router.local".to_string(),
+            issuer: if self_signed { "router.local" } else { "Test CA" }.to_string(),
+            not_before: "2020-01-01".to_string(),
+            not_after: "2030-01-01".to_string(),
+            self_signed,
+            days_until_expiry,
+        }
+    }
+
+    #[test]
+    fn test_legacy_tls_is_reported_as_high() {
+        let probe = tls_probe(
+            "TLSv1.0",
+            "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+            true,
+            Some(certificate(1000, false)),
+        );
+
+        let findings = tls_findings("192.168.1.1".parse().unwrap(), 443, &probe);
+
+        let legacy = findings
+            .iter()
+            .find(|finding| finding.id == "tls_legacy_protocol")
+            .expect("legacy TLS should be reported");
+        assert_eq!(legacy.severity, Severity::High);
+        assert!(legacy.description.contains("TLS 1.0"));
+    }
+
+    #[test]
+    fn test_static_rsa_suite_is_reported_without_forward_secrecy() {
+        let probe = tls_probe(
+            "TLSv1.2",
+            "TLS_RSA_WITH_AES_256_GCM_SHA384",
+            false,
+            None,
+        );
+
+        let findings = tls_findings("192.168.1.1".parse().unwrap(), 443, &probe);
+
+        let weak = findings
+            .iter()
+            .find(|finding| finding.id == "tls_no_forward_secrecy")
+            .expect("static RSA should be reported");
+        assert_eq!(weak.severity, Severity::Medium);
+
+        // An ECDHE suite must not be flagged.
+        let good = tls_probe(
+            "TLSv1.3",
+            "TLS13_AES_128_GCM_SHA256",
+            false,
+            None,
+        );
+        assert!(tls_findings("192.168.1.1".parse().unwrap(), 443, &good).is_empty());
+    }
+
+    #[test]
+    fn test_certificate_problems_are_reported_by_severity() {
+        let ip: IpAddr = "192.168.1.1".parse().unwrap();
+
+        let expired = tls_probe(
+            "TLSv1.2",
+            "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+            false,
+            Some(certificate(-3, false)),
+        );
+        let findings = tls_findings(ip, 443, &expired);
+        let finding = findings
+            .iter()
+            .find(|finding| finding.id == "tls_certificate_expired")
+            .expect("expired certificate should be reported");
+        assert_eq!(finding.severity, Severity::High);
+
+        let expiring = tls_probe(
+            "TLSv1.2",
+            "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+            false,
+            Some(certificate(7, false)),
+        );
+        let findings = tls_findings(ip, 443, &expiring);
+        assert!(findings
+            .iter()
+            .any(|finding| finding.id == "tls_certificate_expiring"));
+
+        // Self-signed is normal on a LAN: reported, but not as a problem.
+        let self_signed = tls_probe(
+            "TLSv1.2",
+            "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+            false,
+            Some(certificate(1000, true)),
+        );
+        let findings = tls_findings(ip, 443, &self_signed);
+        let finding = findings
+            .iter()
+            .find(|finding| finding.id == "tls_self_signed")
+            .expect("self-signed should be reported");
+        assert_eq!(finding.severity, Severity::Info);
+    }
+
+    #[test]
+    fn test_non_tls_probes_produce_no_tls_findings() {
+        let probes = vec![
+            probe("192.168.1.1".parse().unwrap(), 80, "nginx", "1.18.0"),
+            ServiceProbe {
+                ip: "192.168.1.1".parse().unwrap(),
+                port: 80,
+                result: ProbeResult {
+                    service: "TCP".to_string(),
+                    product: None,
+                    version: None,
+                    banner: None,
+                    details: None,
+                    tls: None,
+                },
+            },
+        ];
+
+        for probe in &probes {
+            assert!(tls_findings(probe.ip, probe.port, &probe.result).is_empty());
+        }
     }
 
     fn nvd_entry(cve_id: &str, product: &str, start: &str, end: &str) -> netgap_threat_intel::CveEntry {
@@ -1751,6 +2009,7 @@ mod tests {
                 version: Some("5.7.30".to_string()),
                 banner: None,
                 details: None,
+                tls: None,
             },
         }];
 

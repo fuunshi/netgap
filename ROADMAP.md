@@ -115,9 +115,39 @@ CVE-2021-42013, CVE-2021-44790, CVE-2022-22720.
   (the API caps `pubStartDate`/`pubEndDate` at 120 days and has no descending
   sort). The right answer is the NVD bulk feeds, which need gzip and streaming
   JSON parsing.
-- TLS is still detected but not inspected: `probe_https` confirms the port
-  speaks TLS and stops there. Certificates (issuer, expiry, self-signed) and
-  protocol version (flagging TLS 1.0/1.1) need `rustls`, already in the tree.
+**TLS inspection: done.** `probe_https` reads the `ServerHello` and
+`Certificate` messages directly instead of completing a handshake, because the
+devices most worth inspecting are the ones a real handshake cannot reach: the
+gateway on the development network offers only static-RSA cipher suites, which
+rustls refuses outright. Reading two messages needs no key exchange, so the
+certificate arrives regardless.
+
+It reports the negotiated version, the cipher suite, whether the server still
+accepts a TLS 1.0 hello, and the leaf certificate's subject, issuer, validity
+and whether it is self-signed. Findings: legacy TLS accepted (High), static RSA
+without forward secrecy (Medium), expired certificate (High), expiring within
+30 days (Medium), self-signed (Info — normal on a LAN, so reported without
+alarm).
+
+Certificate fields are read with a small DER reader rather than an X.509 crate,
+which would have pulled in a parser stack for four fields.
+
+Verified against two live servers: the gateway (TLS 1.2, static RSA, self-signed,
+reported correctly) and an `openssl s_server -tls1` instance, which was detected
+as `TLSv1.0` and flagged. That second test found a real bug — the SNI extension
+was missing the list-length prefix RFC 6066 requires, which the router tolerated
+and OpenSSL rejected.
+
+**Still open on this item:**
+
+- The bundled six-entry database in `netgap-services` remains as a fallback for
+  when no NVD cache exists; several of its ranges should be checked against NVD
+  (CVE-2021-26691's fixed version in particular).
+- **Bulk coverage.** The per-version API only populates the cache for versions a
+  scan has seen. Covering a product wholesale means many date-windowed requests
+  (the API caps `pubStartDate`/`pubEndDate` at 120 days and has no descending
+  sort). The right answer is the NVD bulk feeds, which need gzip and streaming
+  JSON parsing.
 
 ### 4. "New since your last scan"
 

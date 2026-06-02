@@ -14,6 +14,7 @@ A production-ready network security scanner written in Rust. Discover devices on
 - 🔄 **Scan Comparison** - Detect network changes between scans
 - 🏷️ **Device Identification** - Names, vendors and types, with a trusted-device list
 - 📡 **mDNS Discovery** - Asks devices to name themselves (printers, TVs, speakers)
+- 🔒 **TLS Inspection** - Certificates, expiry, self-signed, legacy protocol support
 
 ## Getting Started
 
@@ -107,7 +108,7 @@ netgap-discover ── netgap-scan ── netgap-interfaces
 
 ## Test Coverage
 
-**199 tests passing** across the workspace:
+**213 tests passing** across the workspace:
 
 | Crate | Purpose | Tests |
 |-------|---------|-------|
@@ -118,7 +119,7 @@ netgap-discover ── netgap-scan ── netgap-interfaces
 | netgap-report | Output formatting | 3 |
 | netgap-fingerprint | Device fingerprinting | 12 |
 | netgap-assess | Vulnerability checks | 6 |
-| netgap-probes | Service and version probes | 11 |
+| netgap-probes | Service, version and TLS probes | 21 |
 | netgap-storage | Result persistence | 6 |
 | netgap-services | Service/CVE database | 13 |
 | netgap-trends | History and change detection | 8 |

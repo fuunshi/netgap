@@ -11,6 +11,8 @@
 //! Parsing is kept in free functions over captured strings so it can be tested
 //! without a network.
 
+pub mod tls;
+
 use anyhow::Result;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
@@ -37,6 +39,8 @@ pub struct ProbeResult {
     pub banner: Option<String>,
     /// Anything else worth showing a human.
     pub details: Option<String>,
+    /// What a TLS handshake revealed, for ports that speak TLS.
+    pub tls: Option<tls::TlsInspection>,
 }
 
 impl ProbeResult {
@@ -48,6 +52,7 @@ impl ProbeResult {
             version: None,
             banner,
             details: None,
+            tls: None,
         }
     }
 
@@ -200,23 +205,21 @@ pub async fn probe_http(ip: IpAddr, port: u16) -> Result<ProbeResult> {
             .lines()
             .next()
             .map(|status| status.trim().to_string()),
+        tls: None,
     })
 }
 
-/// HTTPS probe.
-///
-/// Confirms the port speaks TLS and records that it is encrypted. It does not
-/// complete a handshake, so no certificate details are available yet.
+/// HTTPS probe: read the certificate and the negotiated parameters.
 pub async fn probe_https(ip: IpAddr, port: u16) -> Result<ProbeResult> {
-    let stream = connect(ip, port).await?;
-    drop(stream);
+    let inspection = tls::inspect(ip, port).await?;
 
     Ok(ProbeResult {
         service: "HTTPS".to_string(),
         product: None,
         version: None,
         banner: None,
-        details: Some("TLS port responsive (certificate not inspected)".to_string()),
+        details: Some(inspection.summary()),
+        tls: Some(inspection),
     })
 }
 
@@ -232,6 +235,7 @@ pub async fn probe_ssh(ip: IpAddr, port: u16) -> Result<ProbeResult> {
         version,
         banner: Some(banner.trim().to_string()),
         details: None,
+        tls: None,
     })
 }
 
@@ -247,6 +251,7 @@ pub async fn probe_ftp(ip: IpAddr, port: u16) -> Result<ProbeResult> {
         version,
         banner: Some(banner.trim().to_string()),
         details: None,
+        tls: None,
     })
 }
 
@@ -262,6 +267,7 @@ pub async fn probe_telnet(ip: IpAddr, port: u16) -> Result<ProbeResult> {
         version: None,
         banner: Some(banner.trim().to_string()),
         details: Some("Telnet sends credentials in cleartext".to_string()),
+        tls: None,
     })
 }
 
@@ -277,6 +283,7 @@ pub async fn probe_smtp(ip: IpAddr, port: u16) -> Result<ProbeResult> {
         version,
         banner: Some(banner.trim().to_string()),
         details: None,
+        tls: None,
     })
 }
 
@@ -292,6 +299,7 @@ pub async fn probe_imap(ip: IpAddr, port: u16) -> Result<ProbeResult> {
         version,
         banner: Some(banner.trim().to_string()),
         details: None,
+        tls: None,
     })
 }
 
@@ -307,6 +315,7 @@ pub async fn probe_pop3(ip: IpAddr, port: u16) -> Result<ProbeResult> {
         version,
         banner: Some(banner.trim().to_string()),
         details: None,
+        tls: None,
     })
 }
 
@@ -336,6 +345,7 @@ pub async fn probe_vnc(ip: IpAddr, port: u16) -> Result<ProbeResult> {
         version,
         banner: Some(banner.trim().to_string()),
         details,
+        tls: None,
     })
 }
 
@@ -358,6 +368,7 @@ pub async fn probe_mysql(ip: IpAddr, port: u16) -> Result<ProbeResult> {
         version,
         banner: Some(banner.trim_end_matches('\0').to_string()),
         details: None,
+        tls: None,
     })
 }
 
@@ -394,6 +405,7 @@ pub async fn probe_postgres(ip: IpAddr, port: u16) -> Result<ProbeResult> {
         } else {
             "Port responded, but not with a PostgreSQL handshake".to_string()
         }),
+        tls: None,
     })
 }
 
@@ -424,6 +436,7 @@ pub async fn probe_redis(ip: IpAddr, port: u16) -> Result<ProbeResult> {
         banner: response.lines().next().map(str::to_string),
         details: unauthenticated
             .then(|| "Redis answered INFO without authentication".to_string()),
+        tls: None,
     })
 }
 
@@ -637,6 +650,7 @@ mod tests {
             version: Some("7.4p1".to_string()),
             banner: Some("SSH-2.0-OpenSSH_7.4p1".to_string()),
             details: None,
+            tls: None,
         };
 
         assert_eq!(result.service, "SSH");
