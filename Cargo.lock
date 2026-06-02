@@ -1104,6 +1104,7 @@ name = "netgap-report"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "colored",
  "crossterm",
  "netgap-core",

@@ -149,17 +149,30 @@ and OpenSSL rejected.
   sort). The right answer is the NVD bulk feeds, which need gzip and streaming
   JSON parsing.
 
-### 4. "New since your last scan"
+### 4. "New since your last scan" — ✅ done
 
-Scans are persisted now, so the history exists. Devices need first-seen and
-last-seen timestamps, then the report can say what is genuinely new:
+Devices are now tracked across scans in a `device_seen` table keyed by MAC (or
+by address when no MAC is known), holding first sighting, last sighting and how
+many scans have included them. The discovery report gained a `Seen` column and
+a count of what is new:
 
 ```
-+ 192.168.111.56   first seen 2 hours ago   Apple
+  Devices connected: 20    Trusted: 3    Unrecognized: 17
+  Seen for the first time: 2
+
+  IP             Name            MAC                Type              Seen   Status
+  192.168.111.1  gateway/router  C4:B2:5B:0A:03:26  Router / gateway  now    trusted
+  192.168.111.56 —               D2:07:6E:B6:B2:CA  Phone / laptop    3h     UNRECOGNIZED
+  192.168.111.71 —               A2:2D:98:D1:F6:8F  Phone / laptop    new    UNRECOGNIZED
 ```
 
-This is the honest version of "is anything wrong" — and unlike the trusted-device
-list, it keeps working for devices with randomized MACs, which is most phones.
+`discover` records what it saw, so the next run can compare; `--no-save` opts
+out. A device first seen *before* the previous scan keeps its original
+timestamp, so "new" means genuinely new rather than merely absent last time.
+
+One caveat worth knowing: a device that randomizes its MAC changes identity
+between scans and will look new again. The history is honest about what it
+observed, not clairvoyant about what a device is.
 
 ---
 

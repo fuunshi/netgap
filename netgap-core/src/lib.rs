@@ -297,6 +297,13 @@ pub struct Device {
     pub os_confidence: f32,
     /// Hostname (if available via reverse DNS).
     pub hostname: Option<String>,
+    /// When this device was first seen across scan history, if it has been
+    /// recorded before. `None` means this is the first sighting.
+    ///
+    /// Filled in from the scan store rather than by discovery, which knows
+    /// only about now.
+    #[serde(default)]
+    pub first_seen: Option<String>,
     /// Best-effort device classification (router, printer, phone, ...).
     ///
     /// A heuristic guess, never a certainty: MAC randomization and the size of
@@ -319,6 +326,7 @@ impl Device {
             os: OsType::Unknown,
             os_confidence: 0.0,
             hostname: None,
+            first_seen: None,
             device_type: None,
             open_ports: Vec::new(),
             findings: Vec::new(),
@@ -341,6 +349,21 @@ impl Device {
     /// Get the highest severity finding on this device.
     pub fn max_severity(&self) -> Option<Severity> {
         self.findings.iter().map(|f| f.severity).max()
+    }
+
+    /// A stable identity for recognising this device across scans.
+    ///
+    /// The MAC address is used because DHCP reassigns addresses, falling back
+    /// to the IP when no MAC is known.
+    ///
+    /// A device that randomizes its MAC changes identity between scans and
+    /// will look new again; that is a property of the privacy feature, not
+    /// something this can see through.
+    pub fn identity(&self) -> String {
+        match &self.mac {
+            Some(mac) => mac.trim().to_ascii_uppercase(),
+            None => format!("ip:{}", self.ip),
+        }
     }
 }
 
@@ -454,6 +477,15 @@ mod tests {
         device.add_open_port(22);
         device.add_open_port(80); // Duplicate
         assert_eq!(device.open_ports, vec![22, 80]);
+    }
+
+    #[test]
+    fn test_identity_prefers_the_mac() {
+        let mut device = Device::new("192.168.1.5".parse().expect("valid ip"));
+        assert_eq!(device.identity(), "ip:192.168.1.5");
+
+        device.mac = Some("c4:b2:5b:0a:03:26".to_string());
+        assert_eq!(device.identity(), "C4:B2:5B:0A:03:26");
     }
 
     #[test]

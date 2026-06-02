@@ -73,6 +73,8 @@ impl ScanStore {
                 hostname TEXT,
                 device_type TEXT,
                 open_ports TEXT,
+                first_seen TEXT,
+                last_seen TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(scan_id) REFERENCES scans(id)
             );
@@ -92,6 +94,20 @@ impl ScanStore {
                 FOREIGN KEY(device_id) REFERENCES devices(id)
             );
 
+            -- One row per device ever seen, keyed by MAC (or IP when no MAC
+            -- is known). The per-scan device rows say what was there; this
+            -- table says when it first appeared, which is what lets a later
+            -- scan report what it has not seen before.
+            CREATE TABLE IF NOT EXISTS device_seen (
+                identity TEXT PRIMARY KEY,
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                times_seen INTEGER NOT NULL DEFAULT 1,
+                last_ip TEXT,
+                last_mac TEXT,
+                last_hostname TEXT
+            );
+
             CREATE INDEX IF NOT EXISTS idx_scans_created_at ON scans(created_at);
             CREATE INDEX IF NOT EXISTS idx_findings_scan_id ON findings(scan_id);
             CREATE INDEX IF NOT EXISTS idx_devices_scan_id ON devices(scan_id);
@@ -109,13 +125,21 @@ impl ScanStore {
         let _ = self
             .conn
             .execute("ALTER TABLE devices ADD COLUMN device_type TEXT", []);
+        for column in ["first_seen", "last_seen"] {
+            let _ = self
+                .conn
+                .execute(&format!("ALTER TABLE devices ADD COLUMN {column} TEXT"), []);
+        }
 
         Ok(())
     }
 
-    /// Save a scan result to the database
+    /// Save a scan result to the database.
+    ///
+    /// Also records each device in the cross-scan history, so a later scan can
+    /// tell what it has not seen before.
     pub fn save_scan(&mut self, result: &ScanResult) -> Result<String> {
-        let scan_id = format!("scan-{}", chrono::Utc::now().timestamp_millis());
+        let scan_id = self.unique_scan_id()?;
         let now = Utc::now().to_rfc3339();
 
         let mut stmt = self.conn.prepare(
@@ -157,9 +181,12 @@ impl ScanStore {
                 .collect::<Vec<_>>()
                 .join(",");
 
+            // First sighting ever, or the one already recorded.
+            let (first_seen, last_seen) = self.record_sighting(device, &now)?;
+
             let mut device_stmt = self.conn.prepare(
-                "INSERT INTO devices (id, scan_id, ip, mac, vendor, os, hostname, device_type, open_ports, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO devices (id, scan_id, ip, mac, vendor, os, hostname, device_type, open_ports, first_seen, last_seen, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )?;
 
             device_stmt.execute(params![
@@ -172,6 +199,8 @@ impl ScanStore {
                 device.hostname.clone(),
                 device.device_type.clone(),
                 open_ports,
+                &first_seen,
+                &last_seen,
                 now
             ])?;
 
@@ -262,7 +291,7 @@ impl ScanStore {
 
         {
             let mut stmt = self.conn.prepare(
-                "SELECT id, ip, mac, vendor, os, hostname, device_type, open_ports
+                "SELECT id, ip, mac, vendor, os, hostname, device_type, open_ports, first_seen
                  FROM devices WHERE scan_id = ? ORDER BY ip",
             )?;
 
@@ -276,11 +305,13 @@ impl ScanStore {
                     row.get::<_, Option<String>>(5)?,
                     row.get::<_, Option<String>>(6)?,
                     row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
                 ))
             })?;
 
             for row in rows {
-                let (device_id, ip, mac, vendor, os, hostname, device_type, open_ports) = row?;
+                let (device_id, ip, mac, vendor, os, hostname, device_type, open_ports, first_seen) =
+                    row?;
                 let ip: IpAddr = ip
                     .parse()
                     .map_err(|_| anyhow!("Stored device address '{}' is not valid", ip))?;
@@ -291,6 +322,7 @@ impl ScanStore {
                 device.os = os_from_str(os.as_deref());
                 device.hostname = hostname;
                 device.device_type = device_type;
+                device.first_seen = first_seen;
                 device.open_ports = open_ports
                     .as_deref()
                     .unwrap_or_default()
@@ -325,6 +357,113 @@ impl ScanStore {
             devices,
             summary,
         })
+    }
+
+    /// An unused scan identifier.
+    ///
+    /// Millisecond timestamps collide when two scans are saved in the same
+    /// millisecond — a scan straight after a discovery, or watch mode saving
+    /// in a loop — and the second insert would fail on the primary key. A
+    /// suffix is added until the identifier is free.
+    fn unique_scan_id(&self) -> Result<String> {
+        let base = format!("scan-{}", chrono::Utc::now().timestamp_millis());
+
+        if !self.scan_exists(&base)? {
+            return Ok(base);
+        }
+
+        for suffix in 1..1000 {
+            let candidate = format!("{base}-{suffix}");
+            if !self.scan_exists(&candidate)? {
+                return Ok(candidate);
+            }
+        }
+
+        Err(anyhow!("could not allocate a unique scan id"))
+    }
+
+    /// Whether a scan with this identifier exists.
+    fn scan_exists(&self, scan_id: &str) -> Result<bool> {
+        let exists: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM scans WHERE id = ?",
+                params![scan_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        Ok(exists.is_some())
+    }
+
+    /// Note that a device was seen, returning when it was first and last seen.
+    ///
+    /// A device already in the history keeps its original `first_seen`; only
+    /// the last-sighted fields move.
+    fn record_sighting(&self, device: &Device, now: &str) -> Result<(String, String)> {
+        let identity = device.identity();
+
+        let existing: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT first_seen FROM device_seen WHERE identity = ?",
+                params![&identity],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        let first_seen = existing.unwrap_or_else(|| now.to_string());
+
+        self.conn.execute(
+            "INSERT INTO device_seen (identity, first_seen, last_seen, times_seen, last_ip, last_mac, last_hostname)
+             VALUES (?, ?, ?, 1, ?, ?, ?)
+             ON CONFLICT(identity) DO UPDATE SET
+               last_seen = excluded.last_seen,
+               times_seen = times_seen + 1,
+               last_ip = excluded.last_ip,
+               last_mac = excluded.last_mac,
+               last_hostname = excluded.last_hostname",
+            params![
+                &identity,
+                &first_seen,
+                now,
+                device.ip.to_string(),
+                device.mac.clone(),
+                device.hostname.clone()
+            ],
+        )?;
+
+        Ok((first_seen, now.to_string()))
+    }
+
+    /// Every device the store has ever seen, keyed by identity.
+    pub fn device_history(&self) -> Result<HashMap<String, SeenRecord>> {
+        let mut statement = self.conn.prepare(
+            "SELECT identity, first_seen, last_seen, times_seen, last_ip, last_mac, last_hostname
+             FROM device_seen",
+        )?;
+
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                SeenRecord {
+                    first_seen: row.get(1)?,
+                    last_seen: row.get(2)?,
+                    times_seen: row.get::<_, i64>(3)?.max(0) as u32,
+                    last_ip: row.get(4)?,
+                    last_mac: row.get(5)?,
+                    last_hostname: row.get(6)?,
+                },
+            ))
+        })?;
+
+        let mut history = HashMap::new();
+        for row in rows {
+            let (identity, record) = row?;
+            history.insert(identity, record);
+        }
+
+        Ok(history)
     }
 
     /// Load scan metadata by ID
@@ -730,6 +869,20 @@ pub struct ScanComparison {
     pub resolved_findings: Vec<(String, String)>,  // (finding_title, ip)
 }
 
+/// When a device was first and last seen, across every scan in the store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeenRecord {
+    /// RFC 3339 timestamp of the first sighting.
+    pub first_seen: String,
+    /// RFC 3339 timestamp of the most recent sighting.
+    pub last_seen: String,
+    /// How many scans have included this device.
+    pub times_seen: u32,
+    pub last_ip: Option<String>,
+    pub last_mac: Option<String>,
+    pub last_hostname: Option<String>,
+}
+
 /// Map a stored severity string back to the core enum.
 fn severity_from_str(severity: &str) -> Severity {
     match severity.to_ascii_uppercase().as_str() {
@@ -797,6 +950,84 @@ mod tests {
     fn test_scan_store_creation() {
         let result = ScanStore::open(Path::new(":memory:"));
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_first_scan_marks_every_device_new() {
+        let mut store = ScanStore::open(Path::new(":memory:")).expect("open store");
+        let scan_id = store.save_scan(&sample_result()).expect("save");
+
+        let loaded = store.load_scan(&scan_id).expect("load");
+        // Nothing was seen before, so first_seen is this scan's timestamp.
+        assert!(loaded.devices[0].first_seen.is_some());
+
+        let history = store.device_history().expect("history");
+        assert_eq!(history.len(), 1);
+        let record = history.get("AA:BB:CC:DD:EE:FF").expect("recorded by MAC");
+        assert_eq!(record.times_seen, 1);
+        assert_eq!(record.first_seen, record.last_seen);
+    }
+
+    #[test]
+    fn test_a_second_scan_keeps_the_original_first_seen() {
+        let mut store = ScanStore::open(Path::new(":memory:")).expect("open store");
+
+        let first_id = store.save_scan(&sample_result()).expect("first save");
+        let first = store
+            .load_scan(&first_id)
+            .expect("load")
+            .devices[0]
+            .first_seen
+            .clone()
+            .expect("first seen");
+
+        let second_id = store.save_scan(&sample_result()).expect("second save");
+        let second = store
+            .load_scan(&second_id)
+            .expect("load")
+            .devices[0]
+            .first_seen
+            .clone()
+            .expect("first seen");
+
+        // The device was known, so its first sighting must not move.
+        assert_eq!(first, second);
+
+        let history = store.device_history().expect("history");
+        let record = history.get("AA:BB:CC:DD:EE:FF").expect("recorded");
+        assert_eq!(record.times_seen, 2, "both scans count as sightings");
+        assert!(record.last_seen >= record.first_seen);
+    }
+
+    #[test]
+    fn test_scans_saved_in_the_same_millisecond_do_not_collide() {
+        // Two saves back to back land in the same millisecond, which used to
+        // fail the second on the primary key.
+        let mut store = ScanStore::open(Path::new(":memory:")).expect("open store");
+
+        let first = store.save_scan(&sample_result()).expect("first save");
+        let second = store.save_scan(&sample_result()).expect("second save");
+
+        assert_ne!(first, second, "identifiers must be unique");
+        assert_eq!(store.list_scans().expect("list").len(), 2);
+    }
+
+    #[test]
+    fn test_devices_without_a_mac_are_tracked_by_address() {
+        let mut store = ScanStore::open(Path::new(":memory:")).expect("open store");
+        let mut result = sample_result();
+        result.devices[0].mac = None;
+
+        store.save_scan(&result).expect("save");
+        let history = store.device_history().expect("history");
+
+        assert!(history.contains_key("ip:192.168.1.10"));
+    }
+
+    #[test]
+    fn test_history_is_empty_before_any_scan() {
+        let store = ScanStore::open(Path::new(":memory:")).expect("open store");
+        assert!(store.device_history().expect("history").is_empty());
     }
 
     #[test]

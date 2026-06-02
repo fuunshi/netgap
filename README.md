@@ -15,6 +15,7 @@ A production-ready network security scanner written in Rust. Discover devices on
 - 🏷️ **Device Identification** - Names, vendors and types, with a trusted-device list
 - 📡 **mDNS Discovery** - Asks devices to name themselves (printers, TVs, speakers)
 - 🔒 **TLS Inspection** - Certificates, expiry, self-signed, legacy protocol support
+- 🆕 **Device History** - Reports what has appeared on the network since last time
 
 ## Getting Started
 
@@ -108,7 +109,7 @@ netgap-discover ── netgap-scan ── netgap-interfaces
 
 ## Test Coverage
 
-**213 tests passing** across the workspace:
+**222 tests passing** across the workspace:
 
 | Crate | Purpose | Tests |
 |-------|---------|-------|
@@ -120,7 +121,7 @@ netgap-discover ── netgap-scan ── netgap-interfaces
 | netgap-fingerprint | Device fingerprinting | 12 |
 | netgap-assess | Vulnerability checks | 6 |
 | netgap-probes | Service, version and TLS probes | 21 |
-| netgap-storage | Result persistence | 6 |
+| netgap-storage | Result persistence and device history | 11 |
 | netgap-services | Service/CVE database | 13 |
 | netgap-trends | History and change detection | 8 |
 | netgap-mdns | mDNS service discovery | 15 |
@@ -155,6 +156,7 @@ netgap discover                   # report for humans
 netgap discover --format json     # full metadata, machine-readable
 netgap discover --identify        # probe ports to sharpen device types
 netgap discover --mdns            # ask devices to name themselves over mDNS
+netgap discover --no-save         # report without recording it in the history
 
 # Live CVE data (optional; scanning works without it)
 netgap threat-intel update     # download CVE data for known products

@@ -26,6 +26,8 @@ pub struct DiscoveryContext<'a> {
 const MAX_NAME: usize = 22;
 const MAX_VENDOR: usize = 20;
 const MAX_TYPE: usize = 30;
+/// Wide enough for "new" or "12d".
+const SEEN_WIDTH: usize = 5;
 
 /// Render the discovery report.
 pub fn format_discovery(devices: &[Device], context: &DiscoveryContext<'_>) -> String {
@@ -69,6 +71,8 @@ pub fn format_discovery(devices: &[Device], context: &DiscoveryContext<'_>) -> S
         .filter(|device| device.mac.as_deref().is_some_and(is_private_mac))
         .count();
 
+    let new_devices = devices.iter().filter(|device| device.first_seen.is_none()).count();
+
     out.push_str(&format!(
         "  {} {}    {} {}    {} {}\n",
         "Devices connected:".bold(),
@@ -82,6 +86,13 @@ pub fn format_discovery(devices: &[Device], context: &DiscoveryContext<'_>) -> S
             unrecognized.to_string().green().bold()
         },
     ));
+    if new_devices > 0 {
+        out.push_str(&format!(
+            "  {} {}\n",
+            "Seen for the first time:".bold(),
+            new_devices.to_string().red().bold()
+        ));
+    }
     if private_macs > 0 {
         out.push_str(&format!(
             "  {} {}\n",
@@ -121,17 +132,19 @@ pub fn format_discovery(devices: &[Device], context: &DiscoveryContext<'_>) -> S
         .clamp(4, MAX_TYPE);
 
     out.push_str(&format!(
-        "  {}  {}  {}  {}  {}  {}\n",
+        "  {}  {}  {}  {}  {}  {}  {}\n",
         pad("IP", ip_width).bold(),
         pad("Name", name_width).bold(),
         pad("MAC", mac_width).bold(),
         pad("Vendor", vendor_width).bold(),
         pad("Type", type_width).bold(),
+        pad("Seen", SEEN_WIDTH).bold(),
         "Status".bold(),
     ));
     out.push_str(&format!(
         "  {}\n",
-        "─".repeat(ip_width + name_width + mac_width + vendor_width + type_width + 14).dimmed()
+        "─".repeat(ip_width + name_width + mac_width + vendor_width + type_width + SEEN_WIDTH + 16)
+            .dimmed()
     ));
 
     for row in &rows {
@@ -155,17 +168,31 @@ pub fn format_discovery(devices: &[Device], context: &DiscoveryContext<'_>) -> S
         };
 
         out.push_str(&format!(
-            "  {}  {}  {}  {}  {}  {}\n",
+            "  {}  {}  {}  {}  {}  {}  {}\n",
             pad(&row.ip, ip_width),
             pad(&name, name_width),
             pad(&mac, mac_width),
             pad(&vendor, vendor_width),
             pad(&device_type, type_width),
+            pad(&row.seen(), SEEN_WIDTH),
             row.status(),
         ));
     }
 
     out.push('\n');
+
+    if new_devices > 0 {
+        out.push_str(&format!(
+            "  {} {} device(s) had not been seen before this scan.\n",
+            "✦".red().bold(),
+            new_devices.to_string().red().bold()
+        ));
+        out.push_str(
+            "    A device that is new is not necessarily unwelcome — a guest, or a phone\n    \
+             whose address changed. Check it before assuming either.\n\n",
+        );
+    }
+
     if unrecognized > 0 {
         out.push_str(&format!(
             "  {} {} device(s) are not in your trusted list.\n",
@@ -206,6 +233,9 @@ struct Row {
     device_type: String,
     trusted: bool,
     private_mac: bool,
+    /// How long ago this device was first seen, or `None` when it is new.
+    first_seen_ago: Option<String>,
+    new_device: bool,
 }
 
 impl Row {
@@ -230,6 +260,17 @@ impl Row {
                 .clone()
                 .unwrap_or_else(|| "Unknown device".to_string()),
             trusted: is_trusted(device, context.trusted),
+            first_seen_ago: device.first_seen.as_deref().and_then(relative_age),
+            new_device: device.first_seen.is_none(),
+        }
+    }
+
+    /// The "Seen" column: how long the device has been known.
+    fn seen(&self) -> String {
+        match (&self.new_device, &self.first_seen_ago) {
+            (true, _) => "new".red().bold().to_string(),
+            (false, Some(age)) => age.clone(),
+            (false, None) => "known".to_string(),
         }
     }
 
@@ -240,6 +281,33 @@ impl Row {
             "UNRECOGNIZED".red().bold().to_string()
         }
     }
+}
+
+/// Render how long ago a timestamp was, in as few characters as possible.
+///
+/// Returns `None` for timestamps that cannot be parsed, which leaves the
+/// column blank rather than showing a wrong age.
+fn relative_age(timestamp: &str) -> Option<String> {
+    let seen = chrono::DateTime::parse_from_rfc3339(timestamp).ok()?;
+    let elapsed = chrono::Utc::now().signed_duration_since(seen.with_timezone(&chrono::Utc));
+
+    let seconds = elapsed.num_seconds();
+    if seconds < 0 {
+        // A clock that moved backwards; say nothing rather than "in -3 days".
+        return None;
+    }
+
+    Some(if seconds < 60 {
+        "now".to_string()
+    } else if elapsed.num_minutes() < 60 {
+        format!("{}m", elapsed.num_minutes())
+    } else if elapsed.num_hours() < 24 {
+        format!("{}h", elapsed.num_hours())
+    } else if elapsed.num_days() < 365 {
+        format!("{}d", elapsed.num_days())
+    } else {
+        format!("{}y", elapsed.num_days() / 365)
+    })
 }
 
 /// Whether the device's MAC is in the trusted list.
@@ -402,6 +470,51 @@ mod tests {
         let report = format_discovery(&devices, &context);
 
         assert!(report.contains("living room tv"));
+    }
+
+    #[test]
+    fn test_new_devices_are_marked_and_counted() {
+        let trusted = HashSet::new();
+        let mut known = device("192.168.1.10", "C4:B2:5B:0A:03:26", "Computer");
+        known.first_seen = Some(
+            (chrono::Utc::now() - chrono::Duration::hours(3)).to_rfc3339(),
+        );
+        let brand_new = device("192.168.1.11", "C4:B2:5B:0A:03:27", "Phone");
+
+        let report = format_discovery(&[known, brand_new], &context(&trusted));
+
+        // Both the summary and the per-row marks.
+        assert!(report.contains("Seen for the first time:"));
+        assert!(report.contains("had not been seen before this scan"));
+        assert!(report.contains("3h"), "known devices show how long they have been seen");
+        assert!(report.contains("new"));
+    }
+
+    #[test]
+    fn test_no_new_devices_means_no_notice() {
+        let trusted = HashSet::new();
+        let mut known = device("192.168.1.10", "C4:B2:5B:0A:03:26", "Computer");
+        known.first_seen = Some(chrono::Utc::now().to_rfc3339());
+
+        let report = format_discovery(&[known], &context(&trusted));
+
+        assert!(!report.contains("had not been seen before"));
+        assert!(report.contains("now"), "a just-seen device reads as 'now'");
+    }
+
+    #[test]
+    fn test_relative_age_formats() {
+        let ago = |duration: chrono::Duration| (chrono::Utc::now() - duration).to_rfc3339();
+
+        assert_eq!(relative_age(&ago(chrono::Duration::seconds(5))).as_deref(), Some("now"));
+        assert_eq!(relative_age(&ago(chrono::Duration::minutes(5))).as_deref(), Some("5m"));
+        assert_eq!(relative_age(&ago(chrono::Duration::hours(5))).as_deref(), Some("5h"));
+        assert_eq!(relative_age(&ago(chrono::Duration::days(5))).as_deref(), Some("5d"));
+        assert_eq!(relative_age(&ago(chrono::Duration::days(400))).as_deref(), Some("1y"));
+
+        // Unparseable or future timestamps show nothing rather than nonsense.
+        assert_eq!(relative_age("not a timestamp"), None);
+        assert_eq!(relative_age(&(chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339()), None);
     }
 
     #[test]

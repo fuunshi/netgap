@@ -104,6 +104,10 @@ enum Commands {
         /// Probe common service ports to identify device types (extra traffic)
         #[arg(long)]
         identify: bool,
+
+        /// Do not record this discovery in the scan history
+        #[arg(long)]
+        no_save: bool,
     },
 
     /// Add a device to the trusted list (by MAC, or by IP if it is known)
@@ -232,8 +236,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             format,
             trust_all,
             identify,
+            no_save,
         } => {
-            cmd_discover(discovery, &format, trust_all, identify).await?;
+            cmd_discover(discovery, &format, trust_all, identify, no_save).await?;
         }
         Commands::Trust { device, label } => {
             cmd_trust(device, label)?;
@@ -518,6 +523,7 @@ async fn cmd_discover(
     format: &str,
     trust_all: bool,
     identify: bool,
+    no_save: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let plan = discovery_args.resolve(format == "json")?;
 
@@ -535,6 +541,22 @@ async fn cmd_discover(
     }
 
     let mut trust_list = trust::TrustList::load()?;
+
+    // When each device was first seen, from previous scans. Devices absent
+    // from this map are the ones this scan is seeing for the first time.
+    let store = netgap_storage::ScanStore::open_default().ok();
+    if let Some(store) = &store {
+        match store.device_history() {
+            Ok(history) => {
+                for device in devices.iter_mut() {
+                    device.first_seen = history
+                        .get(&device.identity())
+                        .map(|record| record.first_seen.clone());
+                }
+            }
+            Err(error) => eprintln!("   ⚠️  Could not read device history: {error}"),
+        }
+    }
 
     if trust_all && !devices.is_empty() {
         let mut added = 0;
@@ -558,6 +580,11 @@ async fn cmd_discover(
             println!("{}", serde_json::to_string_pretty(&devices)?);
         }
         _ => {
+            let new_devices = devices
+                .iter()
+                .filter(|device| device.first_seen.is_none())
+                .count();
+
             // The report is the result, so it goes to stdout.
             let context = DiscoveryContext {
                 interface: &plan.interface.name,
@@ -571,10 +598,55 @@ async fn cmd_discover(
                     .map(|network| std::net::IpAddr::V4(network.ip())),
             };
             println!("{}", format_discovery(&devices, &context));
+
+            if new_devices > 0 {
+                eprintln!(
+                    "   Recorded {} device(s) for the first time; the next scan will report what changed.",
+                    new_devices
+                );
+            }
+        }
+    }
+
+    if !no_save && !devices.is_empty() {
+        if let Some(store) = store {
+            record_discovery(store, &plan, &devices)?;
         }
     }
 
     Ok(())
+}
+
+/// Store a discovery run so later scans have something to compare against.
+///
+/// A discovery has no findings and no port data, which is exactly what the
+/// history needs: the question it answers is who was on the network, not what
+/// was wrong with them.
+fn record_discovery(
+    mut store: netgap_storage::ScanStore,
+    plan: &DiscoveryPlan,
+    devices: &[Device],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let result = ScanResult {
+        started_at: Local::now().to_rfc3339(),
+        config: ScanConfig {
+            interface: plan.interface.name.clone(),
+            target: plan.target.clone(),
+            timeout_ms: 0,
+            concurrency: 0,
+            discovery_only: true,
+        },
+        devices: devices.to_vec(),
+        summary: FindingSummary::new(),
+    };
+
+    match store.save_scan(&result) {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            eprintln!("   ⚠️  Could not record this discovery: {error}");
+            Ok(())
+        }
+    }
 }
 
 /// Ask the network to name itself over mDNS, and fold the answers into the

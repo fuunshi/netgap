@@ -12,4 +12,5 @@ crossterm.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 colored.workspace = true
+chrono.workspace = true
 thiserror.workspace = true
