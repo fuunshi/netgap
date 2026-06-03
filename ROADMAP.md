@@ -178,19 +178,35 @@ observed, not clairvoyant about what a device is.
 
 ## Security
 
-### 5. TLS and router-admin checks
+### 5. TLS and router-admin checks — ✅ done
 
-Nothing inspects certificates today. Common real findings on a home network:
-expired or self-signed certificates, and TLS 1.0/1.1 still enabled on a router
-or NAS.
+**TLS** is inspected: negotiated version, cipher suite, certificate subject,
+issuer, validity and self-signed status, plus whether the server still accepts
+a TLS 1.0 hello. Findings for legacy TLS (High), static RSA without forward
+secrecy (Medium), expired (High) and expiring (Medium) certificates, and
+self-signed certificates (Info).
 
-For the gateway specifically (one host, identified exactly), check whether the
-admin interface is reachable from the LAN over plain HTTP, and whether UPnP or
-WPS is enabled. Those are high-signal and need no credential guessing.
+**Gateway checks** run against one host, identified exactly because it owns the
+default route. The port scan does not cover router-specific interfaces, so the
+gateway gets a focused pass over its administration and UPnP ports:
 
-Going further into testing default router credentials should stay explicitly
-opt-in, per-run, and limited to the gateway. The exposure check above gets most
-of the value without it.
+```
+Gateway checks (192.168.111.1)
+  Administration page: HTTP/1.0 200 OK
+  [MEDIUM] Gateway administration is reachable over plain HTTP
+```
+
+It reports an administration interface served over plain HTTP *in addition* to
+HTTPS — the case the general check cannot see, since that one stays quiet when
+HTTPS is available — and an exposed UPnP control interface, which lets any
+device on the network open inbound ports without authentication.
+
+Known limits, in the code as well as here: the UPnP check reads TCP ports only.
+Discovery runs over UDP 1900, which is not probed, so a router exposing SSDP
+without an HTTP control interface is missed rather than misreported. Nothing
+here tests credentials — whether a default password still works cannot be
+determined from a port, and guessing at it would produce exactly the kind of
+confident wrong answer this codebase has been removing.
 
 ### 6. Watch mode should look for attacks, not just drift
 

@@ -65,6 +65,86 @@ impl Default for AssessmentRunner {
     }
 }
 
+/// Ports that serve router administration over plain HTTP.
+const ADMIN_HTTP_PORTS: &[u16] = &[80, 8080];
+
+/// Ports that expose the UPnP control interface.
+const UPNP_CONTROL_PORTS: &[u16] = &[5000, 2869];
+
+/// Ports that serve administration over TLS.
+const ADMIN_TLS_PORTS: &[u16] = &[443, 8443];
+
+/// Checks that only make sense for the network's gateway, where the stakes are
+/// higher than on any other device: this is the one that routes everything.
+///
+/// Deliberately does not repeat the general checks. `UnencryptedHTTPCheck`
+/// already reports a device serving HTTP with no HTTPS at all, so this adds
+/// what that check cannot see: an admin interface reachable over HTTP *in
+/// addition* to HTTPS, and an exposed UPnP control interface.
+///
+/// Nothing here tests credentials. Whether the admin page asks for a password,
+/// and whether the default one still works, cannot be determined by looking at
+/// a port, and claiming otherwise would be guesswork.
+///
+/// The UPnP check reads TCP ports only. UPnP discovery runs over UDP 1900,
+/// which this does not probe, so a router that exposes SSDP without an HTTP
+/// control interface will not be flagged — the check can miss UPnP, never
+/// invent it.
+pub fn check_gateway(device: &Device) -> Vec<Finding> {
+    let mut findings = Vec::new();
+
+    let http_admin: Vec<u16> = ADMIN_HTTP_PORTS
+        .iter()
+        .copied()
+        .filter(|port| device.open_ports.contains(port))
+        .collect();
+
+    let has_tls_admin = ADMIN_TLS_PORTS
+        .iter()
+        .any(|port| device.open_ports.contains(port));
+
+    if has_tls_admin && !http_admin.is_empty() {
+        let port = http_admin[0];
+        findings.push(Finding {
+            id: "gateway_http_admin_available".to_string(),
+            title: "Gateway administration is reachable over plain HTTP".to_string(),
+            description: format!(
+                "The gateway serves its administration interface on port {port} without encryption, alongside the encrypted interface. Anything typed into the HTTP page — including the router password — crosses the network in clear text, and anyone on the network can redirect that page elsewhere.",
+            ),
+            severity: Severity::Medium,
+            ip: device.ip,
+            port: Some(port),
+            service: Some("HTTP".to_string()),
+            remediation:
+                "Disable the plain HTTP administration interface in the router settings, leaving only HTTPS. Prefer the HTTPS address when configuring it.".to_string(),
+            confidence: 0.9,
+        });
+    }
+
+    if let Some(port) = UPNP_CONTROL_PORTS
+        .iter()
+        .copied()
+        .find(|port| device.open_ports.contains(port))
+    {
+        findings.push(Finding {
+            id: "gateway_upnp_exposed".to_string(),
+            title: "UPnP control interface is exposed on the gateway".to_string(),
+            description: format!(
+                "The gateway answers UPnP on port {port}. UPnP lets any device on the network ask the router to open an inbound port to the internet, with no authentication and no record of who asked. It is how some IoT devices and malware expose services without the owner ever choosing to.",
+            ),
+            severity: Severity::Medium,
+            ip: device.ip,
+            port: Some(port),
+            service: Some("UPnP".to_string()),
+            remediation:
+                "Disable UPnP in the router settings unless something on the network depends on it, and forward ports explicitly instead.".to_string(),
+            confidence: 0.85,
+        });
+    }
+
+    findings
+}
+
 /// Check for exposed Telnet (port 23) - CRITICAL
 struct TelnetExposedCheck;
 
@@ -248,6 +328,59 @@ mod tests {
             device.add_open_port(port);
         }
         device
+    }
+
+    fn device_with_ports(ports: &[u16]) -> Device {
+        let mut device = Device::new("192.168.1.1".parse().expect("valid ip"));
+        for port in ports {
+            device.add_open_port(*port);
+        }
+        device
+    }
+
+    #[test]
+    fn test_gateway_http_admin_alongside_https() {
+        // The general HTTP check stays quiet here because HTTPS is available;
+        // on the gateway the plain-HTTP option is still worth flagging.
+        let findings = check_gateway(&device_with_ports(&[80, 443]));
+
+        let finding = findings
+            .iter()
+            .find(|finding| finding.id == "gateway_http_admin_available")
+            .expect("plain HTTP admin should be reported");
+        assert_eq!(finding.severity, Severity::Medium);
+        assert_eq!(finding.port, Some(80));
+    }
+
+    #[test]
+    fn test_gateway_https_only_is_not_flagged() {
+        let findings = check_gateway(&device_with_ports(&[443]));
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn test_gateway_upnp_is_reported() {
+        let findings = check_gateway(&device_with_ports(&[80, 443, 5000]));
+
+        let finding = findings
+            .iter()
+            .find(|finding| finding.id == "gateway_upnp_exposed")
+            .expect("UPnP should be reported");
+        assert_eq!(finding.port, Some(5000));
+
+        // The UPnP control port on some routers.
+        let findings = check_gateway(&device_with_ports(&[2869]));
+        assert!(findings
+            .iter()
+            .any(|finding| finding.id == "gateway_upnp_exposed"));
+    }
+
+    #[test]
+    fn test_gateway_checks_do_not_duplicate_the_general_http_check() {
+        // HTTP with no HTTPS is the general check's business, not this one's.
+        let device = device_with_ports(&[80]);
+        assert!(check_gateway(&device).is_empty());
+        assert!(!UnencryptedHTTPCheck.check(&device).is_empty());
     }
 
     #[test]

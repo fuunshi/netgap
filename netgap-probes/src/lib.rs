@@ -181,14 +181,41 @@ async fn read_banner(stream: &mut TcpStream, limit: usize) -> String {
     }
 }
 
-/// HTTP probe: read the `Server` header.
+/// Read until the peer closes, the budget runs out, or the cap is reached.
+///
+/// Used where the interesting part may arrive after the first segment: an HTTP
+/// body, or a banner split across reads.
+async fn read_until_close(stream: &mut TcpStream, limit: usize) -> String {
+    let mut buffer = vec![0u8; limit];
+    let mut filled = 0;
+    let deadline = tokio::time::Instant::now() + READ_TIMEOUT;
+
+    while filled < limit {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+
+        match timeout(remaining, stream.read(&mut buffer[filled..])).await {
+            Ok(Ok(0)) => break, // the peer closed: the response is complete
+            Ok(Ok(read)) => filled += read,
+            _ => break, // timed out, or the connection failed
+        }
+    }
+
+    String::from_utf8_lossy(&buffer[..filled]).to_string()
+}
+
+/// HTTP probe: read the response headers and body.
 pub async fn probe_http(ip: IpAddr, port: u16) -> Result<ProbeResult> {
     let mut stream = connect(ip, port).await?;
 
     let request = b"GET / HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\nUser-Agent: netgap\r\n\r\n";
     stream.write_all(request).await?;
 
-    let response = read_banner(&mut stream, 8192).await;
+    // The body usually arrives in a separate segment from the headers, so a
+    // single read would see the status line and never the page title.
+    let response = read_until_close(&mut stream, 8192).await;
     let server = server_header(&response);
 
     let (product, version) = server
@@ -196,15 +223,25 @@ pub async fn probe_http(ip: IpAddr, port: u16) -> Result<ProbeResult> {
         .map(parse_server_header)
         .unwrap_or((None, None));
 
+    // The page title is often the only thing that says what the interface is
+    // for — "Router Login", "HP LaserJet" — so it is worth carrying along.
+    let status = response
+        .lines()
+        .next()
+        .map(|line| line.trim().to_string())
+        .unwrap_or_default();
+
+    let details = match page_title(&response) {
+        Some(title) => Some(format!("{status} — {title}")),
+        None => Some(status),
+    };
+
     Ok(ProbeResult {
         service: "HTTP".to_string(),
         product,
         version,
         banner: server,
-        details: response
-            .lines()
-            .next()
-            .map(|status| status.trim().to_string()),
+        details,
         tls: None,
     })
 }
@@ -444,6 +481,25 @@ pub async fn probe_redis(ip: IpAddr, port: u16) -> Result<ProbeResult> {
 pub async fn probe_tcp(ip: IpAddr, port: u16) -> Result<ProbeResult> {
     let _stream = connect(ip, port).await?;
     Ok(ProbeResult::unidentified("TCP", None))
+}
+
+/// Extract the `<title>` of an HTML page.
+///
+/// Deliberately naive: this is a label for a human reading a scan result, not
+/// a parsed document, so it takes the first title and gives up on anything
+/// unexpected.
+pub fn page_title(response: &str) -> Option<String> {
+    let lower = response.to_lowercase();
+    let start = lower.find("<title")?;
+    let open_end = lower[start..].find('>')? + start + 1;
+    let end = lower[open_end..].find("</title>")? + open_end;
+
+    let title = response[open_end..end]
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    (!title.is_empty()).then_some(title)
 }
 
 /// Extract the `Server` header from an HTTP response.
@@ -688,6 +744,23 @@ mod tests {
             (Some("cloudflare".to_string()), None)
         );
         assert_eq!(parse_server_header(""), (None, None));
+    }
+
+    #[test]
+    fn test_page_title() {
+        assert_eq!(
+            page_title("<html><head><title>Router Login</title></head></html>").as_deref(),
+            Some("Router Login")
+        );
+        // Attributes on the tag, and case differences.
+        assert_eq!(
+            page_title("<TITLE lang=\"en\">  HP   LaserJet </TITLE>").as_deref(),
+            Some("HP LaserJet")
+        );
+        // Nothing to report, and no panic on malformed input.
+        assert_eq!(page_title("<html><body>no title</body></html>"), None);
+        assert_eq!(page_title("<title>unterminated"), None);
+        assert_eq!(page_title(""), None);
     }
 
     #[test]

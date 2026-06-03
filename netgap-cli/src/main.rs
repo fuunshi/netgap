@@ -424,7 +424,7 @@ async fn cmd_scan(
         }
 
         // Service identification (if fingerprint flag enabled)
-        let probes = if fingerprint {
+        let mut probes = if fingerprint {
             eprintln!("Phase 3: Service Fingerprinting");
             eprintln!("──────────────────────────────");
             let probes = fingerprint_devices(&mut devices).await;
@@ -433,6 +433,12 @@ async fn cmd_scan(
         } else {
             Vec::new()
         };
+
+        // The gateway routes everything else, so it gets the checks that only
+        // make sense for the device holding the network together.
+        if assess {
+            check_gateway_exposure(&mut devices, &mut probes).await;
+        }
 
         // Vulnerability assessment (if assess flag enabled)
         if assess {
@@ -1165,6 +1171,81 @@ fn cpe_product_for(product: &str) -> &str {
     netgap_threat_intel::cpe_for_product(product)
         .map(|(_, cpe)| cpe)
         .unwrap_or(product)
+}
+
+/// Ports worth checking on the gateway itself.
+///
+/// The standard port list covers the common ones; these are the router-specific
+/// interfaces it does not include — the alternate admin ports and the UPnP
+/// control interface.
+const GATEWAY_PORTS: &[u16] = &[80, 443, 8080, 8443, 5000, 2869, 23];
+
+/// Probe the gateway's administration and UPnP ports, and report what it exposes.
+///
+/// A focused pass against a single host: the gateway is identified exactly (it
+/// owns the default route), so this costs one short probe rather than widening
+/// the scan for everyone.
+async fn check_gateway_exposure(devices: &mut Vec<Device>, probes: &mut Vec<ServiceProbe>) {
+    let Some(gateway) = netgap_interfaces::default_gateway_ipv4() else {
+        return;
+    };
+    let gateway_ip = IpAddr::V4(gateway);
+
+    let Some(device) = devices.iter_mut().find(|device| device.ip == gateway_ip) else {
+        return;
+    };
+
+    eprintln!();
+    eprintln!("Gateway checks ({})", gateway);
+    eprintln!("──────────────────────────────");
+
+    // Skip anything the fingerprinting phase already probed; probe the rest,
+    // including ports already known to be open, because the probe is also what
+    // reports what the admin page calls itself.
+    let already_probed: Vec<u16> = probes
+        .iter()
+        .filter(|probe| probe.ip == gateway_ip)
+        .map(|probe| probe.port)
+        .collect();
+
+    let to_probe: Vec<u16> = GATEWAY_PORTS
+        .iter()
+        .copied()
+        .filter(|port| !already_probed.contains(port))
+        .collect();
+
+    if !to_probe.is_empty() {
+        let results = probe_ports(gateway_ip, &to_probe, 8).await;
+        for (port, result) in results {
+            device.add_open_port(port);
+            probes.push(ServiceProbe {
+                ip: gateway_ip,
+                port,
+                result,
+            });
+        }
+    }
+
+    // What the administration page calls itself, which is often the clearest
+    // thing a person can recognise.
+    if let Some(probe) = probes
+        .iter()
+        .find(|probe| probe.ip == gateway_ip && probe.port == 80)
+    {
+        if let Some(details) = &probe.result.details {
+            eprintln!("  Administration page: {}", details);
+        }
+    }
+
+    let findings = netgap_assess::check_gateway(device);
+    for finding in findings {
+        eprintln!("  [{}] {}", finding.severity, finding.title);
+        device.add_finding(finding);
+    }
+
+    if device.findings.is_empty() {
+        eprintln!("  ✓ No gateway-specific exposure found");
+    }
 }
 
 /// Findings from what a TLS handshake revealed.
