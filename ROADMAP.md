@@ -208,15 +208,40 @@ here tests credentials — whether a default password still works cannot be
 determined from a port, and guessing at it would produce exactly the kind of
 confident wrong answer this codebase has been removing.
 
-### 6. Watch mode should look for attacks, not just drift
+### 6. Watch mode should look for attacks, not just drift — partly done
 
-`watch` re-scans on a timer and diffs the results. An interval scan will never
-catch the classic LAN attack, which happens between scans.
+`watch` re-scanned on a timer and diffed the results, which an attack between
+two scans stays invisible to. It now also watches for an address changing
+hands, in whichever way the scan is able to see it.
 
-The ARP code is already there: watching for an IP that suddenly maps to a
-different MAC (ARP spoofing / MAC conflict) needs no new discovery machinery.
-Rogue DHCP detection falls out of the same passive listening. This turns watch
-mode from "what changed" into "what is happening".
+**Unprivileged (the usual case).** Each cycle snapshots the kernel's neighbour
+table for the interface being watched and compares it to the previous cycle. A
+device that took an address over and is still using it shows up there, because
+ordinary traffic keeps the table current. No capture, no privileges.
+
+**Privileged.** A raw-socket ARP sweep sees every reply, so an address answered
+by two different hardware addresses *within one sweep* is caught immediately,
+before anything has settled. Only this path can see it: the kernel keeps one
+entry per address, so a table read cannot show two devices claiming one.
+
+What an alert says depends on which address moved. The gateway is the one worth
+impersonating — everything leaving the network passes through it — so a change
+there reads as an alert with both addresses named, while a change on a printer
+is reported plainly. One device answering for several addresses is only raised
+when one of them is the gateway, since a machine holding two of its own
+addresses is ordinary.
+
+Nothing is called an attack. A changed mapping has innocent explanations — a
+replaced device, a laptop bridging Wi-Fi and Ethernet, a phone that randomized
+its address and reconnected — so the finding states what was seen and lets the
+owner judge it.
+
+**Known limits.** This observes what has settled rather than listening
+continuously, so a spoof that starts and stops between two cycles is missed;
+closing that needs a privileged capture loop, which is the honest next step.
+Rogue DHCP is not detected at all: discovery runs over UDP 1900, and a DHCP
+client must bind port 68, both of which need privileges and a listener rather
+than a poll.
 
 ### 7. IPv6
 

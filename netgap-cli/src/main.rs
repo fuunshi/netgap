@@ -1527,6 +1527,84 @@ fn service_name_for_port(port: u16) -> Option<&'static str> {
     }
 }
 
+/// Compare this cycle's address mappings against the previous one.
+///
+/// Reads the kernel's neighbour table, which ordinary traffic keeps current, so
+/// this needs no privileges and no capture — and it is the only option when the
+/// scan itself is unprivileged. It sees what has settled: a device that took an
+/// address over and is still using it. A spoof that starts and stops between
+/// two cycles is missed, which is the cost of looking rather than listening.
+/// Alert lines for what changed between two observations of the network.
+///
+/// Split out from the loop so the wording is testable: what an alert says is
+/// the part a person has to act on, and it should not depend on getting a live
+/// spoof to occur.
+fn conflict_alerts(
+    changes: &[netgap_discover::MacChange],
+    shared: &[netgap_discover::SharedMac],
+    gateway: Option<std::net::Ipv4Addr>,
+) -> Vec<String> {
+    let mut alerts = Vec::new();
+
+    for change in changes {
+        if change.is_gateway(gateway) {
+            alerts.push(format!(
+                "🚨 ALERT: the gateway address changed hands — {}\n   \
+                 That is how traffic on a network gets intercepted. Unless the router\n   \
+                 was replaced, treat what you send from here with suspicion.",
+                change.describe()
+            ));
+        } else {
+            alerts.push(format!("⚠️  Address changed hands: {}", change.describe()));
+        }
+    }
+
+    // One device answering for several addresses only matters when one of them
+    // is the gateway: nothing legitimate needs to hold the router's address as
+    // well as its own.
+    for entry in shared {
+        if gateway.is_some_and(|gateway| entry.addresses.contains(&gateway)) {
+            alerts.push(format!(
+                "🚨 ALERT: one device answers for several addresses — {}",
+                entry.describe()
+            ));
+        }
+    }
+
+    alerts
+}
+
+/// Compare this cycle's address mappings against the previous one.
+///
+/// Reads the kernel's neighbour table, which ordinary traffic keeps current, so
+/// this needs no privileges and no capture — and it is the only option when the
+/// scan itself is unprivileged. It sees what has settled: a device that took an
+/// address over and is still using it. A spoof that starts and stops between
+/// two cycles is missed, which is the cost of looking rather than listening.
+fn check_for_address_conflicts(
+    last_mappings: &mut Option<std::collections::HashMap<std::net::Ipv4Addr, String>>,
+    plan: &DiscoveryPlan,
+    gateway: Option<std::net::Ipv4Addr>,
+) {
+    let current = netgap_discover::snapshot_mappings(&plan.interface.name);
+
+    if let Some(previous) = last_mappings.as_ref() {
+        let changes = netgap_discover::detect_mac_changes(previous, &current);
+
+        let observations: Vec<(std::net::Ipv4Addr, String)> = current
+            .iter()
+            .map(|(ip, mac)| (*ip, mac.clone()))
+            .collect();
+        let shared = netgap_discover::detect_shared_macs(&observations);
+
+        for alert in conflict_alerts(&changes, &shared, gateway) {
+            println!("\n{alert}");
+        }
+    }
+
+    *last_mappings = Some(current);
+}
+
 fn cmd_report(
     scan_id: Option<String>,
     compare: Option<String>,
@@ -1645,6 +1723,11 @@ async fn cmd_watch(
     println!("Interval: {}s | Press Ctrl+C to stop\n", interval_secs);
 
     let mut last_history: Option<ScanHistory> = None;
+    let mut last_mappings: Option<std::collections::HashMap<std::net::Ipv4Addr, String>> = None;
+
+    // The gateway is the address worth impersonating, so a change there reads
+    // differently from one on a printer.
+    let gateway = netgap_interfaces::default_gateway_ipv4();
     let mut scan_count = 0;
 
     loop {
@@ -1747,6 +1830,7 @@ async fn cmd_watch(
                 }
 
                 last_history = Some(current_history);
+                check_for_address_conflicts(&mut last_mappings, &plan, gateway);
             }
             Err(e) => {
                 println!("❌ Scan failed: {}", e);
@@ -1910,6 +1994,79 @@ mod tests {
             !titles.iter().any(|title| title.contains("Apache")),
             "must not report Apache for a port the probe identified as nginx"
         );
+    }
+
+    fn change(ip: &str, previous: &str, current: &str) -> netgap_discover::MacChange {
+        netgap_discover::MacChange {
+            ip: ip.parse().expect("valid ip"),
+            previous_mac: previous.to_string(),
+            current_mac: current.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_gateway_change_reads_as_an_alert() {
+        let gateway = Some("192.168.1.1".parse().expect("valid ip"));
+        let alerts = conflict_alerts(
+            &[change("192.168.1.1", "C4:B2:5B:0A:03:26", "DE:AD:BE:EF:00:01")],
+            &[],
+            gateway,
+        );
+
+        assert_eq!(alerts.len(), 1);
+        assert!(alerts[0].contains("ALERT"));
+        assert!(alerts[0].contains("gateway"));
+        // Both addresses are named, so the reader can check them.
+        assert!(alerts[0].contains("C4:B2:5B:0A:03:26"));
+        assert!(alerts[0].contains("DE:AD:BE:EF:00:01"));
+    }
+
+    #[test]
+    fn test_ordinary_change_is_reported_without_alarm() {
+        let gateway = Some("192.168.1.1".parse().expect("valid ip"));
+        let alerts = conflict_alerts(
+            &[change("192.168.1.50", "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66")],
+            &[],
+            gateway,
+        );
+
+        assert_eq!(alerts.len(), 1);
+        assert!(!alerts[0].contains("ALERT"));
+        assert!(alerts[0].contains("changed hands"));
+    }
+
+    #[test]
+    fn test_shared_mac_only_alerts_when_it_touches_the_gateway() {
+        let gateway = Some("192.168.1.1".parse().expect("valid ip"));
+
+        let innocent = netgap_discover::SharedMac {
+            mac: "AA:BB:CC:DD:EE:FF".to_string(),
+            addresses: vec![
+                "192.168.1.20".parse().expect("valid ip"),
+                "192.168.1.21".parse().expect("valid ip"),
+            ],
+        };
+        assert!(
+            conflict_alerts(&[], std::slice::from_ref(&innocent), gateway).is_empty(),
+            "a device holding two of its own addresses is not an alert"
+        );
+
+        let suspicious = netgap_discover::SharedMac {
+            mac: "DE:AD:BE:EF:00:01".to_string(),
+            addresses: vec![
+                "192.168.1.1".parse().expect("valid ip"),
+                "192.168.1.77".parse().expect("valid ip"),
+            ],
+        };
+        let alerts = conflict_alerts(&[], std::slice::from_ref(&suspicious), gateway);
+        assert_eq!(alerts.len(), 1);
+        assert!(alerts[0].contains("ALERT"));
+    }
+
+    #[test]
+    fn test_nothing_changed_means_no_alerts() {
+        assert!(conflict_alerts(&[], &[], Some("192.168.1.1".parse().expect("valid ip"))).is_empty());
+        assert!(conflict_alerts(&[], &[], None).is_empty());
     }
 
     fn tls_probe(

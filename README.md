@@ -17,6 +17,7 @@ A production-ready network security scanner written in Rust. Discover devices on
 - 🔒 **TLS Inspection** - Certificates, expiry, self-signed, legacy protocol support
 - 🆕 **Device History** - Reports what has appeared on the network since last time
 - 🛡️ **Gateway Checks** - Admin interface exposure and UPnP on the router itself
+- 🚨 **Address Conflicts** - Alerts when an address, especially the gateway's, changes hands
 
 ## Getting Started
 
@@ -110,13 +111,13 @@ netgap-discover ── netgap-scan ── netgap-interfaces
 
 ## Test Coverage
 
-**227 tests passing** across the workspace:
+**242 tests passing** across the workspace:
 
 | Crate | Purpose | Tests |
 |-------|---------|-------|
 | netgap-core | Shared types | 6 |
 | netgap-interfaces | NIC enumeration, LAN-aware selection | 14 |
-| netgap-discover | ARP sweep, TCP fallback, neighbour table | 21 |
+| netgap-discover | ARP sweep, TCP fallback, address conflicts | 39 |
 | netgap-scan | Port scanning | 4 |
 | netgap-report | Output formatting | 3 |
 | netgap-fingerprint | Device fingerprinting | 12 |

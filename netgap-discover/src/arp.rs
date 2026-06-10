@@ -4,6 +4,7 @@
 //! replies, which discovers every peer that answers ARP — including hosts that
 //! drop TCP. Requires a raw socket (root or `CAP_NET_RAW`).
 
+use crate::conflicts::MacChange;
 use crate::{classify_channel_error, hosts_in_cidr, parse_cidr, DiscoveryConfig, DiscoveryError};
 use anyhow::{anyhow, Result};
 use netgap_core::Device;
@@ -49,9 +50,8 @@ impl ArpDiscovery {
         ArpDiscovery { config }
     }
 
-    /// Run an ARP sweep on the configured network.
-    /// Returns discovered devices with MAC addresses.
-    pub async fn scan(&self) -> Result<Vec<Device>> {
+    /// Run an ARP sweep, returning the devices and any address conflicts.
+    async fn sweep(&self) -> Result<(Vec<Device>, Vec<MacChange>)> {
         let interface = datalink::interfaces()
             .into_iter()
             .find(|iface| iface.name == self.config.interface_name)
@@ -100,6 +100,7 @@ impl ArpDiscovery {
 
         let targets: HashSet<Ipv4Addr> = target_hosts.iter().copied().collect();
         let mut discovered: HashMap<Ipv4Addr, Device> = HashMap::new();
+        let mut conflicts: Vec<MacChange> = Vec::new();
         let deadline = Instant::now() + Duration::from_millis(self.config.timeout_ms.max(200));
         let retries = self.config.retries.max(1);
 
@@ -134,6 +135,7 @@ impl ArpDiscovery {
                     Instant::now() + READ_SLICE,
                     &targets,
                     &mut discovered,
+                    &mut conflicts,
                     1,
                 )?;
             }
@@ -145,6 +147,7 @@ impl ArpDiscovery {
                 pass_deadline,
                 &targets,
                 &mut discovered,
+                &mut conflicts,
                 idle_limit,
             )?;
         }
@@ -155,6 +158,7 @@ impl ArpDiscovery {
             deadline,
             &targets,
             &mut discovered,
+            &mut conflicts,
             idle_slices(timeout_ms),
         )?;
 
@@ -181,7 +185,21 @@ impl ArpDiscovery {
             IpAddr::V4(ipv4) => u32::from(ipv4),
             IpAddr::V6(_) => u32::MAX,
         });
-        Ok(results)
+
+        conflicts.sort_by_key(|conflict| u32::from(conflict.ip));
+        Ok((results, conflicts))
+    }
+
+    /// Run an ARP sweep, reporting addresses that answered from two different
+    /// hardware addresses as well as the devices found.
+    pub async fn scan_with_conflicts(&self) -> Result<(Vec<Device>, Vec<MacChange>)> {
+        self.sweep().await
+    }
+
+    /// Run an ARP sweep on the configured network.
+    /// Returns discovered devices with MAC addresses.
+    pub async fn scan(&self) -> Result<Vec<Device>> {
+        self.sweep().await.map(|(devices, _)| devices)
     }
 }
 
@@ -195,6 +213,7 @@ pub(crate) fn collect_replies<R: DataLinkReceiver + ?Sized>(
     deadline: Instant,
     targets: &HashSet<Ipv4Addr>,
     discovered: &mut HashMap<Ipv4Addr, Device>,
+    conflicts: &mut Vec<MacChange>,
     idle_limit: u32,
 ) -> Result<()> {
     let mut idle_slices = 0;
@@ -203,7 +222,7 @@ pub(crate) fn collect_replies<R: DataLinkReceiver + ?Sized>(
         match rx.next() {
             Ok(packet) => {
                 idle_slices = 0;
-                record_reply(packet, targets, discovered);
+                record_reply(packet, targets, discovered, conflicts);
             }
             Err(error) if error.kind() == ErrorKind::TimedOut => {
                 idle_slices += 1;
@@ -219,10 +238,17 @@ pub(crate) fn collect_replies<R: DataLinkReceiver + ?Sized>(
 }
 
 /// Record an ARP reply if it came from one of the addresses we asked about.
+///
+/// A second reply for the same address from a *different* hardware address is
+/// recorded as a conflict: on a healthy network each address belongs to one
+/// device, and two devices answering for one address is how an interception
+/// starts. The reply is still recorded, so the sweep reports whoever answered
+/// last rather than pretending the address went quiet.
 fn record_reply(
     packet: &[u8],
     targets: &HashSet<Ipv4Addr>,
     discovered: &mut HashMap<Ipv4Addr, Device>,
+    conflicts: &mut Vec<MacChange>,
 ) {
     let Some(ethernet) = EthernetPacket::new(packet) else {
         return;
@@ -243,8 +269,28 @@ fn record_reply(
         return;
     }
 
+    // The neighbour table reports addresses in upper case; matching that here
+    // keeps one device from displaying differently depending on which path
+    // found it.
+    let mac = arp.get_sender_hw_addr().to_string().to_ascii_uppercase();
+
+    if let Some(existing) = discovered.get(&ip) {
+        if let Some(previous_mac) = &existing.mac {
+            if !previous_mac.eq_ignore_ascii_case(&mac) {
+                let change = MacChange {
+                    ip,
+                    previous_mac: previous_mac.clone(),
+                    current_mac: mac.clone(),
+                };
+                if !conflicts.contains(&change) {
+                    conflicts.push(change);
+                }
+            }
+        }
+    }
+
     let mut device = Device::new(IpAddr::V4(ip));
-    device.mac = Some(arp.get_sender_hw_addr().to_string());
+    device.mac = Some(mac);
     discovered.insert(ip, device);
 }
 
@@ -400,11 +446,13 @@ mod tests {
         ]);
 
         let mut discovered = HashMap::new();
+        let mut conflicts = Vec::new();
         collect_replies(
             &mut rx,
             Instant::now() + Duration::from_millis(500),
             &targets(&[responder]),
             &mut discovered,
+            &mut conflicts,
             3,
         )
         .expect("collection should succeed");
@@ -426,6 +474,7 @@ mod tests {
             Instant::now() + Duration::from_secs(30),
             &targets(&[]),
             &mut HashMap::new(),
+            &mut Vec::new(),
             2,
         )
         .expect("collection should succeed");
@@ -446,11 +495,13 @@ mod tests {
         ]);
 
         let mut discovered = HashMap::new();
+        let mut conflicts = Vec::new();
         collect_replies(
             &mut rx,
             Instant::now() + Duration::from_millis(200),
             &targets(&[Ipv4Addr::new(192, 168, 1, 1)]),
             &mut discovered,
+            &mut conflicts,
             2,
         )
         .expect("collection should succeed");
@@ -469,17 +520,81 @@ mod tests {
 
         let mut rx = MockReceiver::mock(script);
         let mut discovered = HashMap::new();
+        let mut conflicts = Vec::new();
 
         collect_replies(
             &mut rx,
             Instant::now() + Duration::from_secs(5),
             &targets(&[responder]),
             &mut discovered,
+            &mut conflicts,
             idle_slices(1000),
         )
         .expect("collection should succeed");
 
         assert_eq!(discovered.len(), 1, "late replies must not be cut off");
+    }
+
+    #[test]
+    fn test_two_macs_answering_for_one_address_is_a_conflict() {
+        let responder = Ipv4Addr::new(192, 168, 1, 1);
+        let honest = arp_reply(MacAddr(0xAA, 0, 0, 0, 0, 1), responder);
+        let impostor = arp_reply(MacAddr(0xDE, 0xAD, 0xBE, 0xEF, 0, 1), responder);
+
+        let mut rx = MockReceiver::mock(vec![
+            Ok(honest),
+            MockReceiver::timed_out(),
+            Ok(impostor),
+            MockReceiver::timed_out(),
+            MockReceiver::timed_out(),
+        ]);
+
+        let mut discovered = HashMap::new();
+        let mut conflicts = Vec::new();
+
+        collect_replies(
+            &mut rx,
+            Instant::now() + Duration::from_millis(300),
+            &targets(&[responder]),
+            &mut discovered,
+            &mut conflicts,
+            idle_slices(1000),
+        )
+        .expect("collection should succeed");
+
+        assert_eq!(conflicts.len(), 1, "one address claimed twice");
+        assert_eq!(conflicts[0].ip, responder);
+        assert_eq!(conflicts[0].previous_mac, "AA:00:00:00:00:01");
+        assert_eq!(conflicts[0].current_mac, "DE:AD:BE:EF:00:01");
+
+        // The device is still reported, as whoever answered last.
+        assert_eq!(discovered[&responder].mac.as_deref(), Some("DE:AD:BE:EF:00:01"));
+    }
+
+    #[test]
+    fn test_repeated_replies_from_one_device_are_not_a_conflict() {
+        let responder = Ipv4Addr::new(192, 168, 1, 1);
+        let reply = arp_reply(MacAddr(0xAA, 0, 0, 0, 0, 1), responder);
+
+        let mut rx = MockReceiver::mock(vec![
+            Ok(reply.clone()),
+            Ok(reply),
+            MockReceiver::timed_out(),
+            MockReceiver::timed_out(),
+        ]);
+
+        let mut conflicts = Vec::new();
+        collect_replies(
+            &mut rx,
+            Instant::now() + Duration::from_millis(200),
+            &targets(&[responder]),
+            &mut HashMap::new(),
+            &mut conflicts,
+            idle_slices(1000),
+        )
+        .expect("collection should succeed");
+
+        assert!(conflicts.is_empty(), "a device answering twice is normal");
     }
 
     #[test]
@@ -542,11 +657,13 @@ mod tests {
         ]);
 
         let mut discovered = HashMap::new();
+        let mut conflicts = Vec::new();
         collect_replies(
             &mut rx,
             Instant::now() + Duration::from_millis(200),
             &targets(&[responder]),
             &mut discovered,
+            &mut conflicts,
             2,
         )
         .expect("collection should succeed");

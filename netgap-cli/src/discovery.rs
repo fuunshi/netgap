@@ -198,7 +198,36 @@ async fn run_arp(plan: &DiscoveryPlan) -> Result<Vec<Device>> {
         retries: 3,
     };
 
-    ArpDiscovery::new(config).scan().await
+    let (devices, conflicts) = ArpDiscovery::new(config).scan_with_conflicts().await?;
+    report_arp_conflicts(&conflicts);
+
+    Ok(devices)
+}
+
+/// Print any address that answered from two hardware addresses during a sweep.
+///
+/// Only a raw-socket sweep can see this: the unprivileged path reads the
+/// kernel's table, which holds one entry per address and so cannot show two
+/// devices claiming it. Watch mode covers that case by comparing across scans.
+fn report_arp_conflicts(conflicts: &[netgap_discover::MacChange]) {
+    if conflicts.is_empty() {
+        return;
+    }
+
+    eprintln!();
+    eprintln!(
+        "⚠️  {} address(es) answered from more than one device:",
+        conflicts.len()
+    );
+    for conflict in conflicts {
+        eprintln!("    {}", conflict.describe());
+    }
+    eprintln!(
+        "    On a healthy network each address belongs to one device. On the gateway\n    \
+         this is how traffic gets intercepted; elsewhere it is usually a replaced\n    \
+         device or a duplicate address."
+    );
+    eprintln!();
 }
 
 /// Unprivileged TCP sweep with neighbour-table MAC enrichment.
