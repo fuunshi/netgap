@@ -1572,9 +1572,17 @@ async fn check_dhcp_servers(plan: &DiscoveryPlan, gateway: Option<std::net::Ipv4
     };
 
     if servers.is_empty() {
-        // Silence here is not evidence of a problem: the network may simply
-        // have no DHCP server reachable from this machine.
-        println!("\n  DHCP: no server answered (the network may use static addressing)");
+        // Silence is not evidence of a problem, and the reasons are worth
+        // naming: a network may use static addressing, and a host firewall
+        // that drops broadcast will hide a server that is answering everyone
+        // else. Saying only "no server answered" would send someone looking in
+        // the wrong place.
+        println!(
+            "\n  DHCP: no server answered.\n   \
+             Either the network uses static addressing, or something here is dropping\n   \
+             broadcast traffic — a host firewall on this machine would hide a server\n   \
+             that is answering every other device."
+        );
         return;
     }
 

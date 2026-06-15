@@ -287,6 +287,30 @@ A server at 10.99.99.1 is not the gateway, so it should be reported as
 unexpected. Against the real network, `--check-dhcp` should name the router and
 raise nothing — unless something else is answering, which is the finding.
 
+**This recipe has not worked yet, and the reason is instructive.** On the
+machine it was tried, a broadcast sent to a local interface never reaches
+another socket on the same host: unicast does, broadcast and multicast do not.
+That was measured directly, with and without the tool in the path, and it also
+explains why mDNS found nothing. A host firewall (firewalld is running here)
+dropping inbound broadcast is the likely cause, since a locally-originated
+broadcast is still delivered through the input path.
+
+It matters only for the same-host rig. On a real network the DHCP server is a
+different machine, which receives the request normally; only the *reply* comes
+back through this host's input path. So the check is more likely to work
+against a real router than in this loopback recipe, and the honest thing to do
+first is run it against the real network.
+
+If the loopback recipe is wanted anyway, the interface has to be exempt from
+the firewall:
+
+```
+sudo firewall-cmd --zone=trusted --change-interface=netgap-test
+```
+
+The no-answer message now says a firewall may be hiding a server rather than
+suggesting only that the network uses static addressing.
+
 ### 7. IPv6
 
 `Ipv4Addr` is used throughout discovery, and `InterfaceInfo.ipv6` is captured
