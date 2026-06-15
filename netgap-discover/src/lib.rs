@@ -15,6 +15,7 @@ use std::net::Ipv4Addr;
 
 pub mod arp;
 pub mod conflicts;
+pub mod dhcp;
 pub mod names;
 pub mod neighbor;
 pub mod privilege;
@@ -22,6 +23,7 @@ pub mod tcp_sweep;
 
 pub use arp::ArpDiscovery;
 pub use conflicts::{detect_mac_changes, detect_shared_macs, snapshot_mappings, MacChange, SharedMac};
+pub use dhcp::{DhcpProbe, DhcpServer, ExpectedServers};
 pub use names::resolve_hostnames;
 pub use tcp_sweep::{TcpSweepConfig, TcpSweeper};
 

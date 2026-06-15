@@ -203,6 +203,10 @@ enum Commands {
         /// Interval in seconds between scans (default: 60)
         #[arg(long, default_value = "60")]
         interval: u64,
+
+        /// Ask the network who provides DHCP, and report servers other than the gateway
+        #[arg(long)]
+        check_dhcp: bool,
     },
 }
 
@@ -289,8 +293,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Watch {
             discovery,
             interval,
+            check_dhcp,
         } => {
-            cmd_watch(discovery, interval).await?;
+            cmd_watch(discovery, interval, check_dhcp).await?;
         }
     }
 
@@ -1534,6 +1539,71 @@ fn service_name_for_port(port: u16) -> Option<&'static str> {
 /// scan itself is unprivileged. It sees what has settled: a device that took an
 /// address over and is still using it. A spoof that starts and stops between
 /// two cycles is missed, which is the cost of looking rather than listening.
+/// Ask the network who provides DHCP, and report anyone unexpected.
+///
+/// A DHCP server decides what gateway and DNS server a device will use, so a
+/// second one on a network can quietly redirect everything that device sends.
+/// Finding it needs privileges: a DHCP client binds port 68.
+async fn check_dhcp_servers(plan: &DiscoveryPlan, gateway: Option<std::net::Ipv4Addr>) {
+    use netgap_discover::dhcp::{DhcpProbe, ExpectedServers};
+
+    let Ok(interface) = netgap_interfaces::get_interface(&plan.interface.name) else {
+        return;
+    };
+    let Some(mac) = interface.mac.as_deref().and_then(netgap_discover::dhcp::parse_mac) else {
+        eprintln!("  DHCP check skipped: no hardware address for {}", plan.interface.name);
+        return;
+    };
+
+    let probe = DhcpProbe::new(plan.interface.name.clone(), Duration::from_secs(4));
+
+    let servers = match probe.discover_servers(mac).await {
+        Ok(servers) => servers,
+        Err(error) if netgap_discover::is_privilege_error(&error) => {
+            eprintln!(
+                "  ⚠️  DHCP check needs root: a DHCP client binds port 68. Run with sudo to enable it."
+            );
+            return;
+        }
+        Err(error) => {
+            eprintln!("  ⚠️  DHCP check failed: {error}");
+            return;
+        }
+    };
+
+    if servers.is_empty() {
+        // Silence here is not evidence of a problem: the network may simply
+        // have no DHCP server reachable from this machine.
+        println!("\n  DHCP: no server answered (the network may use static addressing)");
+        return;
+    }
+
+    let expected = ExpectedServers::new(gateway);
+    for server in &servers {
+        let name = server
+            .hostname
+            .as_deref()
+            .map(|hostname| format!(" ({hostname})"))
+            .unwrap_or_default();
+
+        if expected.contains(server.server_id) {
+            println!("\n  DHCP server: {}{}", server.server_id, name);
+        } else if expected.is_empty() {
+            println!(
+                "\n  DHCP server: {}{} — not the gateway, and no expected server is known to compare against",
+                server.server_id, name
+            );
+        } else {
+            println!(
+                "\n🚨 ALERT: an unexpected DHCP server answered — {}{}\n   \
+                 A DHCP server tells every device which gateway and DNS server to use.\n   \
+                 If you did not add one, it can redirect what this network sends.",
+                server.server_id, name
+            );
+        }
+    }
+}
+
 /// Alert lines for what changed between two observations of the network.
 ///
 /// Split out from the loop so the wording is testable: what an alert says is
@@ -1708,6 +1778,7 @@ fn cmd_report(
 async fn cmd_watch(
     discovery_args: DiscoveryArgs,
     interval_secs: u64,
+    check_dhcp: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Resolve once: re-detecting the interface every cycle would also make the
     // scan target wander between cycles.
@@ -1726,8 +1797,13 @@ async fn cmd_watch(
     let mut last_mappings: Option<std::collections::HashMap<std::net::Ipv4Addr, String>> = None;
 
     // The gateway is the address worth impersonating, so a change there reads
-    // differently from one on a printer.
+    // differently from one on a printer. It is also the DHCP server a home
+    // network is expected to have.
     let gateway = netgap_interfaces::default_gateway_ipv4();
+
+    if check_dhcp {
+        check_dhcp_servers(&plan, gateway).await;
+    }
     let mut scan_count = 0;
 
     loop {
@@ -1831,6 +1907,10 @@ async fn cmd_watch(
 
                 last_history = Some(current_history);
                 check_for_address_conflicts(&mut last_mappings, &plan, gateway);
+
+                if check_dhcp {
+                    check_dhcp_servers(&plan, gateway).await;
+                }
             }
             Err(e) => {
                 println!("❌ Scan failed: {}", e);

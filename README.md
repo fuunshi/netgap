@@ -18,6 +18,7 @@ A production-ready network security scanner written in Rust. Discover devices on
 - 🆕 **Device History** - Reports what has appeared on the network since last time
 - 🛡️ **Gateway Checks** - Admin interface exposure and UPnP on the router itself
 - 🚨 **Address Conflicts** - Alerts when an address, especially the gateway's, changes hands
+- 🕵️ **Rogue DHCP** - Asks the network who hands out addresses, and says if it is not the router
 
 ## Getting Started
 
@@ -111,7 +112,7 @@ netgap-discover ── netgap-scan ── netgap-interfaces
 
 ## Test Coverage
 
-**242 tests passing** across the workspace:
+**255 tests passing** across the workspace:
 
 | Crate | Purpose | Tests |
 |-------|---------|-------|

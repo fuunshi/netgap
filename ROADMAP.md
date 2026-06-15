@@ -236,12 +236,56 @@ replaced device, a laptop bridging Wi-Fi and Ethernet, a phone that randomized
 its address and reconnected — so the finding states what was seen and lets the
 owner judge it.
 
+**Rogue DHCP: done.** A DHCP server tells every device which gateway and DNS
+server to use, so a second one on a network can quietly redirect what those
+devices send. `watch --check-dhcp` sends a DHCP DISCOVER and collects whoever
+answers, reporting any server that is not the gateway:
+
+```
+  DHCP server: 192.168.111.1 (router)
+🚨 ALERT: an unexpected DHCP server answered — 192.168.111.99 (not-the-router)
+```
+
+The check is active rather than passive on purpose: a listener only sees
+traffic when something else triggers it, which on a quiet network can be
+nothing for hours, whereas asking gets an answer now. The cost is a side
+effect worth stating — a server will hold the offered address briefly, as it
+would for any device joining — so the probe reuses one client identity rather
+than looking like a new device each time.
+
+It needs root: a DHCP client binds port 68, below 1024, and sends to the
+broadcast address. There is no unprivileged way to do it, and the flag says so
+rather than failing quietly. If this machine is itself a DHCP client, port 68
+may already be held, which the error message explains.
+
 **Known limits.** This observes what has settled rather than listening
 continuously, so a spoof that starts and stops between two cycles is missed;
 closing that needs a privileged capture loop, which is the honest next step.
-Rogue DHCP is not detected at all: discovery runs over UDP 1900, and a DHCP
-client must bind port 68, both of which need privileges and a listener rather
-than a poll.
+The DHCP check expects the gateway to be the server, which is right for a home
+network and wrong for one with a dedicated server — when no expectation is
+known it reports the server as information rather than as an alert.
+
+**Verifying the DHCP check.** It cannot run unprivileged, and the development
+machine has no capabilities, so it is covered end to end only against a
+stand-in server on a high port. To check it for real, with nothing touching the
+live network:
+
+```
+sudo ip link add netgap-test type dummy
+sudo ip addr add 10.99.99.1/24 dev netgap-test
+sudo ip link set netgap-test up
+sudo dnsmasq --interface=netgap-test --bind-interfaces \
+     --dhcp-range=10.99.99.50,10.99.99.100,12h --port=0 --no-daemon &
+
+sudo ./target/release/netgap watch -y --check-dhcp \
+     --interface netgap-test --target 10.99.99.0/24
+
+sudo pkill dnsmasq && sudo ip link del netgap-test
+```
+
+A server at 10.99.99.1 is not the gateway, so it should be reported as
+unexpected. Against the real network, `--check-dhcp` should name the router and
+raise nothing — unless something else is answering, which is the finding.
 
 ### 7. IPv6
 
