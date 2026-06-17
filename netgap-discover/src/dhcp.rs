@@ -231,6 +231,55 @@ pub fn parse_reply(packet: &[u8]) -> Option<DhcpReply> {
     })
 }
 
+/// Pull a DHCP reply out of a raw Ethernet frame.
+///
+/// Walks the frame the kernel would have: Ethernet, then IPv4, then UDP, then
+/// the DHCP payload. Only frames addressed to the client port are considered,
+/// so unrelated broadcast traffic on a busy network is ignored.
+pub fn parse_frame(frame: &[u8]) -> Option<DhcpReply> {
+    // Ethernet II: destination, source, ethertype.
+    if frame.len() < 14 {
+        return None;
+    }
+    let ethertype = u16::from_be_bytes([frame[12], frame[13]]);
+    // 0x0800 is IPv4; VLAN-tagged frames (0x8100) are not unwrapped.
+    if ethertype != 0x0800 {
+        return None;
+    }
+
+    let ip = &frame[14..];
+    if ip.len() < 20 {
+        return None;
+    }
+
+    let version = ip[0] >> 4;
+    let header_length = ((ip[0] & 0x0F) as usize) * 4;
+    if version != 4 || header_length < 20 || ip.len() < header_length {
+        return None;
+    }
+    // Protocol 17 is UDP.
+    if ip[9] != 17 {
+        return None;
+    }
+
+    let udp = &ip[header_length..];
+    if udp.len() < 8 {
+        return None;
+    }
+    let destination_port = u16::from_be_bytes([udp[2], udp[3]]);
+    if destination_port != CLIENT_PORT {
+        return None;
+    }
+
+    let length = u16::from_be_bytes([udp[4], udp[5]]) as usize;
+    if length < 8 {
+        return None;
+    }
+    let payload = udp.get(8..length.min(udp.len()))?;
+
+    parse_reply(payload)
+}
+
 /// Which servers this probe considers legitimate.
 ///
 /// The gateway is the expected answer on a home network, but a network may
@@ -308,6 +357,11 @@ impl DhcpProbe {
             .context("reading the probe socket address")?;
         let _ = local;
 
+        // Open the capture *before* sending. A server can answer within
+        // milliseconds, and anything that arrives before the socket is
+        // listening is simply lost.
+        let capture = self.open_capture();
+
         let discover = build_discover(client_mac, "netgap-probe");
 
         // Send to the probed interface's own subnet broadcast rather than the
@@ -323,6 +377,26 @@ impl DhcpProbe {
             .await
             .context("broadcasting the DHCP DISCOVER")?;
 
+        // Replies are read from a raw frame when possible. A host firewall
+        // that drops inbound broadcast never lets the packet reach a UDP
+        // socket, while a raw socket is tapped before that point — which is
+        // why real DHCP clients read this way, and why a machine can hold a
+        // lease while a UDP listener sees nothing.
+        let servers = match capture {
+            Ok(mut receiver) => self.read_capture(&mut *receiver),
+            Err(_) => self.receive_via_socket(&socket).await?,
+        };
+
+        let mut servers = servers;
+        servers.sort();
+        Ok(servers)
+    }
+
+    /// Read replies from the client socket.
+    ///
+    /// The fallback path: correct, but a host firewall can stop the packet
+    /// before it arrives.
+    async fn receive_via_socket(&self, socket: &UdpSocket) -> Result<Vec<DhcpServer>> {
         let mut servers: Vec<DhcpServer> = Vec::new();
         let mut buffer = [0u8; 1024];
         let deadline = tokio::time::Instant::now() + self.timeout;
@@ -353,8 +427,71 @@ impl DhcpProbe {
             }
         }
 
-        servers.sort();
         Ok(servers)
+    }
+
+    /// Open a packet socket on the interface being probed.
+    ///
+    /// Needs `CAP_NET_RAW` — the same privilege the ARP sweep uses — and is
+    /// the path that survives a firewall, since packet sockets are tapped
+    /// before netfilter sees anything. Returns an error when the channel
+    /// cannot be opened, so the caller can fall back to the client socket.
+    fn open_capture(&self) -> Result<Box<dyn pnet::datalink::DataLinkReceiver>> {
+        use pnet::datalink::{self, Channel};
+
+        // Tests point the probe at a stand-in server and have no interface to
+        // listen on; they use the socket path.
+        if self.target.is_some() {
+            return Err(anyhow!("no raw capture for a targeted probe"));
+        }
+
+        let interface = datalink::interfaces()
+            .into_iter()
+            .find(|interface| interface.name == self.interface)
+            .ok_or_else(|| anyhow!("interface '{}' not found", self.interface))?;
+
+        let config = datalink::Config {
+            read_timeout: Some(Duration::from_millis(100)),
+            promiscuous: false,
+            ..Default::default()
+        };
+
+        match datalink::channel(&interface, config) {
+            Ok(Channel::Ethernet(_, receiver)) => Ok(receiver),
+            Ok(_) => Err(anyhow!("unsupported datalink channel")),
+            Err(error) => Err(crate::classify_channel_error(error)),
+        }
+    }
+
+    /// Collect offers from captured frames until the budget runs out.
+    fn read_capture(&self, receiver: &mut dyn pnet::datalink::DataLinkReceiver) -> Vec<DhcpServer> {
+        use std::time::Instant;
+
+        let mut servers: Vec<DhcpServer> = Vec::new();
+        let deadline = Instant::now() + self.timeout;
+
+        while Instant::now() < deadline {
+            let Ok(frame) = receiver.next() else {
+                // A read timeout is how the loop checks the clock, not a
+                // reason to stop looking.
+                continue;
+            };
+
+            let Some(reply) = parse_frame(frame) else {
+                continue;
+            };
+            if !reply.is_offer() {
+                continue;
+            }
+
+            if let Some(server) = reply.server() {
+                if !servers.contains(&server) {
+                    servers.push(server);
+                }
+            }
+        }
+
+        servers
     }
 
     /// The broadcast address of the interface being probed.
@@ -556,6 +693,99 @@ mod tests {
         packet[BOOTP_HEADER_LEN + 6] = b'x';
 
         assert_eq!(parse_reply(&packet), None);
+    }
+
+    /// Wrap a DHCP payload in the headers a real reply arrives with.
+    fn ethernet_frame(payload: &[u8], protocol: u8, destination_port: u16) -> Vec<u8> {
+        let mut frame = Vec::new();
+
+        // Ethernet II: destination, source, ethertype 0x0800.
+        frame.extend_from_slice(&[0xFF; 6]);
+        frame.extend_from_slice(&[0x0E, 0x61, 0x23, 0x8B, 0x9B, 0x81]);
+        frame.extend_from_slice(&[0x08, 0x00]);
+
+        // IPv4, 20 bytes, no options.
+        let udp_length = 8 + payload.len();
+        let total_length = 20 + udp_length;
+        frame.push(0x45); // version 4, header length 5 words
+        frame.push(0);
+        frame.extend_from_slice(&(total_length as u16).to_be_bytes());
+        frame.extend_from_slice(&[0, 0]); // identification
+        frame.extend_from_slice(&[0, 0]); // flags and fragment offset
+        frame.push(64); // ttl
+        frame.push(protocol);
+        frame.extend_from_slice(&[0, 0]); // header checksum, unchecked here
+        frame.extend_from_slice(&[10, 99, 99, 1]); // source
+        frame.extend_from_slice(&[255, 255, 255, 255]); // destination
+
+        // UDP.
+        frame.extend_from_slice(&67u16.to_be_bytes());
+        frame.extend_from_slice(&destination_port.to_be_bytes());
+        frame.extend_from_slice(&(udp_length as u16).to_be_bytes());
+        frame.extend_from_slice(&[0, 0]); // checksum
+
+        frame.extend_from_slice(payload);
+        frame
+    }
+
+    #[test]
+    fn test_parse_frame_reads_a_reply_off_the_wire() {
+        let offer = build_offer("192.168.111.1", "192.168.111.50", Some("router"));
+        let frame = ethernet_frame(&offer, 17, CLIENT_PORT);
+
+        let reply = parse_frame(&frame).expect("parses");
+        assert!(reply.is_offer());
+        assert_eq!(
+            reply.server().expect("server").server_id,
+            "192.168.111.1".parse::<Ipv4Addr>().expect("valid ip")
+        );
+    }
+
+    #[test]
+    fn test_parse_frame_ignores_other_traffic() {
+        let offer = build_offer("192.168.111.1", "192.168.111.50", None);
+
+        // A reply to some other port is not ours.
+        assert_eq!(parse_frame(&ethernet_frame(&offer, 17, 5353)), None);
+        // Not UDP: 6 is TCP.
+        assert_eq!(parse_frame(&ethernet_frame(&offer, 6, CLIENT_PORT)), None);
+        // Not IPv4 at all.
+        let mut frame = ethernet_frame(&offer, 17, CLIENT_PORT);
+        frame[12] = 0x86;
+        frame[13] = 0xDD; // IPv6
+        assert_eq!(parse_frame(&frame), None);
+    }
+
+    #[test]
+    fn test_parse_frame_survives_truncated_input() {
+        let offer = build_offer("192.168.111.1", "192.168.111.50", None);
+        let frame = ethernet_frame(&offer, 17, CLIENT_PORT);
+
+        assert_eq!(parse_frame(&[]), None);
+        assert_eq!(parse_frame(&frame[..10]), None);
+        assert_eq!(parse_frame(&frame[..20]), None);
+        assert_eq!(parse_frame(&frame[..40]), None);
+        // Cut in the middle of the payload: nothing usable, no panic.
+        assert_eq!(parse_frame(&frame[..frame.len() - 20]), None);
+    }
+
+    #[test]
+    fn test_parse_frame_honours_the_ip_header_length() {
+        // A frame carrying IP options must still find the UDP header: the
+        // header length field says where it starts.
+        let offer = build_offer("192.168.111.1", "192.168.111.50", None);
+        let mut frame = ethernet_frame(&offer, 17, CLIENT_PORT);
+
+        // Grow the header from 20 to 24 bytes and adjust both length fields.
+        frame[14] = 0x46; // version 4, header length 6 words
+        let extra = [0x01, 0x01, 0x01, 0x01]; // a no-op option, padded
+        frame.splice(34..34, extra.iter().copied());
+
+        let total = u16::from_be_bytes([frame[16], frame[17]]) + 4;
+        frame[16..18].copy_from_slice(&total.to_be_bytes());
+
+        let reply = parse_frame(&frame).expect("parses with IP options present");
+        assert!(reply.is_offer());
     }
 
     /// The whole path — socket, DISCOVER, reply, parse — against a stand-in

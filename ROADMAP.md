@@ -258,6 +258,20 @@ broadcast address. There is no unprivileged way to do it, and the flag says so
 rather than failing quietly. If this machine is itself a DHCP client, port 68
 may already be held, which the error message explains.
 
+**Replies are read from a raw packet socket, not the UDP socket.** The first
+version listened on the client socket and found nothing against a real
+network, while the machine plainly held a DHCP lease from that same router.
+Measuring the path directly showed why: a broadcast sent to a local interface
+never reaches a UDP listener on this host, with or without the tool involved.
+A host firewall dropping inbound broadcast is the likely cause, since a
+locally-originated broadcast still travels through the input path.
+
+Packet sockets are tapped before netfilter, which is exactly why real DHCP
+clients read this way — and why a machine can hold a lease while a plain UDP
+listener sees nothing. The capture is opened before the DISCOVER is sent, so a
+server answering within milliseconds is not missed. The UDP path remains as a
+fallback for a machine that has `CAP_NET_BIND_SERVICE` but not `CAP_NET_RAW`.
+
 **Known limits.** This observes what has settled rather than listening
 continuously, so a spoof that starts and stops between two cycles is missed;
 closing that needs a privileged capture loop, which is the honest next step.
