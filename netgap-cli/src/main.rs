@@ -544,6 +544,11 @@ async fn cmd_discover(
     );
 
     let mut devices = discovery::run(&plan).await?;
+
+    // Before enrichment, so a device only IPv6 could see gets named and
+    // classified like any other.
+    run_ipv6(&mut devices, &plan);
+
     enrich_devices(&plan, &mut devices, identify).await;
 
     if discovery_args.mdns {
@@ -658,6 +663,66 @@ fn record_discovery(
             Ok(())
         }
     }
+}
+
+/// Ask the network's IPv6 side who is there, and fold the answers in.
+///
+/// IPv4 discovery cannot see a device that answers only on IPv6, and IPv6 has
+/// no ARP to sweep — a `/64` is 2^64 addresses. The kernel's neighbour table
+/// is the source instead, and unlike the ARP path it can be read and
+/// stimulated without privileges, so this runs on every discovery rather than
+/// only under sudo.
+fn run_ipv6(devices: &mut Vec<Device>, plan: &DiscoveryPlan) {
+    let interface = plan.interface.name.as_str();
+
+    let neighbours = match netgap_discover::ipv6::discover(interface) {
+        Ok(neighbours) => neighbours,
+        Err(error) => {
+            // An IPv4-only network is the common case, so this is a note, not
+            // a warning: nothing is wrong.
+            eprintln!("   IPv6: skipped ({error})");
+            return;
+        }
+    };
+
+    if neighbours.is_empty() {
+        eprintln!("   IPv6: no neighbours answered (normal on an IPv4-only network)");
+        return;
+    }
+
+    // The neighbour table covers the whole link, whatever range was asked for.
+    // A device it reveals is only worth adding when the scan was the whole
+    // link to begin with; on a narrowed scan the addresses annotate the
+    // devices found and nothing else is reported.
+    let allow_new = is_whole_link(plan);
+    let summary = netgap_discover::ipv6::merge(devices, &neighbours, allow_new);
+    let only_ipv6 = if summary.added > 0 {
+        format!(
+            ", {} that IPv4 discovery could not see",
+            summary.added
+        )
+    } else {
+        String::new()
+    };
+
+    eprintln!(
+        "   IPv6: {} neighbour(s){}",
+        neighbours.len(),
+        only_ipv6
+    );
+}
+
+/// Whether the scan covers the interface's own network, rather than a slice of
+/// it the user narrowed by hand.
+fn is_whole_link(plan: &DiscoveryPlan) -> bool {
+    let Some(network) = plan.interface.ipv4_network() else {
+        return false;
+    };
+    let Ok((target, prefix)) = netgap_discover::parse_cidr(&plan.target) else {
+        return false;
+    };
+
+    target == network.network() && prefix == network.prefix()
 }
 
 /// Ask the network to name itself over mDNS, and fold the answers into the
@@ -866,6 +931,10 @@ async fn run_discovery_and_port_scan(
     }
 
     let mut devices = discovery::run(plan).await?;
+
+    // A device that answers only on IPv6 is a device on the network, and a
+    // count that omits it is quietly wrong.
+    run_ipv6(&mut devices, plan);
 
     if devices.is_empty() {
         return Ok(devices);

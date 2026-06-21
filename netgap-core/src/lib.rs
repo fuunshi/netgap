@@ -310,6 +310,13 @@ pub struct Device {
     /// the OUI database both limit what can be inferred.
     #[serde(default)]
     pub device_type: Option<String>,
+    /// IPv6 addresses this device answers on, when any were found.
+    ///
+    /// On a home network these are usually link-local (`fe80::`), which are
+    /// reachable from this link and nowhere else — they identify a device,
+    /// they do not route to it globally.
+    #[serde(default)]
+    pub ipv6_addresses: Vec<String>,
     /// Open ports discovered on this device.
     pub open_ports: Vec<u16>,
     /// Findings related to this device.
@@ -328,6 +335,7 @@ impl Device {
             hostname: None,
             first_seen: None,
             device_type: None,
+            ipv6_addresses: Vec::new(),
             open_ports: Vec::new(),
             findings: Vec::new(),
         }

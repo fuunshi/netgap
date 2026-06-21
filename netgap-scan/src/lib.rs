@@ -158,6 +158,21 @@ impl PortScanner {
         progress: Option<UnboundedSender<PortScanEvent>>,
     ) -> Result<()> {
         for device in devices.iter_mut() {
+            // A link-local address (`fe80::/10`) is only reachable with a zone
+            // — the interface — attached to it, and a device here does not
+            // carry one. Connecting without it fails for every port, which
+            // would read as "no open ports" rather than "not scanned".
+            if let IpAddr::V6(address) = device.ip {
+                if (address.segments()[0] & 0xffc0) == 0xfe80 {
+                    eprintln!(
+                        "  · Not port-scanning {}: link-local IPv6 needs an interface to be \
+                         reached, which this device does not record",
+                        device.ip
+                    );
+                    continue;
+                }
+            }
+
             eprintln!("🔍 Scanning {} for open ports...", device.ip);
             let open_ports = self
                 .scan_ip_with_progress(device.ip, progress.clone())
@@ -256,6 +271,28 @@ fn get_service_name(port: u16) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A link-local address cannot be reached without a zone, so scanning one
+    /// would report "no open ports" for a device that was never actually
+    /// tried. It is skipped, and skipping must not look like a clean result.
+    #[tokio::test]
+    async fn test_link_local_devices_are_skipped_rather_than_reported_clean() {
+        let mut devices = vec![
+            Device::new("fe80::c6b2:5bff:fe0a:326".parse().expect("a valid address")),
+            Device::new("192.168.111.1".parse().expect("a valid address")),
+        ];
+
+        let scanner = PortScanner::new(ScanConfig {
+            ports: vec![22],
+            timeout_ms: 50,
+            concurrency: 1,
+        });
+
+        scanner.scan_devices(&mut devices[..1]).await.expect("scanning");
+
+        assert!(devices[0].open_ports.is_empty());
+        assert!(devices[0].findings.is_empty());
+    }
 
     #[test]
     fn test_is_critical_port() {

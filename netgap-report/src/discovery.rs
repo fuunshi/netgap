@@ -177,6 +177,18 @@ pub fn format_discovery(devices: &[Device], context: &DiscoveryContext<'_>) -> S
             pad(&row.seen(), SEEN_WIDTH),
             row.status(),
         ));
+
+        // A second address line, only for devices that have one, so the table
+        // stays the width it was for everyone else. Link-local addresses are
+        // marked as such: they identify a device on this link, they do not
+        // reach it from anywhere else.
+        for address in &row.ipv6 {
+            let scope = if is_link_local(address) { " (link-local)" } else { "" };
+            out.push_str(&format!(
+                "  {}\n",
+                format!("{}{}", address, scope).dimmed()
+            ));
+        }
     }
 
     out.push('\n');
@@ -236,6 +248,9 @@ struct Row {
     /// How long ago this device was first seen, or `None` when it is new.
     first_seen_ago: Option<String>,
     new_device: bool,
+    /// IPv6 addresses, already formatted. Empty for most devices on an
+    /// IPv4-only network.
+    ipv6: Vec<String>,
 }
 
 impl Row {
@@ -262,6 +277,14 @@ impl Row {
             trusted: is_trusted(device, context.trusted),
             first_seen_ago: device.first_seen.as_deref().and_then(relative_age),
             new_device: device.first_seen.is_none(),
+            ipv6: device
+                .ipv6_addresses
+                .iter()
+                // A device found only over IPv6 has its address in the IP
+                // column already; repeating it underneath says nothing.
+                .filter(|address| address.as_str() != device.ip.to_string())
+                .cloned()
+                .collect(),
         }
     }
 
@@ -281,6 +304,14 @@ impl Row {
             "UNRECOGNIZED".red().bold().to_string()
         }
     }
+}
+
+/// Whether a formatted address is link-local (`fe80::/10`).
+fn is_link_local(address: &str) -> bool {
+    address
+        .parse::<std::net::Ipv6Addr>()
+        .map(|address| (address.segments()[0] & 0xffc0) == 0xfe80)
+        .unwrap_or(false)
 }
 
 /// Render how long ago a timestamp was, in as few characters as possible.

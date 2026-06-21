@@ -1025,6 +1025,7 @@ dependencies = [
  "anyhow",
  "dns-lookup",
  "indicatif",
+ "libc",
  "netgap-core",
  "pnet",
  "pnet_datalink",

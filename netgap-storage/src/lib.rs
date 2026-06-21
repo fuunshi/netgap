@@ -125,7 +125,7 @@ impl ScanStore {
         let _ = self
             .conn
             .execute("ALTER TABLE devices ADD COLUMN device_type TEXT", []);
-        for column in ["first_seen", "last_seen"] {
+        for column in ["first_seen", "last_seen", "ipv6_addresses"] {
             let _ = self
                 .conn
                 .execute(&format!("ALTER TABLE devices ADD COLUMN {column} TEXT"), []);
@@ -184,9 +184,11 @@ impl ScanStore {
             // First sighting ever, or the one already recorded.
             let (first_seen, last_seen) = self.record_sighting(device, &now)?;
 
+            let ipv6_addresses = device.ipv6_addresses.join(",");
+
             let mut device_stmt = self.conn.prepare(
-                "INSERT INTO devices (id, scan_id, ip, mac, vendor, os, hostname, device_type, open_ports, first_seen, last_seen, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO devices (id, scan_id, ip, mac, vendor, os, hostname, device_type, open_ports, first_seen, last_seen, ipv6_addresses, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )?;
 
             device_stmt.execute(params![
@@ -201,6 +203,7 @@ impl ScanStore {
                 open_ports,
                 &first_seen,
                 &last_seen,
+                ipv6_addresses,
                 now
             ])?;
 
@@ -291,7 +294,7 @@ impl ScanStore {
 
         {
             let mut stmt = self.conn.prepare(
-                "SELECT id, ip, mac, vendor, os, hostname, device_type, open_ports, first_seen
+                "SELECT id, ip, mac, vendor, os, hostname, device_type, open_ports, first_seen, ipv6_addresses
                  FROM devices WHERE scan_id = ? ORDER BY ip",
             )?;
 
@@ -306,12 +309,23 @@ impl ScanStore {
                     row.get::<_, Option<String>>(6)?,
                     row.get::<_, Option<String>>(7)?,
                     row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
                 ))
             })?;
 
             for row in rows {
-                let (device_id, ip, mac, vendor, os, hostname, device_type, open_ports, first_seen) =
-                    row?;
+                let (
+                    device_id,
+                    ip,
+                    mac,
+                    vendor,
+                    os,
+                    hostname,
+                    device_type,
+                    open_ports,
+                    first_seen,
+                    ipv6_addresses,
+                ) = row?;
                 let ip: IpAddr = ip
                     .parse()
                     .map_err(|_| anyhow!("Stored device address '{}' is not valid", ip))?;
@@ -323,6 +337,14 @@ impl ScanStore {
                 device.hostname = hostname;
                 device.device_type = device_type;
                 device.first_seen = first_seen;
+                device.ipv6_addresses = ipv6_addresses
+                    .as_deref()
+                    .unwrap_or_default()
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|address| !address.is_empty())
+                    .map(str::to_string)
+                    .collect();
                 device.open_ports = open_ports
                     .as_deref()
                     .unwrap_or_default()

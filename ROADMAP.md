@@ -325,14 +325,51 @@ sudo firewall-cmd --zone=trusted --change-interface=netgap-test
 The no-answer message now says a firewall may be hiding a server rather than
 suggesting only that the network uses static addressing.
 
-### 7. IPv6
+### 7. IPv6 — ✅ discovery done, port scanning not
 
-`Ipv4Addr` is used throughout discovery, and `InterfaceInfo.ipv6` is captured
-but never read. On a dual-stack network every IPv6-only device is invisible, and
-IPv6 has no ARP at all — it needs neighbor discovery.
+`Ipv4Addr` was used throughout discovery, so on a dual-stack network every
+IPv6-only device was invisible and any device count was quietly wrong.
 
-Until this is done, any device count the tool prints is quietly wrong on such a
-network.
+**IPv6 has no ARP, and a `/64` cannot be swept** — 2^64 addresses is not a list
+anyone walks. What works is the kernel's neighbour table, which is IPv6's
+equivalent of the ARP cache. Discovery is two steps: send an ICMPv6 echo to the
+all-nodes multicast address (`ff02::1`), which every IPv6 host on the link
+receives, then read the table back through netlink — the same source
+`ip -6 neigh` reads.
+
+**This runs unprivileged**, unlike the ARP path. The echo goes through a
+datagram ICMPv6 socket, which the kernel builds and checksums and which
+`net.ipv4.ping_group_range` opens to ordinary users, and netlink needs no
+capability at all. So IPv6 discovery runs on every scan, not only under sudo.
+
+Addresses are attached to devices by hardware address — the one identifier both
+sides of the split agree on, and one that survives MAC randomization because the
+same random address appears on both. A neighbour matching no known device
+becomes one, but only when the scan covered the whole link: the table covers
+every host regardless of `--target`, and honouring it unfiltered would report
+devices the user asked not to scan.
+
+Verified against the live network: the reader returns exactly what
+`ip -6 neigh` returns, 12 neighbours, and the addresses correlate with the IPv4
+devices the way EUI-64 says they should — MAC `C4:B2:5B:0A:03:26` and
+`fe80::c6b2:5bff:fe0a:326`, which is that MAC with the universal/local bit
+flipped. The stimulator earns its place too: it found a host that was not in the
+table before the run.
+
+That live check also caught a bug the unit tests could not: the table holds an
+entry for every multicast group the machine has joined — `ff02::1`, `ff02::fb`,
+and so on — each with a synthetic `33:33:` MAC. Merging those would have
+invented six devices on every scan.
+
+**What is still IPv4-only:**
+
+- **Port scanning a link-local IPv6 device.** A `fe80::` address is only
+  reachable with a zone (the interface) attached, which a `Device` does not
+  record, so such devices are skipped with a note rather than probed. Reporting
+  them as "no open ports" would be a different claim from "not scanned".
+- Everything IPv4-specific downstream: gateway checks, DHCP, ARP conflict
+  detection. IPv6 devices are discovered and reported; they are not yet
+  assessed.
 
 ### 8. Continuous integration and `cargo audit`
 
