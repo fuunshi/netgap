@@ -1,6 +1,6 @@
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use anyhow::{anyhow, Result};
 
 /// Webhook provider types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,13 +26,13 @@ impl WebhookProvider {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebhookAlert {
     pub alert_id: String,
-    pub severity: String,              // Critical, High, Medium, Low, Info
-    pub cvss_score: f32,               // 0.0-10.0
-    pub cve_id: String,                // CVE-2021-44228
+    pub severity: String, // Critical, High, Medium, Low, Info
+    pub cvss_score: f32,  // 0.0-10.0
+    pub cve_id: String,   // CVE-2021-44228
     pub description: String,
     pub affected_ip: String,
     pub affected_service: Option<String>,
-    pub timestamp: String,             // ISO8601
+    pub timestamp: String, // ISO8601
     pub remediation: Option<String>,
     pub reference_url: Option<String>,
 }
@@ -192,10 +192,7 @@ impl WebhookDeliveryManager {
         let mut last_error = None;
 
         for attempt in 1..=self.config.retry_attempts {
-            match self
-                .send_with_timeout(&payload)
-                .await
-            {
+            match self.send_with_timeout(&payload).await {
                 Ok(_) => return Ok(()),
                 Err(e) => {
                     last_error = Some(format!("Attempt {}: {}", attempt, e));
@@ -216,21 +213,25 @@ impl WebhookDeliveryManager {
 
     async fn send_with_timeout(&self, payload: &str) -> Result<()> {
         let timeout = Duration::from_secs(self.config.timeout_secs);
-        let future = self.client.post(&self.config.url).json(&serde_json::from_str::<serde_json::Value>(payload)?).send();
+        let future = self
+            .client
+            .post(&self.config.url)
+            .json(&serde_json::from_str::<serde_json::Value>(payload)?)
+            .send();
 
         match tokio::time::timeout(timeout, future).await {
             Ok(Ok(response)) => {
                 if response.status().is_success() {
                     Ok(())
                 } else {
-                    Err(anyhow!(
-                        "Webhook returned status: {}",
-                        response.status()
-                    ))
+                    Err(anyhow!("Webhook returned status: {}", response.status()))
                 }
             }
             Ok(Err(e)) => Err(anyhow!("Request failed: {}", e)),
-            Err(_) => Err(anyhow!("Request timeout after {} seconds", self.config.timeout_secs)),
+            Err(_) => Err(anyhow!(
+                "Request timeout after {} seconds",
+                self.config.timeout_secs
+            )),
         }
     }
 
@@ -264,7 +265,8 @@ impl WebhookDeliveryManager {
                 ]
             }]
         });
-        serde_json::to_string(&payload).map_err(|e| anyhow!("Failed to format Slack message: {}", e))
+        serde_json::to_string(&payload)
+            .map_err(|e| anyhow!("Failed to format Slack message: {}", e))
     }
 
     fn format_discord(&self, alert: &WebhookAlert) -> Result<String> {
@@ -282,7 +284,8 @@ impl WebhookDeliveryManager {
                 ]
             }]
         });
-        serde_json::to_string(&payload).map_err(|e| anyhow!("Failed to format Discord message: {}", e))
+        serde_json::to_string(&payload)
+            .map_err(|e| anyhow!("Failed to format Discord message: {}", e))
     }
 
     fn format_mattermost(&self, alert: &WebhookAlert) -> Result<String> {
@@ -299,7 +302,8 @@ impl WebhookDeliveryManager {
                 ]
             }]
         });
-        serde_json::to_string(&payload).map_err(|e| anyhow!("Failed to format Mattermost message: {}", e))
+        serde_json::to_string(&payload)
+            .map_err(|e| anyhow!("Failed to format Mattermost message: {}", e))
     }
 
     fn severity_color(&self, severity: &str) -> &'static str {
@@ -314,11 +318,11 @@ impl WebhookDeliveryManager {
 
     fn severity_color_decimal(&self, severity: &str) -> u32 {
         match severity {
-            "Critical" => 16711680,  // Red
-            "High" => 16737792,      // Orange
-            "Medium" => 16776960,    // Yellow
-            "Low" => 39423,          // Blue
-            _ => 10066329,           // Gray
+            "Critical" => 16711680, // Red
+            "High" => 16737792,     // Orange
+            "Medium" => 16776960,   // Yellow
+            "Low" => 39423,         // Blue
+            _ => 10066329,          // Gray
         }
     }
 }
@@ -329,7 +333,13 @@ mod tests {
 
     #[test]
     fn test_webhook_alert_creation() {
-        let alert = WebhookAlert::new("Critical", 9.8, "CVE-2021-44228", "Log4j RCE", "192.168.1.100");
+        let alert = WebhookAlert::new(
+            "Critical",
+            9.8,
+            "CVE-2021-44228",
+            "Log4j RCE",
+            "192.168.1.100",
+        );
         assert_eq!(alert.severity, "Critical");
         assert_eq!(alert.cvss_score, 9.8);
         assert_eq!(alert.cve_id, "CVE-2021-44228");
@@ -337,10 +347,16 @@ mod tests {
 
     #[test]
     fn test_webhook_alert_builder() {
-        let alert = WebhookAlert::new("High", 7.5, "CVE-2023-01234", "SSH weakness", "192.168.1.50")
-            .with_service("OpenSSH")
-            .with_remediation("Update to latest version")
-            .with_reference("https://nvd.nist.gov/vuln/detail/CVE-2023-01234");
+        let alert = WebhookAlert::new(
+            "High",
+            7.5,
+            "CVE-2023-01234",
+            "SSH weakness",
+            "192.168.1.50",
+        )
+        .with_service("OpenSSH")
+        .with_remediation("Update to latest version")
+        .with_reference("https://nvd.nist.gov/vuln/detail/CVE-2023-01234");
 
         assert_eq!(alert.affected_service.unwrap(), "OpenSSH");
         assert!(alert.remediation.is_some());
@@ -386,7 +402,8 @@ mod tests {
 
     #[test]
     fn test_webhook_manager_payload_formatting() {
-        let config = WebhookConfig::new("https://test.com/webhook").with_provider(WebhookProvider::Generic);
+        let config =
+            WebhookConfig::new("https://test.com/webhook").with_provider(WebhookProvider::Generic);
         let manager = WebhookDeliveryManager::new(config);
         let alert = WebhookAlert::new("Critical", 9.8, "CVE-2021-44228", "Test", "192.168.1.1");
 

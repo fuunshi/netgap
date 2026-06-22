@@ -23,7 +23,9 @@ pub mod privilege;
 pub mod tcp_sweep;
 
 pub use arp::ArpDiscovery;
-pub use conflicts::{detect_mac_changes, detect_shared_macs, snapshot_mappings, MacChange, SharedMac};
+pub use conflicts::{
+    detect_mac_changes, detect_shared_macs, snapshot_mappings, MacChange, SharedMac,
+};
 pub use dhcp::{DhcpProbe, DhcpServer, ExpectedServers};
 pub use ipv6::Ipv6Neighbour;
 pub use names::resolve_hostnames;
@@ -89,9 +91,12 @@ pub enum DiscoveryError {
 /// Lets the CLI offer the unprivileged fallback instead of string-matching
 /// "Operation not permitted".
 pub fn is_privilege_error(error: &anyhow::Error) -> bool {
-    error
-        .chain()
-        .any(|cause| matches!(cause.downcast_ref::<DiscoveryError>(), Some(DiscoveryError::PrivilegeRequired)))
+    error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<DiscoveryError>(),
+            Some(DiscoveryError::PrivilegeRequired)
+        )
+    })
 }
 
 /// Map a `datalink::channel` failure to a typed privilege error when the
@@ -141,7 +146,11 @@ pub fn hosts_in_cidr(network: Ipv4Addr, prefix: u8, limit: usize) -> Result<Vec<
     let total = (end - start) as usize + 1;
 
     // A /31 is a point-to-point link and a /32 is one host: all addresses count.
-    let host_count = if prefix >= 31 { total } else { total.saturating_sub(2) };
+    let host_count = if prefix >= 31 {
+        total
+    } else {
+        total.saturating_sub(2)
+    };
 
     if host_count > limit {
         return Err(DiscoveryError::TargetTooLarge {
@@ -204,8 +213,8 @@ mod tests {
 
     #[test]
     fn test_hosts_in_cidr_31_and_32() {
-        let point_to_point =
-            hosts_in_cidr(Ipv4Addr::new(10, 0, 0, 0), 31, DEFAULT_MAX_HOSTS).expect("should generate");
+        let point_to_point = hosts_in_cidr(Ipv4Addr::new(10, 0, 0, 0), 31, DEFAULT_MAX_HOSTS)
+            .expect("should generate");
         assert_eq!(point_to_point.len(), 2);
 
         let single = hosts_in_cidr(Ipv4Addr::new(10, 0, 0, 7), 32, DEFAULT_MAX_HOSTS)

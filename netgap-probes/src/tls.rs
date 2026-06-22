@@ -314,10 +314,8 @@ fn parse_server_hello(handshake: &[u8]) -> Option<(String, String)> {
             let version = u16::from_be_bytes([*body.first()?, *body.get(1)?]);
             let session_id_len = *body.get(34)? as usize;
             let cipher_offset = 35 + session_id_len;
-            let cipher = u16::from_be_bytes([
-                *body.get(cipher_offset)?,
-                *body.get(cipher_offset + 1)?,
-            ]);
+            let cipher =
+                u16::from_be_bytes([*body.get(cipher_offset)?, *body.get(cipher_offset + 1)?]);
 
             return Some((protocol_version_name(version), cipher_suite_name(cipher)));
         }
@@ -475,11 +473,11 @@ pub fn parse_certificate(der: &[u8]) -> Result<CertificateInfo> {
     let (subject_raw, _) = take(rest, TAG_SEQUENCE, "subject")?;
 
     let not_before = read_time(validity.value)?;
-    let (_, after_validity) = read_tlv(validity.value).ok_or_else(|| anyhow!("missing notBefore"))?;
+    let (_, after_validity) =
+        read_tlv(validity.value).ok_or_else(|| anyhow!("missing notBefore"))?;
     let not_after = read_time(after_validity)?;
 
-    let days_until_expiry =
-        (not_after - chrono::Utc::now()).num_days();
+    let days_until_expiry = (not_after - chrono::Utc::now()).num_days();
 
     Ok(CertificateInfo {
         subject: display_name(subject_raw.value),
@@ -520,7 +518,10 @@ fn read_time(input: &[u8]) -> Result<chrono::DateTime<chrono::Utc>> {
     let naive = chrono::NaiveDateTime::parse_from_str(text, format)
         .with_context(|| format!("parsing validity time '{text}'"))?;
 
-    Ok(chrono::DateTime::from_naive_utc_and_offset(naive, chrono::Utc))
+    Ok(chrono::DateTime::from_naive_utc_and_offset(
+        naive,
+        chrono::Utc,
+    ))
 }
 
 /// A human-readable name for a distinguished name.
@@ -680,7 +681,8 @@ mod tests {
 
         // Handshake header: ClientHello, length matching the body.
         assert_eq!(hello[5], 0x01);
-        let body_length = ((hello[6] as usize) << 16) | ((hello[7] as usize) << 8) | hello[8] as usize;
+        let body_length =
+            ((hello[6] as usize) << 16) | ((hello[7] as usize) << 8) | hello[8] as usize;
         assert_eq!(body_length, hello.len() - 9);
 
         // The server_name extension must be present and correctly framed:
@@ -688,11 +690,15 @@ mod tests {
         let name = b"example.test";
         // extension_data = list length (2) + name type (1) + name length (2) + name
         let extension = [
-            0x00, 0x00, // extension type: server_name
-            0x00, (name.len() + 5) as u8, // extension data length
-            0x00, (name.len() + 3) as u8, // server_name_list length
-            0x00, // name_type: host_name
-            0x00, name.len() as u8, // name length
+            0x00,
+            0x00, // extension type: server_name
+            0x00,
+            (name.len() + 5) as u8, // extension data length
+            0x00,
+            (name.len() + 3) as u8, // server_name_list length
+            0x00,                   // name_type: host_name
+            0x00,
+            name.len() as u8, // name length
         ];
         let position = hello
             .windows(extension.len())
@@ -700,7 +706,10 @@ mod tests {
             .expect("server_name extension is framed correctly");
 
         // And the name itself follows.
-        assert_eq!(&hello[position + extension.len()..position + extension.len() + name.len()], name);
+        assert_eq!(
+            &hello[position + extension.len()..position + extension.len() + name.len()],
+            name
+        );
     }
 
     #[test]
@@ -765,8 +774,9 @@ mod tests {
 
         // A common name wins over the organization when both are present.
         let with_cn = [
-            0x31, 0x0D, 0x30, 0x0B, 0x06, 0x03, 0x55, 0x04, 0x0A, 0x0C, 0x04, b'T', b'e', b's', b't',
-            0x31, 0x0F, 0x30, 0x0D, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0C, 0x06, b'r', b'o', b'u', b't', b'e', b'r',
+            0x31, 0x0D, 0x30, 0x0B, 0x06, 0x03, 0x55, 0x04, 0x0A, 0x0C, 0x04, b'T', b'e', b's',
+            b't', 0x31, 0x0F, 0x30, 0x0D, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0C, 0x06, b'r', b'o',
+            b'u', b't', b'e', b'r',
         ];
         assert_eq!(display_name(&with_cn), "router");
 
@@ -815,8 +825,14 @@ mod tests {
     #[test]
     fn test_utc_and_generalized_time_both_parse() {
         // UTCTime, the form most certificates use.
-        let utc = [0x17, 0x0D, b'2', b'6', b'1', b'0', b'0', b'1', b'0', b'6', b'4', b'8', b'3', b'3', b'Z'];
-        assert_eq!(read_time(&utc).expect("utc").format("%Y-%m-%d").to_string(), "2026-10-01");
+        let utc = [
+            0x17, 0x0D, b'2', b'6', b'1', b'0', b'0', b'1', b'0', b'6', b'4', b'8', b'3', b'3',
+            b'Z',
+        ];
+        assert_eq!(
+            read_time(&utc).expect("utc").format("%Y-%m-%d").to_string(),
+            "2026-10-01"
+        );
 
         // GeneralizedTime, used past 2049.
         let generalized = [
@@ -824,7 +840,10 @@ mod tests {
             b'3', b'3', b'Z',
         ];
         assert_eq!(
-            read_time(&generalized).expect("generalized").format("%Y-%m-%d").to_string(),
+            read_time(&generalized)
+                .expect("generalized")
+                .format("%Y-%m-%d")
+                .to_string(),
             "2050-01-01"
         );
 
@@ -837,7 +856,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a reachable TLS service"]
     async fn test_live_inspection() {
-        let target = std::env::var("NETGAP_TLS_TARGET").unwrap_or_else(|_| "192.168.111.1:443".to_string());
+        let target =
+            std::env::var("NETGAP_TLS_TARGET").unwrap_or_else(|_| "192.168.111.1:443".to_string());
         let mut parts = target.split(':');
         let ip: IpAddr = parts.next().expect("host").parse().expect("valid ip");
         let port: u16 = parts.next().unwrap_or("443").parse().expect("valid port");

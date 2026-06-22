@@ -3,14 +3,14 @@
 //! This module provides high-performance TCP port scanning using tokio.
 //! It handles concurrent connections with tight timeouts and service detection.
 
-use netgap_core::{Device, Finding, Severity};
 use anyhow::Result;
+use netgap_core::{Device, Finding, Severity};
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::UnboundedSender;
-use tokio::time::timeout;
 use tokio::task::JoinSet;
+use tokio::time::timeout;
 
 /// Progress update for a host port scan.
 #[derive(Debug, Clone)]
@@ -202,13 +202,18 @@ impl PortScanner {
                     if port == 23 {
                         finding.severity = Severity::Critical;
                         finding.title = "TELNET EXPOSED - CRITICAL VULNERABILITY".to_string();
-                        finding.description = "Telnet (port 23) is open! All credentials sent in cleartext.".to_string();
-                        finding.remediation = "Disable Telnet immediately. Use SSH for remote access.".to_string();
+                        finding.description =
+                            "Telnet (port 23) is open! All credentials sent in cleartext."
+                                .to_string();
+                        finding.remediation =
+                            "Disable Telnet immediately. Use SSH for remote access.".to_string();
                     } else if port == 445 || port == 139 {
                         finding.severity = Severity::High;
                         finding.title = format!("SMB exposed on port {}", port);
                         finding.description = "SMB (file sharing) is accessible externally. Vulnerable to ransomware and data theft.".to_string();
-                        finding.remediation = "Block SMB ports from external access using firewall rules.".to_string();
+                        finding.remediation =
+                            "Block SMB ports from external access using firewall rules."
+                                .to_string();
                     }
 
                     device.add_finding(finding);
@@ -231,7 +236,7 @@ impl PortScanner {
 
         match timeout(timeout_duration, TcpStream::connect(socket_addr)).await {
             Ok(Ok(_)) => Some(port), // Port is open
-            _ => None,                 // Timeout or connection refused
+            _ => None,               // Timeout or connection refused
         }
     }
 }
@@ -288,7 +293,10 @@ mod tests {
             concurrency: 1,
         });
 
-        scanner.scan_devices(&mut devices[..1]).await.expect("scanning");
+        scanner
+            .scan_devices(&mut devices[..1])
+            .await
+            .expect("scanning");
 
         assert!(devices[0].open_ports.is_empty());
         assert!(devices[0].findings.is_empty());

@@ -31,17 +31,17 @@ pub const DEFAULT_SERVICE_TYPES: &[&str] = &[
     "_spotify-connect._tcp.local.", // Spotify Connect
     "_http._tcp.local.",            // web interfaces
     "_https._tcp.local.",
-    "_ssh._tcp.local.",             // remote access
+    "_ssh._tcp.local.", // remote access
     "_sftp-ssh._tcp.local.",
-    "_smb._tcp.local.",             // file sharing
+    "_smb._tcp.local.", // file sharing
     "_afpovertcp._tcp.local.",
     "_nfs._tcp.local.",
-    "_rtsp._tcp.local.",            // IP cameras
-    "_hap._tcp.local.",             // HomeKit
-    "_matter._tcp.local.",          // Matter smart home
-    "_workstation._tcp.local.",     // workstations and file servers
-    "_device-info._tcp.local.",     // device metadata
-    "_companion-link._tcp.local.",  // Apple devices
+    "_rtsp._tcp.local.",           // IP cameras
+    "_hap._tcp.local.",            // HomeKit
+    "_matter._tcp.local.",         // Matter smart home
+    "_workstation._tcp.local.",    // workstations and file servers
+    "_device-info._tcp.local.",    // device metadata
+    "_companion-link._tcp.local.", // Apple devices
 ];
 
 /// Represents a discovered mDNS service.
@@ -285,7 +285,9 @@ pub fn merge_into_devices(
 
     for (ip, device) in devices.iter_mut().enumerate() {
         let _ = ip;
-        let IpAddr::V4(ipv4) = device.ip else { continue };
+        let IpAddr::V4(ipv4) = device.ip else {
+            continue;
+        };
         let Some(found) = grouped.get(&ipv4) else {
             continue;
         };
@@ -293,7 +295,10 @@ pub fn merge_into_devices(
         // The friendliest name wins: a user-assigned instance name over a
         // machine hostname.
         if device.hostname.is_none() {
-            if let Some(name) = found.iter().map(|service| &service.name).find(|name| !name.is_empty())
+            if let Some(name) = found
+                .iter()
+                .map(|service| &service.name)
+                .find(|name| !name.is_empty())
             {
                 device.hostname = Some(name.clone());
                 outcome.named += 1;
@@ -417,21 +422,12 @@ fn service_from_info(info: &ServiceInfo) -> Option<MdnsService> {
         return None;
     }
 
-    let ip = info
-        .get_addresses_v4()
-        .into_iter()
-        .next()
-        .copied();
+    let ip = info.get_addresses_v4().into_iter().next().copied();
 
     let txt_records = info
         .get_properties()
         .iter()
-        .map(|property| {
-            (
-                property.key().to_string(),
-                property.val_str().to_string(),
-            )
-        })
+        .map(|property| (property.key().to_string(), property.val_str().to_string()))
         .collect();
 
     let hostname = {
@@ -465,7 +461,12 @@ fn instance_name(fullname: &str, service_type: &str) -> String {
 
     // Fall back to the first label, which is the instance name in practice
     // (mDNS escapes embedded dots).
-    fullname.split('.').next().unwrap_or_default().trim().to_string()
+    fullname
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 /// Summary of discovered services by type.
@@ -609,7 +610,10 @@ mod tests {
         );
         // Trailing dot variants and a name containing dots.
         assert_eq!(
-            instance_name("J. Smith's iPad._airplay._tcp.local.", "_airplay._tcp.local."),
+            instance_name(
+                "J. Smith's iPad._airplay._tcp.local.",
+                "_airplay._tcp.local."
+            ),
             "J. Smith's iPad"
         );
         assert_eq!(
@@ -637,7 +641,10 @@ mod tests {
         assert_eq!(service.ip, Some(Ipv4Addr::new(192, 168, 1, 50)));
         assert_eq!(service.port, 631);
         assert_eq!(service.hostname.as_deref(), Some("hp-laserjet.local"));
-        assert_eq!(service.txt_records.get("ty").map(String::as_str), Some("HP LaserJet MFP"));
+        assert_eq!(
+            service.txt_records.get("ty").map(String::as_str),
+            Some("HP LaserJet MFP")
+        );
         assert_eq!(service.confidence, 1.0);
     }
 
@@ -646,7 +653,12 @@ mod tests {
         let mut devices = vec![Device::new("192.168.1.50".parse::<IpAddr>().unwrap())];
         devices[0].device_type = Some("Unknown device".to_string());
 
-        let services = vec![service("HP LaserJet MFP", ServiceType::Printer, "192.168.1.50", 631)];
+        let services = vec![service(
+            "HP LaserJet MFP",
+            ServiceType::Printer,
+            "192.168.1.50",
+            631,
+        )];
         let outcome = merge_into_devices(&mut devices, &services);
 
         assert_eq!(outcome.named, 1);
@@ -662,12 +674,20 @@ mod tests {
         devices[0].hostname = Some("nas.local".to_string());
         devices[0].device_type = Some("Windows File Server".to_string());
 
-        let services = vec![service("Some Printer", ServiceType::Printer, "192.168.1.50", 631)];
+        let services = vec![service(
+            "Some Printer",
+            ServiceType::Printer,
+            "192.168.1.50",
+            631,
+        )];
         let outcome = merge_into_devices(&mut devices, &services);
 
         assert_eq!(outcome, MergeOutcome::default());
         assert_eq!(devices[0].hostname.as_deref(), Some("nas.local"));
-        assert_eq!(devices[0].device_type.as_deref(), Some("Windows File Server"));
+        assert_eq!(
+            devices[0].device_type.as_deref(),
+            Some("Windows File Server")
+        );
     }
 
     #[test]
@@ -675,7 +695,12 @@ mod tests {
         let mut devices = vec![Device::new("192.168.1.50".parse::<IpAddr>().unwrap())];
 
         let services = vec![
-            service("Living Room TV", ServiceType::MediaServer, "192.168.1.60", 8009),
+            service(
+                "Living Room TV",
+                ServiceType::MediaServer,
+                "192.168.1.60",
+                8009,
+            ),
             service("Unknown Thing", ServiceType::Unknown, "192.168.1.61", 1234),
         ];
         let outcome = merge_into_devices(&mut devices, &services);
@@ -683,12 +708,18 @@ mod tests {
         assert_eq!(outcome.added, 2);
         assert_eq!(devices.len(), 3);
 
-        let tv = devices.iter().find(|d| d.ip.to_string() == "192.168.1.60").unwrap();
+        let tv = devices
+            .iter()
+            .find(|d| d.ip.to_string() == "192.168.1.60")
+            .unwrap();
         assert_eq!(tv.hostname.as_deref(), Some("Living Room TV"));
         assert_eq!(tv.device_type.as_deref(), Some("Media device"));
 
         // A service we cannot classify still contributes its name.
-        let unknown = devices.iter().find(|d| d.ip.to_string() == "192.168.1.61").unwrap();
+        let unknown = devices
+            .iter()
+            .find(|d| d.ip.to_string() == "192.168.1.61")
+            .unwrap();
         assert_eq!(unknown.hostname.as_deref(), Some("Unknown Thing"));
         assert!(unknown.device_type.is_none());
     }

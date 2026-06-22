@@ -12,8 +12,8 @@ pub mod oui;
 use netgap_core::{Device, OsType};
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
-use tokio::net::TcpStream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 /// Network positions that identify a device without guessing.
 #[derive(Debug, Clone, Default)]
@@ -128,12 +128,42 @@ fn classify_vendor(vendor: &str) -> Option<&'static str> {
     let vendor = vendor.to_ascii_lowercase();
 
     const ROUTERS: &[&str] = &[
-        "cisco", "netgear", "tp-link", "d-link", "asus", "avm", "ubiquiti", "mikrotik", "aruba",
-        "juniper", "ruijie", "huawei", "zte", "ruckus", "extreme networks", "meraki", "cambium",
-        "sagemcom", "technicolor", "arcadyan", "sercomm",
+        "cisco",
+        "netgear",
+        "tp-link",
+        "d-link",
+        "asus",
+        "avm",
+        "ubiquiti",
+        "mikrotik",
+        "aruba",
+        "juniper",
+        "ruijie",
+        "huawei",
+        "zte",
+        "ruckus",
+        "extreme networks",
+        "meraki",
+        "cambium",
+        "sagemcom",
+        "technicolor",
+        "arcadyan",
+        "sercomm",
     ];
-    const PRINTERS: &[&str] = &["canon", "epson", "brother", "xerox", "lexmark", "ricoh", "kyocera"];
-    const COMPUTERS: &[&str] = &["dell", "lenovo", "supermicro", "intel", "realtek", "microsoft", "oracle", "qemu", "vmware"];
+    const PRINTERS: &[&str] = &[
+        "canon", "epson", "brother", "xerox", "lexmark", "ricoh", "kyocera",
+    ];
+    const COMPUTERS: &[&str] = &[
+        "dell",
+        "lenovo",
+        "supermicro",
+        "intel",
+        "realtek",
+        "microsoft",
+        "oracle",
+        "qemu",
+        "vmware",
+    ];
     const IOT: &[&str] = &["espressif", "tuya", "shelly", "sonoff", "raspberry"];
     const SMART: &[&str] = &["amazon", "roku", "sonos", "nest"];
 
@@ -234,7 +264,7 @@ impl Fingerprinter {
     }
 
     /// Detect OS type from TTL value.
-    /// 
+    ///
     /// Common TTL values:
     /// - Windows: 128
     /// - Linux: 64
@@ -340,10 +370,10 @@ impl Fingerprinter {
     pub async fn grab_http_banner(ip: &str, port: u16) -> Option<BannerGrabResult> {
         let addr: SocketAddr = format!("{}:{}", ip, port).parse().ok()?;
         let connect_future = TcpStream::connect(addr);
-        let mut stream = tokio::time::timeout(
-            Duration::from_secs(2),
-            connect_future
-        ).await.ok()?.ok()?;
+        let mut stream = tokio::time::timeout(Duration::from_secs(2), connect_future)
+            .await
+            .ok()?
+            .ok()?;
 
         let request = "GET / HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n";
         stream.write_all(request.as_bytes()).await.ok()?;
@@ -376,10 +406,10 @@ impl Fingerprinter {
     pub async fn grab_ssh_banner(ip: &str, port: u16) -> Option<BannerGrabResult> {
         let addr: SocketAddr = format!("{}:{}", ip, port).parse().ok()?;
         let connect_future = TcpStream::connect(addr);
-        let mut stream = tokio::time::timeout(
-            Duration::from_secs(2),
-            connect_future
-        ).await.ok()?.ok()?;
+        let mut stream = tokio::time::timeout(Duration::from_secs(2), connect_future)
+            .await
+            .ok()?
+            .ok()?;
 
         let mut buffer = vec![0; 256];
         let n = stream.read(&mut buffer).await.ok()?;
@@ -406,10 +436,10 @@ impl Fingerprinter {
     pub async fn grab_ftp_banner(ip: &str, port: u16) -> Option<BannerGrabResult> {
         let addr: SocketAddr = format!("{}:{}", ip, port).parse().ok()?;
         let connect_future = TcpStream::connect(addr);
-        let mut stream = tokio::time::timeout(
-            Duration::from_secs(2),
-            connect_future
-        ).await.ok()?.ok()?;
+        let mut stream = tokio::time::timeout(Duration::from_secs(2), connect_future)
+            .await
+            .ok()?
+            .ok()?;
 
         let mut buffer = vec![0; 256];
         let n = stream.read(&mut buffer).await.ok()?;
@@ -586,11 +616,20 @@ mod tests {
     #[test]
     fn test_is_randomized_mac() {
         // Locally administered bit set: privacy addresses seen on real LANs.
-        for mac in ["A2:2D:98:D1:F6:8F", "fa:b6:9b:92:72:8d", "4A:6A:DA:CF:4A:B5", "EE:5F:71:AA:ED:D0"] {
+        for mac in [
+            "A2:2D:98:D1:F6:8F",
+            "fa:b6:9b:92:72:8d",
+            "4A:6A:DA:CF:4A:B5",
+            "EE:5F:71:AA:ED:D0",
+        ] {
             assert!(is_randomized_mac(mac), "{mac} should be randomized");
         }
         // Globally unique, vendor-assigned.
-        for mac in ["C4:B2:5B:0A:03:26", "90:61:0C:A3:12:94", "DC:46:28:56:3B:9B"] {
+        for mac in [
+            "C4:B2:5B:0A:03:26",
+            "90:61:0C:A3:12:94",
+            "DC:46:28:56:3B:9B",
+        ] {
             assert!(!is_randomized_mac(mac), "{mac} should not be randomized");
         }
         assert!(!is_randomized_mac("nonsense"));
@@ -641,8 +680,10 @@ mod tests {
     fn test_classify_falls_back_to_randomized_mac() {
         let context = ClassifyContext::default();
         // No ports, no vendor, no name: the private MAC is the only signal.
-        let classification =
-            classify_device(&device("192.168.1.30", Some("A2:2D:98:D1:F6:8F"), &[]), &context);
+        let classification = classify_device(
+            &device("192.168.1.30", Some("A2:2D:98:D1:F6:8F"), &[]),
+            &context,
+        );
         assert_eq!(classification.label, "Phone / laptop (private MAC)");
         assert!(classification.is_guess());
     }
@@ -650,8 +691,10 @@ mod tests {
     #[test]
     fn test_classify_unknown_device() {
         let context = ClassifyContext::default();
-        let classification =
-            classify_device(&device("192.168.1.40", Some("C4:B2:5B:0A:03:26"), &[]), &context);
+        let classification = classify_device(
+            &device("192.168.1.40", Some("C4:B2:5B:0A:03:26"), &[]),
+            &context,
+        );
         assert_eq!(classification.label, "Unknown device");
         assert!(classification.is_guess());
     }

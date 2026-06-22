@@ -7,7 +7,7 @@ use crossterm::{
     terminal::{self, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use netgap_core::Device;
-use netgap_scan::{PortScanEvent, ScanConfig as PortScanConfig, PortScanner, TOP_DANGEROUS_PORTS};
+use netgap_scan::{PortScanEvent, PortScanner, ScanConfig as PortScanConfig, TOP_DANGEROUS_PORTS};
 use std::io::{stdout, Write};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -87,17 +87,15 @@ pub async fn run(plan: &DiscoveryPlan, quick: bool) -> Result<Vec<Device>> {
     let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<PortScanEvent>();
     let (key_tx, mut key_rx) = mpsc::unbounded_channel::<KeyEvent>();
 
-    std::thread::spawn(move || {
-        loop {
-            match event::read() {
-                Ok(Event::Key(key_event)) => {
-                    if key_tx.send(key_event).is_err() {
-                        break;
-                    }
+    std::thread::spawn(move || loop {
+        match event::read() {
+            Ok(Event::Key(key_event)) => {
+                if key_tx.send(key_event).is_err() {
+                    break;
                 }
-                Ok(_) => {}
-                Err(_) => break,
             }
+            Ok(_) => {}
+            Err(_) => break,
         }
     });
 
@@ -238,17 +236,23 @@ fn render_dashboard(
         if let Some(mac) = &state.device.mac {
             println!("MAC: {}", mac);
         }
-        println!("Progress: {}/{} ports", state.completed_ports, state.total_ports);
-        println!("Open ports: {}", if state.open_ports.is_empty() {
-            "none yet".to_string()
-        } else {
-            state
-                .open_ports
-                .iter()
-                .map(u16::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        });
+        println!(
+            "Progress: {}/{} ports",
+            state.completed_ports, state.total_ports
+        );
+        println!(
+            "Open ports: {}",
+            if state.open_ports.is_empty() {
+                "none yet".to_string()
+            } else {
+                state
+                    .open_ports
+                    .iter()
+                    .map(u16::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        );
         if let Some(port) = state.last_port {
             println!("Last detected open port: {}", port);
         }

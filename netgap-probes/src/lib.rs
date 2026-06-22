@@ -133,11 +133,7 @@ pub async fn probe_port(ip: IpAddr, port: u16) -> Result<ProbeResult> {
 ///
 /// Failures are dropped: a port that refuses or stays silent is simply not in
 /// the result.
-pub async fn probe_ports(
-    ip: IpAddr,
-    ports: &[u16],
-    concurrency: usize,
-) -> Vec<(u16, ProbeResult)> {
+pub async fn probe_ports(ip: IpAddr, ports: &[u16], concurrency: usize) -> Vec<(u16, ProbeResult)> {
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(concurrency.max(1)));
     let mut tasks = JoinSet::new();
 
@@ -210,7 +206,8 @@ async fn read_until_close(stream: &mut TcpStream, limit: usize) -> String {
 pub async fn probe_http(ip: IpAddr, port: u16) -> Result<ProbeResult> {
     let mut stream = connect(ip, port).await?;
 
-    let request = b"GET / HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\nUser-Agent: netgap\r\n\r\n";
+    let request =
+        b"GET / HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\nUser-Agent: netgap\r\n\r\n";
     stream.write_all(request).await?;
 
     // The body usually arrives in a separate segment from the headers, so a
@@ -471,8 +468,7 @@ pub async fn probe_redis(ip: IpAddr, port: u16) -> Result<ProbeResult> {
         product,
         version,
         banner: response.lines().next().map(str::to_string),
-        details: unauthenticated
-            .then(|| "Redis answered INFO without authentication".to_string()),
+        details: unauthenticated.then(|| "Redis answered INFO without authentication".to_string()),
         tls: None,
     })
 }
@@ -589,9 +585,9 @@ pub fn parse_ftp_banner(banner: &str) -> (Option<String>, Option<String>) {
     for product in ["proftpd", "vsftpd", "pure-ftpd", "filezilla"] {
         if let Some(index) = lower.find(product) {
             let rest = &banner[index..];
-            let mut parts = rest.split_whitespace().map(|part| {
-                part.trim_matches(|c: char| c == '(' || c == ')' || c == ',')
-            });
+            let mut parts = rest
+                .split_whitespace()
+                .map(|part| part.trim_matches(|c: char| c == '(' || c == ')' || c == ','));
             let name = parts.next().unwrap_or("").to_string();
             let version = parts
                 .next()
@@ -610,7 +606,14 @@ pub fn parse_ftp_banner(banner: &str) -> (Option<String>, Option<String>) {
 /// `220 mail.example.com ESMTP Postfix` and
 /// `220 mail.example.com ESMTP Exim 4.94.2 Thu, 01 Jan 2026` both work.
 pub fn parse_smtp_banner(banner: &str) -> (Option<String>, Option<String>) {
-    for product in ["Postfix", "Exim", "Sendmail", "Microsoft ESMTP", "Haraka", "OpenSMTPD"] {
+    for product in [
+        "Postfix",
+        "Exim",
+        "Sendmail",
+        "Microsoft ESMTP",
+        "Haraka",
+        "OpenSMTPD",
+    ] {
         if let Some(index) = banner.find(product) {
             let rest = &banner[index + product.len()..];
             let version = rest

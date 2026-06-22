@@ -144,7 +144,10 @@ IP address       HW type     Flags       HW address            Mask     Device
         let resolved = enrich_macs(&mut devices, &entries, Some("wlan0"));
         assert_eq!(resolved, 1);
         assert_eq!(devices[0].mac.as_deref(), Some("C4:B2:5B:0A:03:26"));
-        assert!(devices[1].mac.is_none(), "bridge entry should be filtered out");
+        assert!(
+            devices[1].mac.is_none(),
+            "bridge entry should be filtered out"
+        );
         assert!(devices[2].mac.is_none(), "unknown host stays unresolved");
     }
 

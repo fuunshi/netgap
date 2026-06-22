@@ -216,7 +216,11 @@ pub fn parse_reply(packet: &[u8]) -> Option<DhcpReply> {
                 server_id = Some(Ipv4Addr::new(value[0], value[1], value[2], value[3]));
             }
             OPTION_HOSTNAME => {
-                hostname = Some(String::from_utf8_lossy(value).trim_end_matches('\0').to_string());
+                hostname = Some(
+                    String::from_utf8_lossy(value)
+                        .trim_end_matches('\0')
+                        .to_string(),
+                );
             }
             _ => {}
         }
@@ -589,7 +593,11 @@ mod tests {
         assert_eq!(packet[0], 1, "op is BOOTREQUEST");
         assert_eq!(packet[1], 1, "hardware type is Ethernet");
         assert_eq!(packet[2], 6, "hardware address length");
-        assert_eq!(&packet[28..34], &CLIENT_MAC.octets(), "chaddr carries the client");
+        assert_eq!(
+            &packet[28..34],
+            &CLIENT_MAC.octets(),
+            "chaddr carries the client"
+        );
         assert_eq!(&packet[236..240], &MAGIC_COOKIE);
 
         // The broadcast flag, so a server with no route to us still answers.
@@ -629,8 +637,14 @@ mod tests {
         let reply = parse_reply(&packet).expect("parses");
 
         assert!(reply.is_offer());
-        assert_eq!(reply.server_id, Some("192.168.111.1".parse().expect("valid ip")));
-        assert_eq!(reply.offered, Some("192.168.111.50".parse().expect("valid ip")));
+        assert_eq!(
+            reply.server_id,
+            Some("192.168.111.1".parse().expect("valid ip"))
+        );
+        assert_eq!(
+            reply.offered,
+            Some("192.168.111.50".parse().expect("valid ip"))
+        );
         assert_eq!(reply.hostname.as_deref(), Some("router"));
     }
 
@@ -682,7 +696,10 @@ mod tests {
         packet.extend_from_slice(&[OPTION_HOSTNAME, 200]); // and overclaim
 
         let reply = parse_reply(&packet).expect("the readable part still parses");
-        assert_eq!(reply.server_id, Some("192.168.1.1".parse().expect("valid ip")));
+        assert_eq!(
+            reply.server_id,
+            Some("192.168.1.1".parse().expect("valid ip"))
+        );
     }
 
     #[test]
@@ -837,9 +854,10 @@ mod tests {
             let mut buffer = [0u8; 1024];
             let (_, from) = stand_in.recv_from(&mut buffer).await.expect("receive");
 
-            for (server, hostname) in
-                [("192.168.111.1", "router"), ("192.168.111.99", "not-the-router")]
-            {
+            for (server, hostname) in [
+                ("192.168.111.1", "router"),
+                ("192.168.111.99", "not-the-router"),
+            ] {
                 let offer = build_offer(server, "192.168.111.60", Some(hostname));
                 stand_in.send_to(&offer, from).await.expect("send");
             }
@@ -850,7 +868,11 @@ mod tests {
 
         answer.await.expect("the stand-in server ran");
 
-        assert_eq!(servers.len(), 2, "both answering servers should be reported");
+        assert_eq!(
+            servers.len(),
+            2,
+            "both answering servers should be reported"
+        );
         assert_eq!(
             servers[0].server_id,
             "192.168.111.1".parse::<Ipv4Addr>().expect("valid ip"),

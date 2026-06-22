@@ -5,11 +5,11 @@
 //! - JSON for machine-readable output and piping
 //! - Human-readable summary
 
-use netgap_core::{Severity, ScanResult};
+use netgap_core::{ScanResult, Severity};
 
 pub mod discovery;
-pub use discovery::{format_discovery, DiscoveryContext};
 use anyhow::Result;
+pub use discovery::{format_discovery, DiscoveryContext};
 
 /// Report formatter with multiple output options.
 pub struct ReportFormatter;
@@ -21,7 +21,8 @@ impl ReportFormatter {
 
         output.push_str("╔════════════════════════════════════════════════════════════════════╗\n");
         output.push_str("║                     NETGAP SECURITY SCAN REPORT                    ║\n");
-        output.push_str("╚════════════════════════════════════════════════════════════════════╝\n\n");
+        output
+            .push_str("╚════════════════════════════════════════════════════════════════════╝\n\n");
 
         // Summary statistics
         output.push_str("📊 Scan Summary\n");
@@ -109,7 +110,8 @@ impl ReportFormatter {
             }
         }
 
-        output.push_str("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+        output
+            .push_str("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
         output.push_str("✓ Scan complete. Secure your network!\n");
 
         Ok(output)
@@ -144,7 +146,10 @@ impl ReportFormatter {
             for device in &result.devices {
                 for finding in &device.findings {
                     if finding.severity == Severity::Critical {
-                        output.push_str(&format!("  • {} ({}): {}\n", device.ip, finding.title, finding.remediation));
+                        output.push_str(&format!(
+                            "  • {} ({}): {}\n",
+                            device.ip, finding.title, finding.remediation
+                        ));
                     }
                 }
             }
@@ -157,7 +162,7 @@ impl ReportFormatter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use netgap_core::{ScanConfig, FindingSummary};
+    use netgap_core::{FindingSummary, ScanConfig};
 
     #[test]
     fn test_format_terminal_empty() {

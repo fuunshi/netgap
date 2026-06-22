@@ -121,7 +121,10 @@ fn choose_fallback(target: &str, assume_yes: bool, non_interactive: bool) -> Res
         eprintln!(
             "⚠  ARP discovery needs root; using the TCP fallback (fewer hosts, limited MAC addresses)."
         );
-        eprintln!("   Re-run with sudo for a complete scan: {}", sudo_command_line());
+        eprintln!(
+            "   Re-run with sudo for a complete scan: {}",
+            sudo_command_line()
+        );
         return Ok(());
     }
 
@@ -150,7 +153,10 @@ fn choose_fallback(target: &str, assume_yes: bool, non_interactive: bool) -> Res
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
 
-    if matches!(input.trim().to_ascii_lowercase().as_str(), "x" | "exit" | "q") {
+    if matches!(
+        input.trim().to_ascii_lowercase().as_str(),
+        "x" | "exit" | "q"
+    ) {
         eprintln!();
         eprintln!("Exiting. Re-run with:");
         eprintln!();

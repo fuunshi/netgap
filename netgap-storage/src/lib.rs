@@ -6,9 +6,9 @@
 //! - Scan comparison (diff between consecutive scans)
 //! - Export to various formats
 
-use netgap_core::{Device, Finding, FindingSummary, OsType, ScanConfig, ScanResult, Severity};
 use anyhow::{anyhow, Result};
 use chrono::Utc;
+use netgap_core::{Device, Finding, FindingSummary, OsType, ScanConfig, ScanResult, Severity};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -118,9 +118,10 @@ impl ScanStore {
         // place; the exports select them. A duplicate-column error just means
         // the migration already ran.
         for column in ["description", "remediation"] {
-            let _ = self
-                .conn
-                .execute(&format!("ALTER TABLE findings ADD COLUMN {column} TEXT"), []);
+            let _ = self.conn.execute(
+                &format!("ALTER TABLE findings ADD COLUMN {column} TEXT"),
+                [],
+            );
         }
         let _ = self
             .conn
@@ -268,7 +269,8 @@ impl ScanStore {
             })?;
 
             for row in rows {
-                let (device_id, id, title, severity, port, service, description, remediation) = row?;
+                let (device_id, id, title, severity, port, service, description, remediation) =
+                    row?;
                 let severity = severity_from_str(&severity);
                 let finding = Finding {
                     id,
@@ -554,7 +556,9 @@ impl ScanStore {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, Option<i32>>(2)?.map(|p| p.to_string()).unwrap_or_default(),
+                    row.get::<_, Option<i32>>(2)?
+                        .map(|p| p.to_string())
+                        .unwrap_or_default(),
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -597,7 +601,8 @@ impl ScanStore {
 
     /// Export findings to Markdown format
     pub fn export_markdown(&self, scan_id: &str) -> Result<String> {
-        let metadata = self.load_scan_metadata(scan_id)?
+        let metadata = self
+            .load_scan_metadata(scan_id)?
             .ok_or(anyhow!("Scan not found: {}", scan_id))?;
 
         let mut md = String::new();
@@ -607,7 +612,10 @@ impl ScanStore {
         md.push_str(&format!("**Interface:** {}\n", metadata.interface));
         md.push_str(&format!("**Target:** {}\n", metadata.target));
         md.push_str(&format!("**Devices Found:** {}\n", metadata.device_count));
-        md.push_str(&format!("**Total Findings:** {}\n\n", metadata.finding_count));
+        md.push_str(&format!(
+            "**Total Findings:** {}\n\n",
+            metadata.finding_count
+        ));
 
         // Severity summary
         md.push_str("## Summary by Severity\n\n");
@@ -621,17 +629,18 @@ impl ScanStore {
              LEFT JOIN findings f ON d.id = f.device_id AND f.scan_id = ?
              WHERE d.scan_id = ?
              GROUP BY d.id
-             ORDER BY count DESC, d.ip"
+             ORDER BY count DESC, d.ip",
         )?;
 
-        let devices = stmt.query_map(params![scan_id, scan_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)?))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+        let devices = stmt
+            .query_map(params![scan_id, scan_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
 
         if !devices.is_empty() {
             md.push_str("## Findings by Device\n\n");
-            
+
             for (ip, count) in devices {
                 md.push_str(&format!("### {} ({} findings)\n\n", ip, count));
 
@@ -646,18 +655,19 @@ impl ScanStore {
                          WHEN 'HIGH' THEN 2
                          WHEN 'MEDIUM' THEN 3
                          ELSE 4
-                       END"
+                       END",
                 )?;
 
-                let findings = findings_stmt.query_map(params![scan_id, ip], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                    ))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
+                let findings = findings_stmt
+                    .query_map(params![scan_id, ip], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                        ))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
 
                 for (title, severity, desc, remediation) in findings {
                     let emoji = match severity.as_str() {
@@ -683,7 +693,8 @@ impl ScanStore {
 
     /// Export findings to HTML format
     pub fn export_html(&self, scan_id: &str) -> Result<String> {
-        let metadata = self.load_scan_metadata(scan_id)?
+        let metadata = self
+            .load_scan_metadata(scan_id)?
             .ok_or(anyhow!("Scan not found: {}", scan_id))?;
 
         let mut html = String::new();
@@ -694,7 +705,9 @@ impl ScanStore {
         html.push_str("<style>\n");
         html.push_str("body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 2em; background: #f5f5f5; }\n");
         html.push_str(".container { max-width: 900px; margin: 0 auto; background: white; padding: 2em; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }\n");
-        html.push_str("h1 { color: #333; border-bottom: 3px solid #007bff; padding-bottom: 0.5em; }\n");
+        html.push_str(
+            "h1 { color: #333; border-bottom: 3px solid #007bff; padding-bottom: 0.5em; }\n",
+        );
         html.push_str("h2 { color: #555; margin-top: 1.5em; }\n");
         html.push_str(".metadata { background: #f9f9f9; padding: 1em; border-radius: 4px; margin-bottom: 1.5em; }\n");
         html.push_str(".metadata-item { margin: 0.5em 0; }\n");
@@ -719,10 +732,22 @@ impl ScanStore {
 
         // Metadata
         html.push_str("<div class='metadata'>\n");
-        html.push_str(&format!("<div class='metadata-item'><strong>Scan ID:</strong> {}</div>\n", metadata.id));
-        html.push_str(&format!("<div class='metadata-item'><strong>Date:</strong> {}</div>\n", metadata.created_at));
-        html.push_str(&format!("<div class='metadata-item'><strong>Interface:</strong> {}</div>\n", metadata.interface));
-        html.push_str(&format!("<div class='metadata-item'><strong>Target:</strong> {}</div>\n", metadata.target));
+        html.push_str(&format!(
+            "<div class='metadata-item'><strong>Scan ID:</strong> {}</div>\n",
+            metadata.id
+        ));
+        html.push_str(&format!(
+            "<div class='metadata-item'><strong>Date:</strong> {}</div>\n",
+            metadata.created_at
+        ));
+        html.push_str(&format!(
+            "<div class='metadata-item'><strong>Interface:</strong> {}</div>\n",
+            metadata.interface
+        ));
+        html.push_str(&format!(
+            "<div class='metadata-item'><strong>Target:</strong> {}</div>\n",
+            metadata.target
+        ));
         html.push_str("</div>\n");
 
         // Summary boxes
@@ -740,19 +765,23 @@ impl ScanStore {
              LEFT JOIN findings f ON d.id = f.device_id AND f.scan_id = ?
              WHERE d.scan_id = ?
              GROUP BY d.id
-             ORDER BY count DESC, d.ip"
+             ORDER BY count DESC, d.ip",
         )?;
 
-        let devices = stmt.query_map(params![scan_id, scan_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)?))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+        let devices = stmt
+            .query_map(params![scan_id, scan_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
 
         if !devices.is_empty() {
             html.push_str("<h2>Findings by Device</h2>\n");
-            
+
             for (ip, count) in devices {
-                html.push_str(&format!("<div class='device-section'><h3>{} ({} findings)</h3>\n", ip, count));
+                html.push_str(&format!(
+                    "<div class='device-section'><h3>{} ({} findings)</h3>\n",
+                    ip, count
+                ));
 
                 let mut findings_stmt = self.conn.prepare(
                     "SELECT f.title, f.severity, f.description, f.remediation
@@ -765,28 +794,38 @@ impl ScanStore {
                          WHEN 'HIGH' THEN 2
                          WHEN 'MEDIUM' THEN 3
                          ELSE 4
-                       END"
+                       END",
                 )?;
 
-                let findings = findings_stmt.query_map(params![scan_id, ip], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                    ))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
+                let findings = findings_stmt
+                    .query_map(params![scan_id, ip], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                        ))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
 
                 for (title, severity, desc, remediation) in findings {
                     let severity_class = severity.to_lowercase();
                     html.push_str(&format!("<div class='finding {}'>\n", severity_class));
-                    html.push_str(&format!("<div class='finding-title'>[{}] {}</div>\n", severity, title));
+                    html.push_str(&format!(
+                        "<div class='finding-title'>[{}] {}</div>\n",
+                        severity, title
+                    ));
                     if let Some(d) = desc {
-                        html.push_str(&format!("<div class='finding-detail'><strong>Details:</strong> {}</div>\n", d));
+                        html.push_str(&format!(
+                            "<div class='finding-detail'><strong>Details:</strong> {}</div>\n",
+                            d
+                        ));
                     }
                     if let Some(r) = remediation {
-                        html.push_str(&format!("<div class='finding-detail'><strong>Remediation:</strong> {}</div>\n", r));
+                        html.push_str(&format!(
+                            "<div class='finding-detail'><strong>Remediation:</strong> {}</div>\n",
+                            r
+                        ));
                     }
                     html.push_str("</div>\n");
                 }
@@ -801,27 +840,31 @@ impl ScanStore {
 
     /// Compare two scans and return differences
     pub fn compare_scans(&self, scan1_id: &str, scan2_id: &str) -> Result<ScanComparison> {
-        let metadata1 = self.load_scan_metadata(scan1_id)?
+        let metadata1 = self
+            .load_scan_metadata(scan1_id)?
             .ok_or(anyhow!("Scan not found: {}", scan1_id))?;
-        let metadata2 = self.load_scan_metadata(scan2_id)?
+        let metadata2 = self
+            .load_scan_metadata(scan2_id)?
             .ok_or(anyhow!("Scan not found: {}", scan2_id))?;
 
         // New devices in scan2
         let mut stmt = self.conn.prepare(
             "SELECT d.ip FROM devices d
              WHERE d.scan_id = ?
-             AND d.ip NOT IN (SELECT ip FROM devices WHERE scan_id = ?)"
+             AND d.ip NOT IN (SELECT ip FROM devices WHERE scan_id = ?)",
         )?;
-        let new_devices = stmt.query_map(params![scan2_id, scan1_id], |row| row.get(0))?
+        let new_devices = stmt
+            .query_map(params![scan2_id, scan1_id], |row| row.get(0))?
             .collect::<rusqlite::Result<Vec<String>>>()?;
 
         // Removed devices
         let mut stmt = self.conn.prepare(
             "SELECT d.ip FROM devices d
              WHERE d.scan_id = ?
-             AND d.ip NOT IN (SELECT ip FROM devices WHERE scan_id = ?)"
+             AND d.ip NOT IN (SELECT ip FROM devices WHERE scan_id = ?)",
         )?;
-        let removed_devices = stmt.query_map(params![scan1_id, scan2_id], |row| row.get(0))?
+        let removed_devices = stmt
+            .query_map(params![scan1_id, scan2_id], |row| row.get(0))?
             .collect::<rusqlite::Result<Vec<String>>>()?;
 
         // New critical findings
@@ -829,12 +872,13 @@ impl ScanStore {
             "SELECT f.title, d.ip FROM findings f
              JOIN devices d ON f.device_id = d.id
              WHERE f.scan_id = ?
-             AND f.severity = 'CRITICAL'"
+             AND f.severity = 'CRITICAL'",
         )?;
-        let new_critical = stmt.query_map(params![scan2_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+        let new_critical = stmt
+            .query_map(params![scan2_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
 
         // Resolved critical findings
         let mut stmt = self.conn.prepare(
@@ -844,12 +888,13 @@ impl ScanStore {
              AND f.severity = 'CRITICAL'
              AND f.title NOT IN (
                SELECT title FROM findings WHERE scan_id = ? AND severity = 'CRITICAL'
-             )"
+             )",
         )?;
-        let resolved_findings = stmt.query_map(params![scan1_id, scan2_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+        let resolved_findings = stmt
+            .query_map(params![scan1_id, scan2_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
 
         Ok(ScanComparison {
             scan1_id: metadata1.id,
@@ -887,8 +932,8 @@ pub struct ScanComparison {
     pub scan2_date: String,
     pub new_devices: Vec<String>,
     pub removed_devices: Vec<String>,
-    pub new_critical: Vec<(String, String)>,  // (finding_title, ip)
-    pub resolved_findings: Vec<(String, String)>,  // (finding_title, ip)
+    pub new_critical: Vec<(String, String)>, // (finding_title, ip)
+    pub resolved_findings: Vec<(String, String)>, // (finding_title, ip)
 }
 
 /// When a device was first and last seen, across every scan in the store.
@@ -995,19 +1040,13 @@ mod tests {
         let mut store = ScanStore::open(Path::new(":memory:")).expect("open store");
 
         let first_id = store.save_scan(&sample_result()).expect("first save");
-        let first = store
-            .load_scan(&first_id)
-            .expect("load")
-            .devices[0]
+        let first = store.load_scan(&first_id).expect("load").devices[0]
             .first_seen
             .clone()
             .expect("first seen");
 
         let second_id = store.save_scan(&sample_result()).expect("second save");
-        let second = store
-            .load_scan(&second_id)
-            .expect("load")
-            .devices[0]
+        let second = store.load_scan(&second_id).expect("load").devices[0]
             .first_seen
             .clone()
             .expect("first seen");

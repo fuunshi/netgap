@@ -3,9 +3,9 @@
 //! This module tracks network changes over time, detects new devices/services,
 //! identifies vulnerability regressions, and calculates network health scores.
 
-use serde::{Deserialize, Serialize};
 use chrono::Utc;
 use netgap_core::{ScanResult, Severity};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Represents a snapshot of network state at a point in time.
@@ -30,7 +30,7 @@ impl ScanHistory {
 
         for device in &result.devices {
             total_ports += device.open_ports.len();
-            
+
             let mut crit = 0;
             let mut high = 0;
             for finding in &device.findings {
@@ -84,13 +84,31 @@ pub struct DeviceSnapshot {
 /// Detected changes between two scans.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum NetworkChange {
-    NewDevice { ip: String, hostname: Option<String> },
-    DeviceGone { ip: String },
-    NewService { ip: String, port: u16 },
-    ServiceClosed { ip: String, port: u16 },
-    CriticalVulnDetected { ip: String, count: usize },
-    VulnerabilityImproved { ip: String },
-    VulnerabilityRegressed { ip: String },
+    NewDevice {
+        ip: String,
+        hostname: Option<String>,
+    },
+    DeviceGone {
+        ip: String,
+    },
+    NewService {
+        ip: String,
+        port: u16,
+    },
+    ServiceClosed {
+        ip: String,
+        port: u16,
+    },
+    CriticalVulnDetected {
+        ip: String,
+        count: usize,
+    },
+    VulnerabilityImproved {
+        ip: String,
+    },
+    VulnerabilityRegressed {
+        ip: String,
+    },
 }
 
 impl std::fmt::Display for NetworkChange {
@@ -105,7 +123,9 @@ impl std::fmt::Display for NetworkChange {
             }
             NetworkChange::DeviceGone { ip } => write!(f, "DEVICE OFFLINE: {}", ip),
             NetworkChange::NewService { ip, port } => write!(f, "NEW SERVICE: {}:{}", ip, port),
-            NetworkChange::ServiceClosed { ip, port } => write!(f, "SERVICE CLOSED: {}:{}", ip, port),
+            NetworkChange::ServiceClosed { ip, port } => {
+                write!(f, "SERVICE CLOSED: {}:{}", ip, port)
+            }
             NetworkChange::CriticalVulnDetected { ip, count } => {
                 write!(f, "CRITICAL VULN: {} found {} critical issue(s)", ip, count)
             }
@@ -124,10 +144,7 @@ pub struct ChangeDetection;
 
 impl ChangeDetection {
     /// Compare two scan histories and detect changes.
-    pub fn detect_changes(
-        previous: &ScanHistory,
-        current: &ScanHistory,
-    ) -> Vec<NetworkChange> {
+    pub fn detect_changes(previous: &ScanHistory, current: &ScanHistory) -> Vec<NetworkChange> {
         let mut changes = Vec::new();
 
         // Detect new devices
@@ -215,8 +232,8 @@ impl HealthScore {
         let port_penalty = (history.total_ports as u8).min(30);
 
         // Vulnerability penalty: 20 points for critical, 10 for high (cap at 50)
-        let vuln_penalty = (history.critical_findings as u8 * 20 + history.high_findings as u8 * 10)
-            .min(50);
+        let vuln_penalty =
+            (history.critical_findings as u8 * 20 + history.high_findings as u8 * 10).min(50);
 
         // Device penalty: 1 point per device (cap at 20)
         let device_penalty = (history.device_count as u8).min(20);
@@ -297,17 +314,11 @@ pub enum AlertCondition {
 
 impl AlertRule {
     /// Evaluate if rule should trigger based on changes and health change.
-    pub fn should_trigger(
-        &self,
-        changes: &[NetworkChange],
-        health_drop: Option<i16>,
-    ) -> bool {
+    pub fn should_trigger(&self, changes: &[NetworkChange], health_drop: Option<i16>) -> bool {
         match &self.condition {
-            AlertCondition::CriticalVulnDetected => {
-                changes
-                    .iter()
-                    .any(|c| matches!(c, NetworkChange::CriticalVulnDetected { .. }))
-            }
+            AlertCondition::CriticalVulnDetected => changes
+                .iter()
+                .any(|c| matches!(c, NetworkChange::CriticalVulnDetected { .. })),
             AlertCondition::HealthScoreDrop { threshold } => {
                 if let Some(drop) = health_drop {
                     drop >= *threshold as i16
@@ -315,16 +326,12 @@ impl AlertRule {
                     false
                 }
             }
-            AlertCondition::NewDevice => {
-                changes
-                    .iter()
-                    .any(|c| matches!(c, NetworkChange::NewDevice { .. }))
-            }
-            AlertCondition::DeviceOffline => {
-                changes
-                    .iter()
-                    .any(|c| matches!(c, NetworkChange::DeviceGone { .. }))
-            }
+            AlertCondition::NewDevice => changes
+                .iter()
+                .any(|c| matches!(c, NetworkChange::NewDevice { .. })),
+            AlertCondition::DeviceOffline => changes
+                .iter()
+                .any(|c| matches!(c, NetworkChange::DeviceGone { .. })),
             AlertCondition::MultipleNewServices { count } => {
                 let new_services = changes
                     .iter()
@@ -522,10 +529,46 @@ mod tests {
 
     #[test]
     fn test_health_score_risk_levels() {
-        assert_eq!(HealthScore { score: 90, port_factor: 5, vuln_factor: 5, device_factor: 0 }.risk_level(), "Excellent");
-        assert_eq!(HealthScore { score: 75, port_factor: 10, vuln_factor: 15, device_factor: 0 }.risk_level(), "Good");
-        assert_eq!(HealthScore { score: 55, port_factor: 20, vuln_factor: 25, device_factor: 0 }.risk_level(), "Fair");
-        assert_eq!(HealthScore { score: 35, port_factor: 30, vuln_factor: 35, device_factor: 0 }.risk_level(), "Poor");
+        assert_eq!(
+            HealthScore {
+                score: 90,
+                port_factor: 5,
+                vuln_factor: 5,
+                device_factor: 0
+            }
+            .risk_level(),
+            "Excellent"
+        );
+        assert_eq!(
+            HealthScore {
+                score: 75,
+                port_factor: 10,
+                vuln_factor: 15,
+                device_factor: 0
+            }
+            .risk_level(),
+            "Good"
+        );
+        assert_eq!(
+            HealthScore {
+                score: 55,
+                port_factor: 20,
+                vuln_factor: 25,
+                device_factor: 0
+            }
+            .risk_level(),
+            "Fair"
+        );
+        assert_eq!(
+            HealthScore {
+                score: 35,
+                port_factor: 30,
+                vuln_factor: 35,
+                device_factor: 0
+            }
+            .risk_level(),
+            "Poor"
+        );
     }
 
     #[test]
@@ -558,4 +601,3 @@ mod tests {
         assert!(!rule.should_trigger(&[], Some(5)));
     }
 }
-

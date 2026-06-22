@@ -141,8 +141,14 @@ mod tests {
 
     #[test]
     fn test_a_stable_mapping_reports_nothing() {
-        let before = mappings(&[("192.168.1.1", "C4:B2:5B:0A:03:26"), ("192.168.1.5", "AA:BB:CC:DD:EE:FF")]);
-        let after = mappings(&[("192.168.1.1", "C4:B2:5B:0A:03:26"), ("192.168.1.5", "AA:BB:CC:DD:EE:FF")]);
+        let before = mappings(&[
+            ("192.168.1.1", "C4:B2:5B:0A:03:26"),
+            ("192.168.1.5", "AA:BB:CC:DD:EE:FF"),
+        ]);
+        let after = mappings(&[
+            ("192.168.1.1", "C4:B2:5B:0A:03:26"),
+            ("192.168.1.5", "AA:BB:CC:DD:EE:FF"),
+        ]);
 
         assert!(detect_mac_changes(&before, &after).is_empty());
     }
@@ -161,8 +167,14 @@ mod tests {
 
     #[test]
     fn test_gateway_changes_are_identifiable() {
-        let before = mappings(&[("192.168.1.1", "C4:B2:5B:0A:03:26"), ("192.168.1.9", "AA:BB:CC:DD:EE:FF")]);
-        let after = mappings(&[("192.168.1.1", "DE:AD:BE:EF:00:01"), ("192.168.1.9", "11:22:33:44:55:66")]);
+        let before = mappings(&[
+            ("192.168.1.1", "C4:B2:5B:0A:03:26"),
+            ("192.168.1.9", "AA:BB:CC:DD:EE:FF"),
+        ]);
+        let after = mappings(&[
+            ("192.168.1.1", "DE:AD:BE:EF:00:01"),
+            ("192.168.1.9", "11:22:33:44:55:66"),
+        ]);
 
         let changes = detect_mac_changes(&before, &after);
         let gateway: Ipv4Addr = "192.168.1.1".parse().expect("valid ip");
@@ -177,8 +189,14 @@ mod tests {
 
     #[test]
     fn test_new_and_departed_addresses_are_not_changes() {
-        let before = mappings(&[("192.168.1.1", "C4:B2:5B:0A:03:26"), ("192.168.1.9", "AA:BB:CC:DD:EE:FF")]);
-        let after = mappings(&[("192.168.1.1", "C4:B2:5B:0A:03:26"), ("192.168.1.20", "11:22:33:44:55:66")]);
+        let before = mappings(&[
+            ("192.168.1.1", "C4:B2:5B:0A:03:26"),
+            ("192.168.1.9", "AA:BB:CC:DD:EE:FF"),
+        ]);
+        let after = mappings(&[
+            ("192.168.1.1", "C4:B2:5B:0A:03:26"),
+            ("192.168.1.20", "11:22:33:44:55:66"),
+        ]);
 
         // A device arriving or leaving is change detection's business, not a
         // conflict; treating it as one would make every scan an alarm.
@@ -212,9 +230,18 @@ mod tests {
     #[test]
     fn test_one_mac_answering_for_several_addresses() {
         let observations = vec![
-            ("192.168.1.1".parse().expect("valid ip"), "DE:AD:BE:EF:00:01".to_string()),
-            ("192.168.1.5".parse().expect("valid ip"), "DE:AD:BE:EF:00:01".to_string()),
-            ("192.168.1.9".parse().expect("valid ip"), "AA:BB:CC:DD:EE:FF".to_string()),
+            (
+                "192.168.1.1".parse().expect("valid ip"),
+                "DE:AD:BE:EF:00:01".to_string(),
+            ),
+            (
+                "192.168.1.5".parse().expect("valid ip"),
+                "DE:AD:BE:EF:00:01".to_string(),
+            ),
+            (
+                "192.168.1.9".parse().expect("valid ip"),
+                "AA:BB:CC:DD:EE:FF".to_string(),
+            ),
         ];
 
         let shared = detect_shared_macs(&observations);
@@ -227,8 +254,14 @@ mod tests {
     #[test]
     fn test_one_device_with_one_address_is_not_shared() {
         let observations = vec![
-            ("192.168.1.1".parse().expect("valid ip"), "AA:BB:CC:DD:EE:FF".to_string()),
-            ("192.168.1.2".parse().expect("valid ip"), "11:22:33:44:55:66".to_string()),
+            (
+                "192.168.1.1".parse().expect("valid ip"),
+                "AA:BB:CC:DD:EE:FF".to_string(),
+            ),
+            (
+                "192.168.1.2".parse().expect("valid ip"),
+                "11:22:33:44:55:66".to_string(),
+            ),
         ];
 
         assert!(detect_shared_macs(&observations).is_empty());

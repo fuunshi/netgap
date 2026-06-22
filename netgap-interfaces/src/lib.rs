@@ -22,8 +22,25 @@ use std::path::{Path, PathBuf};
 /// to the kernel but scanning them finds containers or a VPN peer, not the
 /// local network.
 const VIRTUAL_PREFIXES: &[&str] = &[
-    "docker", "br", "veth", "virbr", "vmnet", "vboxnet", "tun", "tap", "wg", "zt", "tailscale",
-    "utun", "awdl", "llw", "gif", "stf", "ip6tnl", "dummy", "ham",
+    "docker",
+    "br",
+    "veth",
+    "virbr",
+    "vmnet",
+    "vboxnet",
+    "tun",
+    "tap",
+    "wg",
+    "zt",
+    "tailscale",
+    "utun",
+    "awdl",
+    "llw",
+    "gif",
+    "stf",
+    "ip6tnl",
+    "dummy",
+    "ham",
 ];
 
 /// Interface name prefixes that conventionally denote a physical NIC.
@@ -178,12 +195,9 @@ pub fn list_interfaces_formatted() -> Result<Vec<String>> {
 /// Example: "192.168.1.0/24".
 pub fn get_interface_cidr(iface_name: &str) -> Result<String> {
     let iface = get_interface(iface_name)?;
-    iface.cidr.ok_or_else(|| {
-        anyhow!(
-            "No IPv4 address found on interface '{}'",
-            iface_name
-        )
-    })
+    iface
+        .cidr
+        .ok_or_else(|| anyhow!("No IPv4 address found on interface '{}'", iface_name))
 }
 
 /// Get an interface's IPv4 network address and prefix length.
@@ -192,12 +206,7 @@ pub fn get_interface_network(iface_name: &str) -> Result<(Ipv4Addr, u8)> {
     iface
         .ipv4_network()
         .map(|net| (net.network(), net.prefix()))
-        .ok_or_else(|| {
-            anyhow!(
-                "No IPv4 address found on interface '{}'",
-                iface_name
-            )
-        })
+        .ok_or_else(|| anyhow!("No IPv4 address found on interface '{}'", iface_name))
 }
 
 /// The IPv4 default gateway, read from the kernel routing table.
@@ -330,7 +339,11 @@ pub fn select_interface_interactive() -> Result<String> {
     for (idx, iface) in interfaces.iter().enumerate() {
         let ip_str = iface.ipv4.as_deref().unwrap_or("No IPv4");
         let cidr = iface.cidr.as_deref().unwrap_or("-");
-        let route = if iface.is_default_route { " [default]" } else { "" };
+        let route = if iface.is_default_route {
+            " [default]"
+        } else {
+            ""
+        };
         println!(
             "  {}. {} ({}, {}){}",
             idx + 1,
@@ -456,7 +469,11 @@ pub fn score_interface(iface: &InterfaceInfo, default_route: Option<&str>) -> i3
         score += 30;
     }
 
-    if iface.mac.as_deref().is_some_and(|mac| mac != "00:00:00:00:00:00") {
+    if iface
+        .mac
+        .as_deref()
+        .is_some_and(|mac| mac != "00:00:00:00:00:00")
+    {
         score += 20;
     }
 
@@ -466,7 +483,10 @@ pub fn score_interface(iface: &InterfaceInfo, default_route: Option<&str>) -> i3
 /// Whether a name refers to a loopback/virtual/container/tunnel device.
 pub fn is_virtual_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    lower == "lo" || VIRTUAL_PREFIXES.iter().any(|prefix| lower.starts_with(prefix))
+    lower == "lo"
+        || VIRTUAL_PREFIXES
+            .iter()
+            .any(|prefix| lower.starts_with(prefix))
 }
 
 /// Whether a name conventionally denotes a physical NIC.
@@ -587,9 +607,7 @@ mod tests {
         let interfaces = get_interfaces().expect("Should get interfaces");
         for iface in &interfaces {
             let Some(cidr) = &iface.cidr else { continue };
-            let (network, prefix) = cidr
-                .split_once('/')
-                .expect("cidr contains a slash");
+            let (network, prefix) = cidr.split_once('/').expect("cidr contains a slash");
             let network: Ipv4Addr = network.parse().expect("cidr network parses");
             let prefix: u8 = prefix.parse().expect("cidr prefix parses");
             let addr: Ipv4Addr = iface.ipv4.as_ref().unwrap().parse().unwrap();
@@ -619,7 +637,14 @@ mod tests {
             assert!(is_virtual_name(name), "{name} should be virtual");
         }
 
-        for name in ["eth0", "enp1s0", "eno1", "wlp4s0", "wlx90610ca31294", "wlan0"] {
+        for name in [
+            "eth0",
+            "enp1s0",
+            "eno1",
+            "wlp4s0",
+            "wlx90610ca31294",
+            "wlan0",
+        ] {
             assert!(!is_virtual_name(name), "{name} should not be virtual");
             assert!(is_physical_name(name), "{name} should be physical");
         }
@@ -674,7 +699,9 @@ mod tests {
         let routed = iface("wlp4s0", "192.168.1.20", 24, true);
         let bridge = iface("docker0", "172.17.0.1", 16, false);
 
-        assert!(score_interface(&routed, Some("wlp4s0")) > score_interface(&bridge, Some("wlp4s0")));
+        assert!(
+            score_interface(&routed, Some("wlp4s0")) > score_interface(&bridge, Some("wlp4s0"))
+        );
         // Even without the route hint, a physical /24 beats a virtual /16.
         assert!(score_interface(&routed, None) > score_interface(&bridge, None));
     }
@@ -703,7 +730,8 @@ mod tests {
 
     #[test]
     fn test_load_validated_preference_ignores_loopback() {
-        let dir = std::env::temp_dir().join(format!("netgap-iface-loopback-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("netgap-iface-loopback-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         save_interface_preference_in(&dir, "lo").expect("Should save preference");

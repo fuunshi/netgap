@@ -17,8 +17,8 @@
 //! let has_vuln = VulnerabilityCheck::check_version(&service);
 //! ```
 
-use serde::{Deserialize, Serialize};
 use netgap_core::version::compare_versions;
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::net::Ipv4Addr;
 
@@ -27,7 +27,7 @@ use std::net::Ipv4Addr;
 pub struct ServiceInfo {
     pub ip: Ipv4Addr,
     pub port: u16,
-    pub name: String,           // e.g., "Apache", "nginx", "OpenSSH"
+    pub name: String,            // e.g., "Apache", "nginx", "OpenSSH"
     pub version: Option<String>, // e.g., "2.4.41"
     pub service_type: String,    // e.g., "http", "ssh", "smtp"
     pub banner: Option<String>,  // Raw banner if captured
@@ -100,9 +100,7 @@ pub fn canonical_service_name(product: &str) -> Option<&'static str> {
 }
 
 /// Severity rating for vulnerabilities.
-#[derive(
-    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
-)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Severity {
     Info,
     Low,
@@ -138,7 +136,8 @@ impl VulnerabilityDatabase {
                 "CVE-2021-42013".to_string(),
                 ">= 2.4.49, < 2.4.51".to_string(),
                 Severity::Critical,
-                "Path traversal and remote code execution; upgrade to Apache 2.4.51 or later".to_string(),
+                "Path traversal and remote code execution; upgrade to Apache 2.4.51 or later"
+                    .to_string(),
             ),
             (
                 "CVE-2021-26691".to_string(),
@@ -288,7 +287,8 @@ impl VulnerabilityDatabase {
                 "FTP-UNENCRYPTED".to_string(),
                 "ALL".to_string(),
                 Severity::Critical,
-                "FTP transmits credentials in plaintext; disable FTP and use SFTP instead".to_string(),
+                "FTP transmits credentials in plaintext; disable FTP and use SFTP instead"
+                    .to_string(),
             ),
             (
                 "CVE-2018-7725".to_string(),
@@ -301,14 +301,12 @@ impl VulnerabilityDatabase {
 
     /// Known vulnerabilities for Telnet.
     pub fn telnet_vulns() -> Vec<(String, String, Severity, String)> {
-        vec![
-            (
-                "TELNET-UNENCRYPTED".to_string(),
-                "ALL".to_string(),
-                Severity::Critical,
-                "Telnet transmits all data in plaintext; replace with SSH immediately".to_string(),
-            ),
-        ]
+        vec![(
+            "TELNET-UNENCRYPTED".to_string(),
+            "ALL".to_string(),
+            Severity::Critical,
+            "Telnet transmits all data in plaintext; replace with SSH immediately".to_string(),
+        )]
     }
 }
 
@@ -337,7 +335,10 @@ impl VulnerabilityCheck {
                     findings.push(VulnerabilityFinding {
                         cve_id: cve,
                         severity,
-                        description: format!("Known vulnerability in {} version {}", service.name, version),
+                        description: format!(
+                            "Known vulnerability in {} version {}",
+                            service.name, version
+                        ),
                         affected_versions: affected,
                         remediation,
                         confidence: 0.95,
@@ -466,7 +467,7 @@ impl ServiceHealthScore {
             26..=50 => "High",
             51..=75 => "Medium",
             76..=89 => "Low",
-            _ => "Minimal",  // covers 90..=100 and beyond
+            _ => "Minimal", // covers 90..=100 and beyond
         }
     }
 }
@@ -476,7 +477,7 @@ pub struct ConfidenceScorer;
 
 impl ConfidenceScorer {
     /// Calculate confidence score for a service based on detection method.
-    /// 
+    ///
     /// Detection methods ranked by confidence:
     /// - Banner grab with exact match: 0.95-1.0
     /// - mDNS advertised service: 0.85-0.95
@@ -642,7 +643,7 @@ mod tests {
         });
 
         let score = ServiceHealthScore::calculate(&service);
-        assert_eq!(score, 75);  // 100 - 25 for critical
+        assert_eq!(score, 75); // 100 - 25 for critical
         assert_eq!(ServiceHealthScore::risk_level(score), "Medium");
     }
 
@@ -680,11 +681,21 @@ mod tests {
         // CVE-2021-42013 affects exactly 2.4.49 and 2.4.50.
         let range = ">= 2.4.49, < 2.4.51";
 
-        assert!(VulnerabilityCheck::version_matches_affected("2.4.49", range));
-        assert!(VulnerabilityCheck::version_matches_affected("2.4.50", range));
-        assert!(!VulnerabilityCheck::version_matches_affected("2.4.48", range));
-        assert!(!VulnerabilityCheck::version_matches_affected("2.4.51", range));
-        assert!(!VulnerabilityCheck::version_matches_affected("2.2.0", range));
+        assert!(VulnerabilityCheck::version_matches_affected(
+            "2.4.49", range
+        ));
+        assert!(VulnerabilityCheck::version_matches_affected(
+            "2.4.50", range
+        ));
+        assert!(!VulnerabilityCheck::version_matches_affected(
+            "2.4.48", range
+        ));
+        assert!(!VulnerabilityCheck::version_matches_affected(
+            "2.4.51", range
+        ));
+        assert!(!VulnerabilityCheck::version_matches_affected(
+            "2.2.0", range
+        ));
     }
 
     #[test]
@@ -706,19 +717,39 @@ mod tests {
     #[test]
     fn test_version_matching_uses_the_comparison() {
         // Regression: this returned false, so a vulnerable host looked clean.
-        assert!(VulnerabilityCheck::version_matches_affected("2.4.9", "< 2.4.10"));
-        assert!(VulnerabilityCheck::version_matches_affected("2.4.49", "< 2.4.50"));
-        assert!(VulnerabilityCheck::version_matches_affected("7.4p1", "< 9.3"));
+        assert!(VulnerabilityCheck::version_matches_affected(
+            "2.4.9", "< 2.4.10"
+        ));
+        assert!(VulnerabilityCheck::version_matches_affected(
+            "2.4.49", "< 2.4.50"
+        ));
+        assert!(VulnerabilityCheck::version_matches_affected(
+            "7.4p1", "< 9.3"
+        ));
 
-        assert!(!VulnerabilityCheck::version_matches_affected("9.6", "< 9.3"));
-        assert!(!VulnerabilityCheck::version_matches_affected("15.1", "< 15.1"));
+        assert!(!VulnerabilityCheck::version_matches_affected(
+            "9.6", "< 9.3"
+        ));
+        assert!(!VulnerabilityCheck::version_matches_affected(
+            "15.1", "< 15.1"
+        ));
 
         // Other range forms.
-        assert!(VulnerabilityCheck::version_matches_affected("9.3", "<= 9.3"));
-        assert!(VulnerabilityCheck::version_matches_affected("9.4", ">= 9.3"));
-        assert!(VulnerabilityCheck::version_matches_affected("2.4.41", "2.4.41"));
-        assert!(!VulnerabilityCheck::version_matches_affected("2.4.41", "2.4.42"));
-        assert!(VulnerabilityCheck::version_matches_affected("anything", "ALL"));
+        assert!(VulnerabilityCheck::version_matches_affected(
+            "9.3", "<= 9.3"
+        ));
+        assert!(VulnerabilityCheck::version_matches_affected(
+            "9.4", ">= 9.3"
+        ));
+        assert!(VulnerabilityCheck::version_matches_affected(
+            "2.4.41", "2.4.41"
+        ));
+        assert!(!VulnerabilityCheck::version_matches_affected(
+            "2.4.41", "2.4.42"
+        ));
+        assert!(VulnerabilityCheck::version_matches_affected(
+            "anything", "ALL"
+        ));
     }
 
     #[test]
@@ -738,9 +769,15 @@ mod tests {
 
     #[test]
     fn test_version_matching() {
-        assert!(VulnerabilityCheck::version_matches_affected("2.4.41", "< 2.4.50"));
-        assert!(!VulnerabilityCheck::version_matches_affected("2.4.50", "< 2.4.50"));
-        assert!(!VulnerabilityCheck::version_matches_affected("2.4.51", "< 2.4.50"));
+        assert!(VulnerabilityCheck::version_matches_affected(
+            "2.4.41", "< 2.4.50"
+        ));
+        assert!(!VulnerabilityCheck::version_matches_affected(
+            "2.4.50", "< 2.4.50"
+        ));
+        assert!(!VulnerabilityCheck::version_matches_affected(
+            "2.4.51", "< 2.4.50"
+        ));
     }
 
     #[test]

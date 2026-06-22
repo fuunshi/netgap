@@ -109,10 +109,7 @@ pub fn stimulate(interface_name: &str) -> Result<()> {
         let [high, low] = sequence.to_be_bytes();
         let request = [128u8, 0, 0, 0, 0x4E, 0x47, high, low];
         socket.send(&request, &target).with_context(|| {
-            format!(
-                "sending an IPv6 echo to all nodes on '{}'",
-                interface_name
-            )
+            format!("sending an IPv6 echo to all nodes on '{}'", interface_name)
         })?;
 
         if sequence < ECHO_COUNT as u16 {
@@ -364,8 +361,7 @@ mod netlink {
                 )
             };
             if fd < 0 {
-                return Err(std::io::Error::last_os_error())
-                    .context("opening a netlink socket");
+                return Err(std::io::Error::last_os_error()).context("opening a netlink socket");
             }
 
             // Safety: `sockaddr_nl` is a plain C struct that zeroes cleanly.
@@ -422,8 +418,7 @@ mod netlink {
                 )
             };
             if written < 0 {
-                return Err(std::io::Error::last_os_error())
-                    .context("sending the netlink request");
+                return Err(std::io::Error::last_os_error()).context("sending the netlink request");
             }
 
             Ok(())
@@ -525,8 +520,9 @@ mod netlink {
                 NLMSG_ERROR => {
                     // The error is the first four bytes of the payload.
                     if payload.len() >= 4 {
-                        parsed.error =
-                            Some(i32::from_ne_bytes([payload[0], payload[1], payload[2], payload[3]]));
+                        parsed.error = Some(i32::from_ne_bytes([
+                            payload[0], payload[1], payload[2], payload[3],
+                        ]));
                     }
                     parsed.done = true;
                     break;
@@ -551,7 +547,8 @@ mod netlink {
             return None;
         }
 
-        let message_interface = i32::from_ne_bytes([payload[4], payload[5], payload[6], payload[7]]);
+        let message_interface =
+            i32::from_ne_bytes([payload[4], payload[5], payload[6], payload[7]]);
         if message_interface != interface_index as i32 {
             return None;
         }
@@ -665,8 +662,8 @@ mod netlink {
 
 #[cfg(test)]
 mod tests {
-    use super::netlink::test_bytes::{done_message, error_message, neighbour_message};
     use super::netlink::parse_dump;
+    use super::netlink::test_bytes::{done_message, error_message, neighbour_message};
     use super::*;
 
     fn neighbour(address: &str, mac: Option<&str>) -> Ipv6Neighbour {
@@ -727,7 +724,11 @@ mod tests {
     /// nothing, so the shapes most likely to overflow are pinned here.
     #[test]
     fn test_truncated_messages_are_not_read_past() {
-        let full = neighbour_message(3, [0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], [1, 2, 3, 4, 5, 6]);
+        let full = neighbour_message(
+            3,
+            [0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 2, 3, 4, 5, 6],
+        );
 
         for length in 0..full.len() {
             let parsed = parse_dump(&full[..length], 3);
@@ -775,7 +776,13 @@ mod tests {
             true,
         );
 
-        assert_eq!(summary, MergeSummary { matched: 1, added: 0 });
+        assert_eq!(
+            summary,
+            MergeSummary {
+                matched: 1,
+                added: 0
+            }
+        );
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].ipv6_addresses, vec!["fe80::1".to_string()]);
     }
@@ -807,14 +814,23 @@ mod tests {
 
         let summary = merge(&mut devices, &neighbours, true);
 
-        assert_eq!(summary, MergeSummary { matched: 1, added: 1 });
+        assert_eq!(
+            summary,
+            MergeSummary {
+                matched: 1,
+                added: 1
+            }
+        );
         assert_eq!(devices.len(), 2);
 
         let added = devices
             .iter()
             .find(|device| device.mac.as_deref() == Some("AA:BB:CC:DD:EE:FF"))
             .expect("the IPv6-only device");
-        assert_eq!(added.ip, std::net::IpAddr::V6("fe80::1234".parse().expect("a valid address")));
+        assert_eq!(
+            added.ip,
+            std::net::IpAddr::V6("fe80::1234".parse().expect("a valid address"))
+        );
         assert_eq!(added.ipv6_addresses, vec!["fe80::1234".to_string()]);
     }
 
@@ -830,9 +846,22 @@ mod tests {
 
         let summary = merge(&mut devices, &neighbours, false);
 
-        assert_eq!(summary, MergeSummary { matched: 1, added: 0 });
-        assert_eq!(devices.len(), 1, "a device outside the target is not reported");
-        assert_eq!(devices[0].ipv6_addresses, vec!["fe80::c6b2:5bff:fe0a:326".to_string()]);
+        assert_eq!(
+            summary,
+            MergeSummary {
+                matched: 1,
+                added: 0
+            }
+        );
+        assert_eq!(
+            devices.len(),
+            1,
+            "a device outside the target is not reported"
+        );
+        assert_eq!(
+            devices[0].ipv6_addresses,
+            vec!["fe80::c6b2:5bff:fe0a:326".to_string()]
+        );
     }
 
     /// An unanswered solicitation carries no hardware address, so there is

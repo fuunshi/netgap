@@ -464,9 +464,7 @@ mod tests {
 
     #[test]
     fn test_collect_replies_stops_after_idle_slices() {
-        let mut rx = MockReceiver::mock(
-            (0..50).map(|_| MockReceiver::timed_out()).collect(),
-        );
+        let mut rx = MockReceiver::mock((0..50).map(|_| MockReceiver::timed_out()).collect());
 
         let started = Instant::now();
         collect_replies(
@@ -568,7 +566,10 @@ mod tests {
         assert_eq!(conflicts[0].current_mac, "DE:AD:BE:EF:00:01");
 
         // The device is still reported, as whoever answered last.
-        assert_eq!(discovered[&responder].mac.as_deref(), Some("DE:AD:BE:EF:00:01"));
+        assert_eq!(
+            discovered[&responder].mac.as_deref(),
+            Some("DE:AD:BE:EF:00:01")
+        );
     }
 
     #[test]
@@ -634,7 +635,10 @@ mod tests {
             Some("BB:BB:BB:BB:BB:BB")
         );
         assert!(!discovered.contains_key(&off_target), "off-subnet excluded");
-        assert!(!discovered.contains_key(&other_iface), "other interface excluded");
+        assert!(
+            !discovered.contains_key(&other_iface),
+            "other interface excluded"
+        );
     }
 
     fn neighbor_entry(ip: Ipv4Addr, mac: &str, iface: &str) -> crate::neighbor::NeighborEntry {

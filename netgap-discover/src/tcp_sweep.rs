@@ -105,7 +105,6 @@ impl TcpSweeper {
                 let _permit = permit;
                 (ip, probe_host(ip, &ports, timeout_duration).await)
             });
-
         }
 
         let mut devices = Vec::new();
@@ -203,12 +202,7 @@ async fn probe_host(ip: Ipv4Addr, ports: &[u16], timeout_duration: Duration) -> 
 
 /// Connect to a single port.
 async fn probe_port(ip: Ipv4Addr, port: u16, timeout_duration: Duration) -> Probe {
-    match timeout(
-        timeout_duration,
-        TcpStream::connect((ip, port)),
-    )
-    .await
-    {
+    match timeout(timeout_duration, TcpStream::connect((ip, port))).await {
         Ok(Ok(_)) => Probe::Open(port),
         Ok(Err(error)) if error.kind() == ErrorKind::ConnectionRefused => Probe::Refused,
         Ok(Err(_)) | Err(_) => Probe::Silent,

@@ -39,7 +39,9 @@ pub fn format_discovery(devices: &[Device], context: &DiscoveryContext<'_>) -> S
     ));
     out.push_str(&format!(
         "{}\n",
-        "║                     NETGAP NETWORK DISCOVERY                         ║".cyan().bold()
+        "║                     NETGAP NETWORK DISCOVERY                         ║"
+            .cyan()
+            .bold()
     ));
     out.push_str(&format!(
         "{}\n\n",
@@ -71,7 +73,10 @@ pub fn format_discovery(devices: &[Device], context: &DiscoveryContext<'_>) -> S
         .filter(|device| device.mac.as_deref().is_some_and(is_private_mac))
         .count();
 
-    let new_devices = devices.iter().filter(|device| device.first_seen.is_none()).count();
+    let new_devices = devices
+        .iter()
+        .filter(|device| device.first_seen.is_none())
+        .count();
 
     out.push_str(&format!(
         "  {} {}    {} {}    {} {}\n",
@@ -103,8 +108,16 @@ pub fn format_discovery(devices: &[Device], context: &DiscoveryContext<'_>) -> S
     out.push('\n');
 
     // Column widths follow the data, capped so the table stays readable.
-    let rows: Vec<Row> = devices.iter().map(|device| Row::from_device(device, context)).collect();
-    let ip_width = rows.iter().map(|row| row.ip.len()).max().unwrap_or(2).max(2);
+    let rows: Vec<Row> = devices
+        .iter()
+        .map(|device| Row::from_device(device, context))
+        .collect();
+    let ip_width = rows
+        .iter()
+        .map(|row| row.ip.len())
+        .max()
+        .unwrap_or(2)
+        .max(2);
     let name_width = rows
         .iter()
         .map(|row| row.name.chars().count())
@@ -143,12 +156,17 @@ pub fn format_discovery(devices: &[Device], context: &DiscoveryContext<'_>) -> S
     ));
     out.push_str(&format!(
         "  {}\n",
-        "─".repeat(ip_width + name_width + mac_width + vendor_width + type_width + SEEN_WIDTH + 16)
+        "─"
+            .repeat(ip_width + name_width + mac_width + vendor_width + type_width + SEEN_WIDTH + 16)
             .dimmed()
     ));
 
     for row in &rows {
-        let name = if row.name.is_empty() { "—".dimmed().to_string() } else { row.name.clone() };
+        let name = if row.name.is_empty() {
+            "—".dimmed().to_string()
+        } else {
+            row.name.clone()
+        };
         let mac = if row.mac.is_empty() {
             "—".dimmed().to_string()
         } else if row.private_mac {
@@ -183,11 +201,12 @@ pub fn format_discovery(devices: &[Device], context: &DiscoveryContext<'_>) -> S
         // marked as such: they identify a device on this link, they do not
         // reach it from anywhere else.
         for address in &row.ipv6 {
-            let scope = if is_link_local(address) { " (link-local)" } else { "" };
-            out.push_str(&format!(
-                "  {}\n",
-                format!("{}{}", address, scope).dimmed()
-            ));
+            let scope = if is_link_local(address) {
+                " (link-local)"
+            } else {
+                ""
+            };
+            out.push_str(&format!("  {}\n", format!("{}{}", address, scope).dimmed()));
         }
     }
 
@@ -261,7 +280,12 @@ impl Row {
         let name = device
             .hostname
             .clone()
-            .or_else(|| device.mac.as_ref().and_then(|mac| context.labels.get(mac).cloned()))
+            .or_else(|| {
+                device
+                    .mac
+                    .as_ref()
+                    .and_then(|mac| context.labels.get(mac).cloned())
+            })
             .unwrap_or_default();
 
         Row {
@@ -435,7 +459,11 @@ mod tests {
 
         let devices = vec![
             device("192.168.1.1", "c4:b2:5b:0a:03:26", "Router / gateway"),
-            device("192.168.1.30", "A2:2D:98:D1:F6:8F", "Phone / laptop (private MAC)"),
+            device(
+                "192.168.1.30",
+                "A2:2D:98:D1:F6:8F",
+                "Phone / laptop (private MAC)",
+            ),
         ];
 
         let report = format_discovery(&devices, &context(&trusted));
@@ -454,7 +482,11 @@ mod tests {
         let mut trusted = HashSet::new();
         trusted.insert("C4:B2:5B:0A:03:26".to_string());
 
-        let devices = vec![device("192.168.1.1", "C4:B2:5B:0A:03:26", "Router / gateway")];
+        let devices = vec![device(
+            "192.168.1.1",
+            "C4:B2:5B:0A:03:26",
+            "Router / gateway",
+        )];
         let report = format_discovery(&devices, &context(&trusted));
 
         assert!(report.contains("Every device is in your trusted list"));
@@ -474,7 +506,10 @@ mod tests {
         let mut long_name = device("192.168.1.9", "C4:B2:5B:0A:03:26", "Computer");
         long_name.hostname = Some("a-very-long-hostname-that-would-break-the-table".to_string());
 
-        let devices = vec![long_name, device("192.168.1.10", "C4:B2:5B:0A:03:27", "Printer")];
+        let devices = vec![
+            long_name,
+            device("192.168.1.10", "C4:B2:5B:0A:03:27", "Printer"),
+        ];
         let report = format_discovery(&devices, &context(&trusted));
 
         assert!(report.contains('…'), "long values should be truncated");
@@ -492,12 +527,19 @@ mod tests {
         let mut trusted = HashSet::new();
         trusted.insert("C4:B2:5B:0A:03:26".to_string());
         let mut labels = HashMap::new();
-        labels.insert("C4:B2:5B:0A:03:26".to_string(), "living room tv".to_string());
+        labels.insert(
+            "C4:B2:5B:0A:03:26".to_string(),
+            "living room tv".to_string(),
+        );
 
         let mut context = context(&trusted);
         context.labels = &labels;
 
-        let devices = vec![device("192.168.1.1", "C4:B2:5B:0A:03:26", "Router / gateway")];
+        let devices = vec![device(
+            "192.168.1.1",
+            "C4:B2:5B:0A:03:26",
+            "Router / gateway",
+        )];
         let report = format_discovery(&devices, &context);
 
         assert!(report.contains("living room tv"));
@@ -507,9 +549,7 @@ mod tests {
     fn test_new_devices_are_marked_and_counted() {
         let trusted = HashSet::new();
         let mut known = device("192.168.1.10", "C4:B2:5B:0A:03:26", "Computer");
-        known.first_seen = Some(
-            (chrono::Utc::now() - chrono::Duration::hours(3)).to_rfc3339(),
-        );
+        known.first_seen = Some((chrono::Utc::now() - chrono::Duration::hours(3)).to_rfc3339());
         let brand_new = device("192.168.1.11", "C4:B2:5B:0A:03:27", "Phone");
 
         let report = format_discovery(&[known, brand_new], &context(&trusted));
@@ -517,7 +557,10 @@ mod tests {
         // Both the summary and the per-row marks.
         assert!(report.contains("Seen for the first time:"));
         assert!(report.contains("had not been seen before this scan"));
-        assert!(report.contains("3h"), "known devices show how long they have been seen");
+        assert!(
+            report.contains("3h"),
+            "known devices show how long they have been seen"
+        );
         assert!(report.contains("new"));
     }
 
@@ -537,15 +580,33 @@ mod tests {
     fn test_relative_age_formats() {
         let ago = |duration: chrono::Duration| (chrono::Utc::now() - duration).to_rfc3339();
 
-        assert_eq!(relative_age(&ago(chrono::Duration::seconds(5))).as_deref(), Some("now"));
-        assert_eq!(relative_age(&ago(chrono::Duration::minutes(5))).as_deref(), Some("5m"));
-        assert_eq!(relative_age(&ago(chrono::Duration::hours(5))).as_deref(), Some("5h"));
-        assert_eq!(relative_age(&ago(chrono::Duration::days(5))).as_deref(), Some("5d"));
-        assert_eq!(relative_age(&ago(chrono::Duration::days(400))).as_deref(), Some("1y"));
+        assert_eq!(
+            relative_age(&ago(chrono::Duration::seconds(5))).as_deref(),
+            Some("now")
+        );
+        assert_eq!(
+            relative_age(&ago(chrono::Duration::minutes(5))).as_deref(),
+            Some("5m")
+        );
+        assert_eq!(
+            relative_age(&ago(chrono::Duration::hours(5))).as_deref(),
+            Some("5h")
+        );
+        assert_eq!(
+            relative_age(&ago(chrono::Duration::days(5))).as_deref(),
+            Some("5d")
+        );
+        assert_eq!(
+            relative_age(&ago(chrono::Duration::days(400))).as_deref(),
+            Some("1y")
+        );
 
         // Unparseable or future timestamps show nothing rather than nonsense.
         assert_eq!(relative_age("not a timestamp"), None);
-        assert_eq!(relative_age(&(chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339()), None);
+        assert_eq!(
+            relative_age(&(chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339()),
+            None
+        );
     }
 
     #[test]

@@ -523,7 +523,11 @@ impl NvdClient {
         limit: usize,
     ) -> Result<Vec<CveEntry>> {
         let match_string = format!("cpe:2.3:a:{vendor}:{product}");
-        let url = format!("{NVD_API}?virtualMatchString={}&resultsPerPage={}", urlencode(&match_string), limit.min(2000));
+        let url = format!(
+            "{NVD_API}?virtualMatchString={}&resultsPerPage={}",
+            urlencode(&match_string),
+            limit.min(2000)
+        );
 
         let mut request = self.client.get(&url);
         if let Some(key) = &self.api_key {
@@ -555,7 +559,11 @@ impl NvdClient {
     ///
     /// NVD rate limits are per-request, so this waits between calls when no API
     /// key is configured. `progress` is called before each product.
-    pub async fn fetch_known_products<F>(&self, per_product: usize, mut progress: F) -> Result<NvdDatabase>
+    pub async fn fetch_known_products<F>(
+        &self,
+        per_product: usize,
+        mut progress: F,
+    ) -> Result<NvdDatabase>
     where
         F: FnMut(&str, usize, usize),
     {
@@ -726,7 +734,10 @@ fn extract_affected(cve: &serde_json::Value) -> Vec<AffectedProduct> {
     };
 
     for configuration in configurations {
-        let Some(nodes) = configuration.get("nodes").and_then(|value| value.as_array()) else {
+        let Some(nodes) = configuration
+            .get("nodes")
+            .and_then(|value| value.as_array())
+        else {
             continue;
         };
 
@@ -797,11 +808,7 @@ pub fn parse_cpe(criteria: &str) -> Option<(String, String, Option<&str>)> {
         return None;
     }
 
-    Some((
-        parts[3].to_string(),
-        parts[4].to_string(),
-        Some(parts[5]),
-    ))
+    Some((parts[3].to_string(), parts[4].to_string(), Some(parts[5])))
 }
 
 #[cfg(test)]
@@ -852,7 +859,11 @@ mod tests {
     }"#;
 
     fn entry(json: &str) -> CveEntry {
-        parse_response(json).expect("parses").into_iter().next().expect("one entry")
+        parse_response(json)
+            .expect("parses")
+            .into_iter()
+            .next()
+            .expect("one entry")
     }
 
     #[test]
@@ -874,7 +885,10 @@ mod tests {
         assert_eq!(entry.affected.len(), 1);
         assert_eq!(entry.affected[0].vendor, "openbsd");
         assert_eq!(entry.affected[0].product, "openssh");
-        assert_eq!(entry.affected[0].range.end_including.as_deref(), Some("1.2.1"));
+        assert_eq!(
+            entry.affected[0].range.end_including.as_deref(),
+            Some("1.2.1")
+        );
         assert_eq!(entry.references.len(), 1);
     }
 
@@ -972,7 +986,11 @@ mod tests {
     fn test_parse_cpe() {
         assert_eq!(
             parse_cpe("cpe:2.3:a:apache:http_server:2.4.49:*:*:*:*:*:*:*"),
-            Some(("apache".to_string(), "http_server".to_string(), Some("2.4.49")))
+            Some((
+                "apache".to_string(),
+                "http_server".to_string(),
+                Some("2.4.49")
+            ))
         );
         assert_eq!(
             parse_cpe("cpe:2.3:a:openbsd:openssh:*:*:*:*:*:*:*:*"),
@@ -1047,7 +1065,8 @@ mod tests {
 
     #[test]
     fn test_local_cache_manager() {
-        let temp_dir = std::env::temp_dir().join(format!("netgap_test_cache_{}", std::process::id()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("netgap_test_cache_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp_dir);
 
         let manager = LocalCacheManager::new(&temp_dir).expect("cache manager");

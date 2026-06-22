@@ -49,8 +49,8 @@ impl TrustList {
             return Ok(TrustList::default());
         }
 
-        let contents = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let contents =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
 
         Ok(Self::parse(&contents))
     }
@@ -108,7 +108,10 @@ impl TrustList {
 
     /// MACs as a set, for lookups during reporting.
     pub fn macs(&self) -> HashSet<String> {
-        self.devices.iter().map(|device| device.mac.clone()).collect()
+        self.devices
+            .iter()
+            .map(|device| device.mac.clone())
+            .collect()
     }
 
     /// Label lookup by MAC.
@@ -181,7 +184,11 @@ pub fn resolve_identifier(identifier: &str) -> Result<String> {
     // An IPv4 address contains dots, never colons, so anything with colons is
     // treated as a MAC — but validate the shape before storing it.
     let octets: Vec<&str> = identifier.split(':').collect();
-    if octets.len() != 6 || octets.iter().any(|octet| u8::from_str_radix(octet, 16).is_err()) {
+    if octets.len() != 6
+        || octets
+            .iter()
+            .any(|octet| u8::from_str_radix(octet, 16).is_err())
+    {
         return Err(anyhow!(
             "'{}' is not a valid MAC address (expected aa:bb:cc:dd:ee:ff)",
             identifier

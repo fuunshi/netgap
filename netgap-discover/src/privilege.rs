@@ -52,7 +52,10 @@ mod tests {
     #[test]
     fn test_parse_cap_net_raw() {
         // No capabilities set.
-        assert_eq!(parse_cap_net_raw("Name:\tnetgap\nCapEff:\t0000000000000000\n"), Some(false));
+        assert_eq!(
+            parse_cap_net_raw("Name:\tnetgap\nCapEff:\t0000000000000000\n"),
+            Some(false)
+        );
         // CAP_NET_RAW (bit 13) set.
         assert_eq!(parse_cap_net_raw("CapEff:\t0000000000002000\n"), Some(true));
         // Full capability set, as root has.

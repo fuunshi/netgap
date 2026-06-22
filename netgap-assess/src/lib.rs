@@ -447,6 +447,8 @@ mod tests {
         runner.assess_all(&mut devices);
 
         assert!(!devices[0].findings.is_empty());
-        assert!(devices[1].findings.is_empty() || devices[1].findings.len() < devices[0].findings.len());
+        assert!(
+            devices[1].findings.is_empty() || devices[1].findings.len() < devices[0].findings.len()
+        );
     }
 }
