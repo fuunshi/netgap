@@ -27,7 +27,6 @@ clap.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
-ratatui.workspace = true
+# The interactive view draws with crossterm directly; ratatui is not used.
 crossterm.workspace = true
-indicatif.workspace = true
 chrono.workspace = true

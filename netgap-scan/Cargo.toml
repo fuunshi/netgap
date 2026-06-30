@@ -10,4 +10,3 @@ netgap-core = { path = "../netgap-core" }
 tokio.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
-indicatif.workspace = true

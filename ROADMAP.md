@@ -371,11 +371,48 @@ invented six devices on every scan.
   detection. IPv6 devices are discovered and reported; they are not yet
   assessed.
 
-### 8. Continuous integration and `cargo audit`
+### 8. Continuous integration and `cargo audit` — ✅ done
 
-There is no CI. For a security tool, at minimum: `cargo test`,
-`clippy -D warnings`, and `cargo audit` on a schedule. A scanner shipping
-vulnerable dependencies is an awkward look.
+Four gates on every push and pull request, in `.github/workflows/ci.yml`:
+`cargo test --workspace --locked`, `cargo fmt --check`,
+`cargo clippy --all-targets -- -D warnings`, and `cargo audit`. The audit also
+runs on a weekly timer, because advisories are published against code that has
+not changed — a green run last month says nothing about today.
+
+`--locked` throughout, so CI builds the dependencies the lockfile pins rather
+than resolving new ones underneath it.
+
+**The first audit found four real vulnerabilities**, all from one dependency:
+`reqwest 0.11` sits on the hyper 0.14 and rustls 0.21 line, which carry an
+unbounded-memory denial of service in `h2` and three certificate-validation
+flaws in `rustls-webpki` — two of them accepting certificates that should have
+been rejected. No update within those majors fixes them, so both crates that
+use reqwest now ask for 0.12, which moved to hyper 1.x and rustls 0.23. The
+source needed no changes: the whole API surface used here is `Client`,
+`.header()`, `.send()`, `.status()` and `.text()`. The live NVD query was run
+again afterwards to confirm the client still talks to the real API.
+
+Three unused dependencies were carrying advisory weight of their own:
+`ratatui` (in the CLI and the report crate) and `indicatif` (in three crates)
+were declared but never referenced — no source file mentions either. The
+interactive view draws with `crossterm` directly. Removing them dropped ten
+packages from the lockfile and took `lru`'s two unsoundness advisories and
+`paste` with them; `anyhow` and `spin` were updated to their fixed versions.
+`cargo audit` now reports no vulnerabilities and no warnings across 260
+dependencies.
+
+Two things were needed before the lints gate could pass at all. The workspace
+had never been formatted — 27 files, 1,114 lines — so that is its own commit,
+easy to skip in `git blame`. And `netgap-raw-sockets` had six lint errors; the
+fixes are in that commit too, including one that matters: `scan_ip` returned
+`Ok(None)`, which reads as "no device answered" from a crate that sends
+nothing. It now returns an error saying it is unimplemented.
+
+**Not done, and worth knowing:** the actions are pinned to major-version tags
+rather than commit SHAs, so a compromised or retagged action would run. That is
+the usual trade against having to hand-update SHAs, but for a tool whose whole
+purpose is supply-chain visibility it is the weaker choice, and pinning is a
+contained change if wanted.
 
 ---
 

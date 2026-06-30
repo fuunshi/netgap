@@ -2,7 +2,9 @@
 
 A production-ready network security scanner written in Rust. Discover devices on your local network, identify vulnerabilities, and generate comprehensive security reports.
 
-**Current Status:** ✅ Phases 1-3 complete | 126 tests passing | LAN scanning verified on Linux
+[![CI](https://github.com/fuunshi/netgap/actions/workflows/ci.yml/badge.svg)](https://github.com/fuunshi/netgap/actions/workflows/ci.yml)
+
+**Current Status:** ✅ 274 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
 
 ## Quick Features
 

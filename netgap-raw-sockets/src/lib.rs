@@ -6,7 +6,7 @@
 use anyhow::{anyhow, Result};
 use pnet::datalink;
 use pnet::util::MacAddr;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::Ipv4Addr;
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -16,7 +16,7 @@ pub struct ArpResponse {
     pub ip: Ipv4Addr,
     pub mac: MacAddr,
     pub vendor: Option<String>,
-    pub confidence: f32,  // 1.0 = 100% certain (from ARP)
+    pub confidence: f32, // 1.0 = 100% certain (from ARP)
 }
 
 /// Configuration for raw ARP scanning.
@@ -55,7 +55,9 @@ impl RawArpScanner {
             .ok_or_else(|| anyhow!("Interface not found: {}", interface))?;
 
         // Get our MAC
-        let our_mac = iface.mac.ok_or_else(|| anyhow!("No MAC address on interface"))?;
+        let our_mac = iface
+            .mac
+            .ok_or_else(|| anyhow!("No MAC address on interface"))?;
 
         // Get our IP
         let our_ip = iface
@@ -88,8 +90,12 @@ impl RawArpScanner {
     }
 
     /// Scan a single IP address via raw ARP.
-    /// Note: Full implementation requires platform-specific socket code.
-    /// This is a framework stub for Phase 3 M1.
+    ///
+    /// Not implemented. The packet builders below are the start of it, but
+    /// nothing sends them yet, so this reports that rather than returning
+    /// `Ok(None)` — which would read as "no device answered", a claim this
+    /// crate is in no position to make. `netgap_discover::arp` is the working
+    /// ARP sweep.
     pub async fn scan_ip(&self, target_ip: Ipv4Addr) -> Result<Option<ArpResponse>> {
         if !Self::is_privileged() {
             return Err(anyhow!(
@@ -97,15 +103,17 @@ impl RawArpScanner {
             ));
         }
 
-        // TODO: Implement actual ARP packet sending via platform-specific raw sockets
-        // This will use libpnet's sending capabilities in future versions
-        
-        // For now, return None (simulating no response)
-        Ok(None)
+        Err(anyhow!(
+            "Raw ARP scanning is not implemented, so nothing was sent to {target_ip}"
+        ))
     }
 
     /// Scan a range of IP addresses (CIDR network).
-    pub async fn scan_range(&self, start_ip: Ipv4Addr, end_ip: Ipv4Addr) -> Result<Vec<ArpResponse>> {
+    pub async fn scan_range(
+        &self,
+        start_ip: Ipv4Addr,
+        end_ip: Ipv4Addr,
+    ) -> Result<Vec<ArpResponse>> {
         let mut results = Vec::new();
         let mut tasks = Vec::new();
 
@@ -154,19 +162,19 @@ impl RawArpScanner {
     }
 
     /// Build an ARP request packet.
+    ///
+    /// Exercised only by the tests below while the sending path is
+    /// unimplemented.
+    #[allow(dead_code)]
     fn build_arp_request(&self, target_ip: Ipv4Addr) -> Result<Vec<u8>> {
-        let mut packet = vec![0u8; 42];  // Ethernet + ARP
+        let mut packet = vec![0u8; 42]; // Ethernet + ARP
 
         // Ethernet frame
         // Destination MAC (broadcast)
-        for i in 0..6 {
-            packet[i] = 0xff;
-        }
+        packet[0..6].fill(0xff);
         // Source MAC (our MAC)
         let mac_bytes = self.our_mac.octets();
-        for i in 0..6 {
-            packet[6 + i] = mac_bytes[i];
-        }
+        packet[6..12].copy_from_slice(&mac_bytes);
         // Ethertype (ARP = 0x0806)
         packet[12] = 0x08;
         packet[13] = 0x06;
@@ -188,28 +196,24 @@ impl RawArpScanner {
         packet[arp_offset + 7] = 0x01;
 
         // Sender MAC
-        for i in 0..6 {
-            packet[arp_offset + 8 + i] = mac_bytes[i];
-        }
+        packet[arp_offset + 8..arp_offset + 14].copy_from_slice(&mac_bytes);
         // Sender IP
         let src_ip = self.our_ip.octets();
-        for i in 0..4 {
-            packet[arp_offset + 14 + i] = src_ip[i];
-        }
+        packet[arp_offset + 14..arp_offset + 18].copy_from_slice(&src_ip);
         // Target MAC (zeros for request)
-        for i in 0..6 {
-            packet[arp_offset + 18 + i] = 0;
-        }
+        packet[arp_offset + 18..arp_offset + 24].fill(0);
         // Target IP
         let dst_ip = target_ip.octets();
-        for i in 0..4 {
-            packet[arp_offset + 24 + i] = dst_ip[i];
-        }
+        packet[arp_offset + 24..arp_offset + 28].copy_from_slice(&dst_ip);
 
         Ok(packet)
     }
 
     /// Parse an ARP response packet.
+    ///
+    /// Exercised only by the tests below while the receiving path is
+    /// unimplemented.
+    #[allow(dead_code)]
     fn parse_arp_response(&self, buffer: &[u8]) -> Result<ArpResponse> {
         if buffer.len() < 42 {
             return Err(anyhow!("Buffer too short for ARP response"));
@@ -228,8 +232,8 @@ impl RawArpScanner {
         Ok(ArpResponse {
             ip,
             mac,
-            vendor: None,  // Would be populated by fingerprinting
-            confidence: 1.0,  // ARP is 100% reliable
+            vendor: None,    // Would be populated by fingerprinting
+            confidence: 1.0, // ARP is 100% reliable
         })
     }
 }
@@ -253,23 +257,22 @@ mod tests {
     #[test]
     fn test_privilege_detection() {
         // Just verify it doesn't crash
-        let is_priv = RawArpScanner::is_privileged();
-        assert!(is_priv || !is_priv);  // Should be boolean
+        let _ = RawArpScanner::is_privileged();
     }
 
     #[test]
     fn test_arp_packet_construction() {
         let config = RawScanConfig::default();
-        let iface_name = "lo";  // Loopback for testing
-        
+        let iface_name = "lo"; // Loopback for testing
+
         // Try creating scanner (may fail on unsupported systems)
         if let Ok(scanner) = RawArpScanner::new(iface_name, config) {
             let packet = scanner.build_arp_request(Ipv4Addr::new(192, 168, 1, 1));
             assert!(packet.is_ok());
-            
+
             let packet = packet.unwrap();
-            assert_eq!(packet.len(), 42);  // ARP packet size
-            
+            assert_eq!(packet.len(), 42); // ARP packet size
+
             // Verify Ethernet type field (ARP = 0x0806)
             assert_eq!(packet[12], 0x08);
             assert_eq!(packet[13], 0x06);
@@ -280,7 +283,7 @@ mod tests {
     fn test_arp_response_parsing() {
         // Mock ARP response
         let mut buffer = vec![0u8; 42];
-        
+
         // Ethernet frame with source MAC 00:11:22:33:44:55
         buffer[6] = 0x00;
         buffer[7] = 0x11;
@@ -288,7 +291,7 @@ mod tests {
         buffer[9] = 0x33;
         buffer[10] = 0x44;
         buffer[11] = 0x55;
-        
+
         // ARP response IP 192.168.1.100
         buffer[28] = 192;
         buffer[29] = 168;
@@ -299,7 +302,7 @@ mod tests {
         if let Ok(scanner) = RawArpScanner::new("lo", config) {
             let response = scanner.parse_arp_response(&buffer);
             assert!(response.is_ok());
-            
+
             let resp = response.unwrap();
             assert_eq!(resp.ip, Ipv4Addr::new(192, 168, 1, 100));
             assert_eq!(resp.confidence, 1.0);
@@ -332,7 +335,7 @@ mod tests {
         buffer[9] = 0xdd;
         buffer[10] = 0xee;
         buffer[11] = 0xff;
-        
+
         let config = RawScanConfig::default();
         if let Ok(scanner) = RawArpScanner::new("lo", config) {
             if let Ok(resp) = scanner.parse_arp_response(&buffer) {
@@ -346,13 +349,12 @@ mod tests {
 
     #[test]
     fn test_arp_range_construction() {
-        let config = RawScanConfig::default();
         let start = Ipv4Addr::new(192, 168, 1, 1);
         let end = Ipv4Addr::new(192, 168, 1, 5);
-        
+
         let start_num = u32::from(start);
         let end_num = u32::from(end);
-        
+
         let count = (end_num - start_num + 1) as usize;
         assert_eq!(count, 5);
     }

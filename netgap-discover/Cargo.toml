@@ -16,4 +16,3 @@ tokio.workspace = true
 anyhow.workspace = true
 libc.workspace = true
 thiserror.workspace = true
-indicatif.workspace = true

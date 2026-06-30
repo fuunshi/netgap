@@ -1,16 +1,16 @@
+use chrono::Local;
 use clap::{Parser, Subcommand};
 use netgap_assess::AssessmentRunner;
 use netgap_core::{Device, Finding, FindingSummary, ScanConfig, ScanResult, Severity};
 use netgap_fingerprint::{classify_device, ClassifyContext, Fingerprinter};
 use netgap_mdns::MdnsDiscovery;
+use netgap_probes::{probe_ports, ProbeResult};
 use netgap_report::discovery::DiscoveryContext;
 use netgap_report::{format_discovery, ReportFormatter};
-use netgap_probes::{ProbeResult, probe_ports};
-use netgap_threat_intel::{CvssSeverity, LocalCacheManager, NvdClient, NvdDatabase};
 use netgap_scan::{PortScanner, ScanConfig as PortScanConfig};
 use netgap_services::{ServiceInfo, VulnerabilityCheck, VulnerabilityFinding};
+use netgap_threat_intel::{CvssSeverity, LocalCacheManager, NvdClient, NvdDatabase};
 use netgap_trends::{AlertRule, ChangeDetection, HealthScore, ScanHistory};
-use chrono::Local;
 use std::collections::HashSet;
 use std::net::IpAddr;
 use std::time::Duration;
@@ -697,19 +697,12 @@ fn run_ipv6(devices: &mut Vec<Device>, plan: &DiscoveryPlan) {
     let allow_new = is_whole_link(plan);
     let summary = netgap_discover::ipv6::merge(devices, &neighbours, allow_new);
     let only_ipv6 = if summary.added > 0 {
-        format!(
-            ", {} that IPv4 discovery could not see",
-            summary.added
-        )
+        format!(", {} that IPv4 discovery could not see", summary.added)
     } else {
         String::new()
     };
 
-    eprintln!(
-        "   IPv6: {} neighbour(s){}",
-        neighbours.len(),
-        only_ipv6
-    );
+    eprintln!("   IPv6: {} neighbour(s){}", neighbours.len(), only_ipv6);
 }
 
 /// Whether the scan covers the interface's own network, rather than a slice of
@@ -765,7 +758,10 @@ async fn run_mdns(devices: &mut Vec<Device>) {
                 eprintln!("  Named {} device(s) from mDNS", outcome.named);
             }
             if outcome.classified > 0 {
-                eprintln!("  Identified {} device type(s) from mDNS", outcome.classified);
+                eprintln!(
+                    "  Identified {} device type(s) from mDNS",
+                    outcome.classified
+                );
             }
             if outcome.added > 0 {
                 eprintln!("  Added {} device(s) only mDNS knew about", outcome.added);
@@ -899,10 +895,7 @@ fn cmd_trusted() -> Result<(), Box<dyn std::error::Error>> {
             None => println!("  {}", entry.mac),
         }
     }
-    println!(
-        "\nStored in {}",
-        trust::trust_file_path()?.display()
-    );
+    println!("\nStored in {}", trust::trust_file_path()?.display());
 
     Ok(())
 }
@@ -983,10 +976,9 @@ async fn fingerprint_devices(devices: &mut [Device]) -> Vec<ServiceProbe> {
 
             for (port, result) in results {
                 match result.product_version() {
-                    Some(identity) => eprintln!(
-                        "  {}:{} {} — {}",
-                        device.ip, port, result.service, identity
-                    ),
+                    Some(identity) => {
+                        eprintln!("  {}:{} {} — {}", device.ip, port, result.service, identity)
+                    }
                     None => eprintln!("  {}:{} {}", device.ip, port, result.service),
                 }
                 if let Some(details) = &result.details {
@@ -1026,7 +1018,11 @@ fn apply_assessment(
     let mut total = 0;
 
     for device in devices.iter_mut() {
-        let known: HashSet<String> = device.findings.iter().map(|finding| finding.id.clone()).collect();
+        let known: HashSet<String> = device
+            .findings
+            .iter()
+            .map(|finding| finding.id.clone())
+            .collect();
         // The port scanner already reports exposure for the dangerous ports it
         // scans; repeating them here would double every SMB/Telnet finding.
         let already_reported: HashSet<u16> = device
@@ -1039,13 +1035,19 @@ fn apply_assessment(
             if known.contains(&finding.id) {
                 continue;
             }
-            if finding.port.is_some_and(|port| already_reported.contains(&port)) {
+            if finding
+                .port
+                .is_some_and(|port| already_reported.contains(&port))
+            {
                 continue;
             }
             eprintln!(
                 "  {}:{} [{}] {}",
                 device.ip,
-                finding.port.map(|port| port.to_string()).unwrap_or_else(|| "-".to_string()),
+                finding
+                    .port
+                    .map(|port| port.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
                 finding.severity,
                 finding.title
             );
@@ -1056,7 +1058,9 @@ fn apply_assessment(
 
     // Version-specific CVEs, using what the probes identified.
     for device in devices.iter_mut() {
-        let IpAddr::V4(ipv4) = device.ip else { continue };
+        let IpAddr::V4(ipv4) = device.ip else {
+            continue;
+        };
 
         for port in device.open_ports.clone() {
             // A version is the whole point: without one there is nothing to
@@ -1121,7 +1125,11 @@ fn apply_assessment(
 
             for vulnerability in VulnerabilityCheck::check_version(&service_info) {
                 let finding = cve_finding(device.ip, port, service_name, &vulnerability);
-                if device.findings.iter().any(|existing| existing.id == finding.id) {
+                if device
+                    .findings
+                    .iter()
+                    .any(|existing| existing.id == finding.id)
+                {
                     continue;
                 }
 
@@ -1167,7 +1175,9 @@ fn apply_assessment(
 ///
 /// Only versions the cache has not already been populated for are requested, so
 /// repeat scans of the same network make no requests at all.
-async fn update_cache_for_probes(probes: &[ServiceProbe]) -> Result<usize, Box<dyn std::error::Error>> {
+async fn update_cache_for_probes(
+    probes: &[ServiceProbe],
+) -> Result<usize, Box<dyn std::error::Error>> {
     let cache = LocalCacheManager::default_location()?;
     let mut database = cache.load()?;
     let client = NvdClient::new();
@@ -1175,9 +1185,10 @@ async fn update_cache_for_probes(probes: &[ServiceProbe]) -> Result<usize, Box<d
     // Distinct product/version pairs, so ten web servers cost one request.
     let mut wanted: Vec<(&str, &str, &str)> = Vec::new();
     for probe in probes {
-        let (Some(product), Some(version)) =
-            (probe.result.product.as_deref(), probe.result.version.as_deref())
-        else {
+        let (Some(product), Some(version)) = (
+            probe.result.product.as_deref(),
+            probe.result.version.as_deref(),
+        ) else {
             continue;
         };
         let Some((vendor, _)) = netgap_threat_intel::cpe_for_product(product) else {
@@ -1210,7 +1221,10 @@ async fn update_cache_for_probes(probes: &[ServiceProbe]) -> Result<usize, Box<d
     for (index, (vendor, product, version)) in wanted.iter().enumerate() {
         eprintln!("  [{}/{}] {product} {version}", index + 1, total);
 
-        match client.fetch_for_version(vendor, product, version, 2000).await {
+        match client
+            .fetch_for_version(vendor, product, version, 2000)
+            .await
+        {
             Ok(entries) => {
                 let count = entries.len();
                 for entry in entries {
@@ -1259,7 +1273,7 @@ const GATEWAY_PORTS: &[u16] = &[80, 443, 8080, 8443, 5000, 2869, 23];
 /// A focused pass against a single host: the gateway is identified exactly (it
 /// owns the default route), so this costs one short probe rather than widening
 /// the scan for everyone.
-async fn check_gateway_exposure(devices: &mut Vec<Device>, probes: &mut Vec<ServiceProbe>) {
+async fn check_gateway_exposure(devices: &mut [Device], probes: &mut Vec<ServiceProbe>) {
     let Some(gateway) = netgap_interfaces::default_gateway_ipv4() else {
         return;
     };
@@ -1332,19 +1346,20 @@ fn tls_findings(ip: IpAddr, port: u16, probe: &ProbeResult) -> Vec<Finding> {
     };
 
     let mut findings = Vec::new();
-    let mut finding = |id: &str, title: String, description: String, severity: Severity, remediation: String| {
-        findings.push(Finding {
-            id: id.to_string(),
-            title,
-            description,
-            severity,
-            ip,
-            port: Some(port),
-            service: Some("HTTPS".to_string()),
-            remediation,
-            confidence: 1.0,
-        });
-    };
+    let mut finding =
+        |id: &str, title: String, description: String, severity: Severity, remediation: String| {
+            findings.push(Finding {
+                id: id.to_string(),
+                title,
+                description,
+                severity,
+                ip,
+                port: Some(port),
+                service: Some("HTTPS".to_string()),
+                remediation,
+                confidence: 1.0,
+            });
+        };
 
     // A protocol deprecated in 2021 and broken since POODLE. Servers that
     // still accept it will use it with a client that offers only that.
@@ -1619,8 +1634,15 @@ async fn check_dhcp_servers(plan: &DiscoveryPlan, gateway: Option<std::net::Ipv4
     let Ok(interface) = netgap_interfaces::get_interface(&plan.interface.name) else {
         return;
     };
-    let Some(mac) = interface.mac.as_deref().and_then(netgap_discover::dhcp::parse_mac) else {
-        eprintln!("  DHCP check skipped: no hardware address for {}", plan.interface.name);
+    let Some(mac) = interface
+        .mac
+        .as_deref()
+        .and_then(netgap_discover::dhcp::parse_mac)
+    else {
+        eprintln!(
+            "  DHCP check skipped: no hardware address for {}",
+            plan.interface.name
+        );
         return;
     };
 
@@ -1738,10 +1760,8 @@ fn check_for_address_conflicts(
     if let Some(previous) = last_mappings.as_ref() {
         let changes = netgap_discover::detect_mac_changes(previous, &current);
 
-        let observations: Vec<(std::net::Ipv4Addr, String)> = current
-            .iter()
-            .map(|(ip, mac)| (*ip, mac.clone()))
-            .collect();
+        let observations: Vec<(std::net::Ipv4Addr, String)> =
+            current.iter().map(|(ip, mac)| (*ip, mac.clone())).collect();
         let shared = netgap_discover::detect_shared_macs(&observations);
 
         for alert in conflict_alerts(&changes, &shared, gateway) {
@@ -1785,8 +1805,14 @@ fn cmd_report(
         println!("🔄 Comparing scans {} → {}\n", id1, id2);
         let comparison = store.compare_scans(id1, id2)?;
 
-        println!("Scan 1: {} ({})", comparison.scan1_id, comparison.scan1_date);
-        println!("Scan 2: {} ({})\n", comparison.scan2_id, comparison.scan2_date);
+        println!(
+            "Scan 1: {} ({})",
+            comparison.scan1_id, comparison.scan1_date
+        );
+        println!(
+            "Scan 2: {} ({})\n",
+            comparison.scan2_id, comparison.scan2_date
+        );
 
         if !comparison.new_devices.is_empty() {
             println!("✨ New Devices ({}):", comparison.new_devices.len());
@@ -1805,7 +1831,10 @@ fn cmd_report(
         }
 
         if !comparison.new_critical.is_empty() {
-            println!("🔴 New Critical Findings ({}):", comparison.new_critical.len());
+            println!(
+                "🔴 New Critical Findings ({}):",
+                comparison.new_critical.len()
+            );
             for (title, ip) in &comparison.new_critical {
                 println!("  + {} on {}", title, ip);
             }
@@ -1813,7 +1842,10 @@ fn cmd_report(
         }
 
         if !comparison.resolved_findings.is_empty() {
-            println!("✅ Resolved Findings ({}):", comparison.resolved_findings.len());
+            println!(
+                "✅ Resolved Findings ({}):",
+                comparison.resolved_findings.len()
+            );
             for (title, ip) in &comparison.resolved_findings {
                 println!("  ✓ {} on {}", title, ip);
             }
@@ -1834,9 +1866,18 @@ fn cmd_report(
     };
 
     match format {
-        "table" => println!("{}", ReportFormatter::format_terminal(&store.load_scan(&scan_to_report)?)?),
-        "json" => println!("{}", ReportFormatter::format_json(&store.load_scan(&scan_to_report)?)?),
-        "summary" => println!("{}", ReportFormatter::format_summary(&store.load_scan(&scan_to_report)?)?),
+        "table" => println!(
+            "{}",
+            ReportFormatter::format_terminal(&store.load_scan(&scan_to_report)?)?
+        ),
+        "json" => println!(
+            "{}",
+            ReportFormatter::format_json(&store.load_scan(&scan_to_report)?)?
+        ),
+        "summary" => println!(
+            "{}",
+            ReportFormatter::format_summary(&store.load_scan(&scan_to_report)?)?
+        ),
         "markdown" => println!("{}", store.export_markdown(&scan_to_report)?),
         "html" => println!("{}", store.export_html(&scan_to_report)?),
         "csv" => println!("{}", store.export_csv(&scan_to_report)?),
@@ -1885,7 +1926,11 @@ async fn cmd_watch(
 
     loop {
         scan_count += 1;
-        println!("📊 Scan #{} — {}", scan_count, Local::now().format("%H:%M:%S"));
+        println!(
+            "📊 Scan #{} — {}",
+            scan_count,
+            Local::now().format("%H:%M:%S")
+        );
 
         match discovery::run(&plan).await {
             Ok(mut devices) => {
@@ -1955,7 +2000,10 @@ async fn cmd_watch(
                         }
                         if let Some(drop) = health_drop {
                             if health_drop_rule.should_trigger(&changes, Some(drop)) {
-                                println!("\n🟠 ALERT: Network health score dropped {} points", drop);
+                                println!(
+                                    "\n🟠 ALERT: Network health score dropped {} points",
+                                    drop
+                                );
                             }
                         }
                     } else {
@@ -1979,7 +2027,11 @@ async fn cmd_watch(
                 } else {
                     println!("✓ Discovered {} device(s)", current_history.device_count);
                     let health = HealthScore::calculate(&current_history);
-                    println!("  Health Score: {}/100 ({})", health.score, health.risk_level());
+                    println!(
+                        "  Health Score: {}/100 ({})",
+                        health.score,
+                        health.risk_level()
+                    );
                 }
 
                 last_history = Some(current_history);
@@ -2165,7 +2217,11 @@ mod tests {
     fn test_gateway_change_reads_as_an_alert() {
         let gateway = Some("192.168.1.1".parse().expect("valid ip"));
         let alerts = conflict_alerts(
-            &[change("192.168.1.1", "C4:B2:5B:0A:03:26", "DE:AD:BE:EF:00:01")],
+            &[change(
+                "192.168.1.1",
+                "C4:B2:5B:0A:03:26",
+                "DE:AD:BE:EF:00:01",
+            )],
             &[],
             gateway,
         );
@@ -2182,7 +2238,11 @@ mod tests {
     fn test_ordinary_change_is_reported_without_alarm() {
         let gateway = Some("192.168.1.1".parse().expect("valid ip"));
         let alerts = conflict_alerts(
-            &[change("192.168.1.50", "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66")],
+            &[change(
+                "192.168.1.50",
+                "AA:BB:CC:DD:EE:FF",
+                "11:22:33:44:55:66",
+            )],
             &[],
             gateway,
         );
@@ -2222,7 +2282,9 @@ mod tests {
 
     #[test]
     fn test_nothing_changed_means_no_alerts() {
-        assert!(conflict_alerts(&[], &[], Some("192.168.1.1".parse().expect("valid ip"))).is_empty());
+        assert!(
+            conflict_alerts(&[], &[], Some("192.168.1.1".parse().expect("valid ip"))).is_empty()
+        );
         assert!(conflict_alerts(&[], &[], None).is_empty());
     }
 
@@ -2247,10 +2309,18 @@ mod tests {
         }
     }
 
-    fn certificate(days_until_expiry: i64, self_signed: bool) -> netgap_probes::tls::CertificateInfo {
+    fn certificate(
+        days_until_expiry: i64,
+        self_signed: bool,
+    ) -> netgap_probes::tls::CertificateInfo {
         netgap_probes::tls::CertificateInfo {
             subject: "router.local".to_string(),
-            issuer: if self_signed { "router.local" } else { "Test CA" }.to_string(),
+            issuer: if self_signed {
+                "router.local"
+            } else {
+                "Test CA"
+            }
+            .to_string(),
             not_before: "2020-01-01".to_string(),
             not_after: "2030-01-01".to_string(),
             self_signed,
@@ -2279,12 +2349,7 @@ mod tests {
 
     #[test]
     fn test_static_rsa_suite_is_reported_without_forward_secrecy() {
-        let probe = tls_probe(
-            "TLSv1.2",
-            "TLS_RSA_WITH_AES_256_GCM_SHA384",
-            false,
-            None,
-        );
+        let probe = tls_probe("TLSv1.2", "TLS_RSA_WITH_AES_256_GCM_SHA384", false, None);
 
         let findings = tls_findings("192.168.1.1".parse().unwrap(), 443, &probe);
 
@@ -2295,12 +2360,7 @@ mod tests {
         assert_eq!(weak.severity, Severity::Medium);
 
         // An ECDHE suite must not be flagged.
-        let good = tls_probe(
-            "TLSv1.3",
-            "TLS13_AES_128_GCM_SHA256",
-            false,
-            None,
-        );
+        let good = tls_probe("TLSv1.3", "TLS13_AES_128_GCM_SHA256", false, None);
         assert!(tls_findings("192.168.1.1".parse().unwrap(), 443, &good).is_empty());
     }
 
@@ -2370,7 +2430,12 @@ mod tests {
         }
     }
 
-    fn nvd_entry(cve_id: &str, product: &str, start: &str, end: &str) -> netgap_threat_intel::CveEntry {
+    fn nvd_entry(
+        cve_id: &str,
+        product: &str,
+        start: &str,
+        end: &str,
+    ) -> netgap_threat_intel::CveEntry {
         netgap_threat_intel::CveEntry {
             cve_id: cve_id.to_string(),
             cvss_score: 9.8,
@@ -2395,7 +2460,12 @@ mod tests {
     #[test]
     fn test_nvd_findings_match_an_identified_version() {
         let mut database = NvdDatabase::new();
-        database.add_entry(nvd_entry("CVE-2021-42013", "http_server", "2.4.49", "2.4.51"));
+        database.add_entry(nvd_entry(
+            "CVE-2021-42013",
+            "http_server",
+            "2.4.49",
+            "2.4.51",
+        ));
 
         let mut devices = vec![device_with_ports(&[80])];
         let probes = vec![probe(devices[0].ip, 80, "Apache", "2.4.50")];
@@ -2417,7 +2487,12 @@ mod tests {
     #[test]
     fn test_nvd_findings_respect_the_version_window() {
         let mut database = NvdDatabase::new();
-        database.add_entry(nvd_entry("CVE-2021-42013", "http_server", "2.4.49", "2.4.51"));
+        database.add_entry(nvd_entry(
+            "CVE-2021-42013",
+            "http_server",
+            "2.4.49",
+            "2.4.51",
+        ));
 
         // 2.4.51 is outside the window and must not be reported.
         let mut devices = vec![device_with_ports(&[80])];
@@ -2434,7 +2509,12 @@ mod tests {
     #[test]
     fn test_nvd_lookup_needs_a_known_cpe_product() {
         let mut database = NvdDatabase::new();
-        database.add_entry(nvd_entry("CVE-2021-42013", "http_server", "2.4.49", "2.4.51"));
+        database.add_entry(nvd_entry(
+            "CVE-2021-42013",
+            "http_server",
+            "2.4.49",
+            "2.4.51",
+        ));
 
         // A product with no CPE mapping cannot be looked up, and must not
         // silently match something else.
