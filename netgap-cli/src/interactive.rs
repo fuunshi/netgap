@@ -157,17 +157,13 @@ pub async fn run(plan: &DiscoveryPlan, quick: bool) -> Result<Vec<Device>> {
                                 }
                             }
                         }
-                        KeyCode::Left | KeyCode::Up => {
-                            if selected > 0 {
-                                selected -= 1;
-                                dirty = true;
-                            }
+                        KeyCode::Left | KeyCode::Up if selected > 0 => {
+                            selected -= 1;
+                            dirty = true;
                         }
-                        KeyCode::Right | KeyCode::Down => {
-                            if selected + 1 < states.len() {
-                                selected += 1;
-                                dirty = true;
-                            }
+                        KeyCode::Right | KeyCode::Down if selected + 1 < states.len() => {
+                            selected += 1;
+                            dirty = true;
                         }
                         _ => {}
                     }

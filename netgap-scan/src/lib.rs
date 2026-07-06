@@ -282,10 +282,9 @@ mod tests {
     /// tried. It is skipped, and skipping must not look like a clean result.
     #[tokio::test]
     async fn test_link_local_devices_are_skipped_rather_than_reported_clean() {
-        let mut devices = vec![
-            Device::new("fe80::c6b2:5bff:fe0a:326".parse().expect("a valid address")),
-            Device::new("192.168.111.1".parse().expect("a valid address")),
-        ];
+        let mut devices = [Device::new(
+            "fe80::c6b2:5bff:fe0a:326".parse().expect("a valid address"),
+        )];
 
         let scanner = PortScanner::new(ScanConfig {
             ports: vec![22],
@@ -293,10 +292,7 @@ mod tests {
             concurrency: 1,
         });
 
-        scanner
-            .scan_devices(&mut devices[..1])
-            .await
-            .expect("scanning");
+        scanner.scan_devices(&mut devices).await.expect("scanning");
 
         assert!(devices[0].open_ports.is_empty());
         assert!(devices[0].findings.is_empty());

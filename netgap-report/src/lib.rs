@@ -86,9 +86,9 @@ impl ReportFormatter {
             } else {
                 output.push_str("  Findings:\n");
 
-                // Sort findings by severity
+                // Sort findings by severity, worst first
                 let mut sorted_findings = device.findings.clone();
-                sorted_findings.sort_by(|a, b| b.severity.cmp(&a.severity));
+                sorted_findings.sort_by_key(|finding| std::cmp::Reverse(finding.severity));
 
                 for finding in sorted_findings {
                     let severity_icon = match finding.severity {
