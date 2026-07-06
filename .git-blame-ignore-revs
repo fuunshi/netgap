@@ -1,0 +1,6 @@
+# Commits that are pure reformatting, so `git blame` should look past them.
+#
+# Opt in locally with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# GitHub honours this file automatically.
+d24693f

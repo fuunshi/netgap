@@ -382,6 +382,16 @@ not changed — a green run last month says nothing about today.
 `--locked` throughout, so CI builds the dependencies the lockfile pins rather
 than resolving new ones underneath it.
 
+**A green local run is not evidence.** The first push failed on clippy while
+passing here: CI's stable is 1.98 and this machine's default is 1.89, and
+clippy gained three lints in between, one per crate, each revealed only after
+the previous was fixed. The workflow then caught the same class of problem in
+reverse, so the CI toolchain is now installed alongside the default —
+`cargo +1.98.1 clippy --workspace --all-targets -- -D warnings` is the check
+that predicts CI. A `rust-toolchain.toml` pinning the version would remove the
+guesswork entirely; it is not here because it silently downloads a toolchain
+for anyone who runs cargo in this repository.
+
 **The first audit found four real vulnerabilities**, all from one dependency:
 `reqwest 0.11` sits on the hyper 0.14 and rustls 0.21 line, which carry an
 unbounded-memory denial of service in `h2` and three certificate-validation
