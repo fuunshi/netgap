@@ -428,18 +428,68 @@ contained change if wanted.
 
 ## For normal users
 
-### 9. A plain-language risk summary in `scan`
+### 9. A plain-language risk summary in `scan` — ✅ done
 
-`HealthScore` and change detection exist but only surface in `watch`.
-
-The findings table is written for someone who already knows what SMB is. Lead
-with the conclusion instead:
+Every scan report now opens with the conclusion instead of the detail:
 
 ```
-82/100 — your network looks healthy.
-Most important: file sharing (SMB) is exposed on 3 computers.
-That is a common ransomware entry point. See page 2 for how to turn it off.
+  38/100 — several problems need attention
+
+  What matters most:
+
+    🟠 2 databases are reachable on the network
+      on 192.168.111.70, 192.168.111.187
+      It usually holds everything the network's applications know, and is
+      often set up to trust whoever connects.
+      → Restrict it to the machines that need them, and set a password.
+
+    🟠 File sharing (SMB) is switched on for 2 computers
+      on 192.168.111.96, 192.168.111.187
+      It is how ransomware spreads from one computer to the next on a home
+      network.
+      → Turn file sharing off on the computers that do not need it, and
+      password-protect the folders that are shared on purpose.
 ```
+
+Findings are grouped by *kind* rather than by port: one Windows machine with
+both SMB ports open is one problem, not two, and the same problem on three
+machines is one sentence with a count in it. `IssueKind` in `netgap-core` does
+the classification, keyed on the finding identifier with the port as a
+fallback; the wording and the advice live in `netgap-report`.
+
+**Scoring was measuring the wrong thing.** The old `HealthScore` subtracted a
+point per device and per open port, so a large healthy network scored worse
+than a small compromised one: this nineteen-device network with one computer
+sharing files scored 52 ("Fair"), because 47 of the 48 points lost were for
+being large. The score now comes from the problems found, charged once per
+kind at its worst severity, plus a smaller amount for each further device —
+repetition is a weaker signal than the first occurrence, so the fourth laptop
+sharing files is not four times the problem. It lives in `netgap-core`, which
+lets `watch` and the report share one formula; both now say 38/100 for the
+same network.
+
+**A verdict must not overclaim in either direction.** A high score reads
+"looks healthy", never "no problems found" — a scan can score 88 and still
+list something three lines below. The opposite case is handled by wording:
+a port that accepts connections is reported as *reachable*, not as "answering
+to anyone who asks", because reachability is what was measured. A scan that
+finds nothing says so, then says what it did not check.
+
+**The summary was only as good as the findings under it.** On the first real
+run it said "looks healthy" about a network with Remote Desktop open, because
+the port scanner only produced findings for three ports (Telnet, SMB,
+NetBIOS). It now has a small table of ports that are worth a finding on their
+own — RDP, VNC, databases, the r-services — each with its own explanation and
+fix. That immediately surfaced two machines answering on 3306 and one on 3389,
+none of which the tool had ever reported. Every one was confirmed by hand from
+outside the tool before the claim was believed; `netgap scan` had been finding
+these ports all along and simply saying nothing about them.
+
+**Still open:** the summary appears in the terminal and `--format summary`
+output, but not in JSON or the markdown/HTML exports. The advice is per kind,
+not per device — it cannot yet say "turn it off on the printer but not on the
+NAS". And `--assess` remains a separate flag: a scan without it reports
+exposure, but not vulnerabilities.
 
 ### 10. Shareable HTML discovery report
 

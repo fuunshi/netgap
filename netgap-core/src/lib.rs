@@ -256,6 +256,216 @@ pub struct Finding {
     pub confidence: f32,
 }
 
+/// What kind of problem a finding describes, in the terms a person would use
+/// rather than the terms a port scanner does.
+///
+/// A scan of a mixed network produces findings keyed by port — `open_port_445`,
+/// `smb_445_exposed`, `smb_139_exposed` — which are three rows in a table and
+/// one fact about the world: file sharing is switched on. Grouping by kind is
+/// what lets a summary say "file sharing is on for 3 computers" instead of
+/// listing ports, and it is what stops one issue reported on two ports from
+/// counting twice against the health score.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum IssueKind {
+    /// Windows file sharing: SMB and its NetBIOS ancestors.
+    FileSharing,
+    /// Logins sent without encryption: Telnet, FTP.
+    PlainTextLogin,
+    /// Remote control of a desktop: RDP, VNC.
+    RemoteAccess,
+    /// A database answering on the network.
+    Database,
+    /// The router's own settings page, reachable in a browser.
+    RouterAdmin,
+    /// UPnP, which lets any program open firewall ports without asking.
+    Upnp,
+    /// SNMP, which can describe a device in detail to anyone who asks.
+    NetworkManagement,
+    /// Outdated or missing encryption: old TLS, expired certificates.
+    WeakEncryption,
+    /// Software versions with published security flaws.
+    KnownFlaws,
+    /// Two devices claiming one address, or an address that changed hands.
+    AddressConflict,
+    /// A finding from a check this list does not know about.
+    Other,
+}
+
+impl IssueKind {
+    /// Classify a finding.
+    ///
+    /// The identifier is the stable key — it is what the check that produced
+    /// the finding controls — with the port and service as a fallback for
+    /// findings whose identifier does not follow the convention.
+    pub fn of(finding: &Finding) -> IssueKind {
+        let id = finding.id.to_ascii_lowercase();
+        let service = finding
+            .service
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let port = finding.port;
+
+        if id.starts_with("cve-") || id.starts_with("nvd-") {
+            return IssueKind::KnownFlaws;
+        }
+        if id.starts_with("tls") || service.contains("tls") || service.contains("ssl") {
+            return IssueKind::WeakEncryption;
+        }
+        if id.contains("upnp") {
+            return IssueKind::Upnp;
+        }
+        if id.contains("gateway") || port == Some(80) && service.contains("admin") {
+            return IssueKind::RouterAdmin;
+        }
+        if id.contains("conflict") || id.contains("mac_change") {
+            return IssueKind::AddressConflict;
+        }
+        if id.contains("smb") || id.contains("netbios") {
+            return IssueKind::FileSharing;
+        }
+        if id.contains("telnet") || id.contains("ftp") {
+            return IssueKind::PlainTextLogin;
+        }
+        if id.contains("snmp") {
+            return IssueKind::NetworkManagement;
+        }
+        if id.contains("rdp") || id.contains("vnc") {
+            return IssueKind::RemoteAccess;
+        }
+        if id.contains("database") || id.contains("mysql") || id.contains("postgres") {
+            return IssueKind::Database;
+        }
+
+        match (port, service.as_str()) {
+            (Some(139 | 445), _) | (_, "smb" | "netbios") => IssueKind::FileSharing,
+            (Some(23), _) | (_, "telnet") => IssueKind::PlainTextLogin,
+            (Some(21), _) | (_, "ftp") => IssueKind::PlainTextLogin,
+            (Some(3389), _) | (_, "rdp" | "ms-wbt-server") => IssueKind::RemoteAccess,
+            (Some(5900..=5906), _) | (_, "vnc") => IssueKind::RemoteAccess,
+            (Some(161 | 162), _) | (_, "snmp") => IssueKind::NetworkManagement,
+            (Some(3306 | 5432 | 6379 | 27017), _)
+            | (_, "mysql" | "postgresql" | "redis" | "mongodb") => IssueKind::Database,
+            _ => IssueKind::Other,
+        }
+    }
+
+    /// Risk points this kind of problem costs, by the worst severity it was
+    /// found at.
+    ///
+    /// These are the numbers the health score is built from, so they are worth
+    /// being able to read: a critical exposure costs a third of the score, a
+    /// high one about a sixth.
+    pub fn weight(&self, severity: Severity) -> u32 {
+        match severity {
+            Severity::Critical => 35,
+            Severity::High => 18,
+            Severity::Medium => 6,
+            // Informational findings are not problems. A self-signed
+            // certificate on a home router belongs in this band.
+            _ => 0,
+        }
+    }
+}
+
+/// Network health score (0-100 scale).
+///
+/// Deductions come from the problems found, not from the size of the network.
+/// An earlier version subtracted a point per device and per open port, which
+/// meant a large, healthy network scored worse than a small, compromised one:
+/// a nineteen-device home network with one computer sharing files scored 52,
+/// because forty-seven of the forty-eight points lost were for having devices
+/// and open ports at all.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct HealthScore {
+    pub score: u8,
+    pub critical_factor: u8,
+    pub high_factor: u8,
+    pub medium_factor: u8,
+}
+
+impl HealthScore {
+    /// Score a scan from the findings attached to its devices.
+    ///
+    /// Each kind of problem is charged once, at its worst severity, plus a
+    /// smaller amount for every further device it affects. Repetition is a
+    /// weaker signal than the first occurrence: the second computer with file
+    /// sharing on is the same problem again, not a new one.
+    pub fn from_result(result: &ScanResult) -> Self {
+        use std::collections::HashMap;
+
+        // Worst severity seen per kind, and the devices it appears on.
+        let mut worst: HashMap<IssueKind, Severity> = HashMap::new();
+        let mut devices_per_kind: HashMap<IssueKind, std::collections::HashSet<IpAddr>> =
+            HashMap::new();
+
+        for device in &result.devices {
+            for finding in &device.findings {
+                let kind = IssueKind::of(finding);
+                let entry = worst.entry(kind).or_insert(finding.severity);
+                if finding.severity > *entry {
+                    *entry = finding.severity;
+                }
+                devices_per_kind.entry(kind).or_default().insert(device.ip);
+            }
+        }
+
+        let mut critical = 0u32;
+        let mut high = 0u32;
+        let mut medium = 0u32;
+
+        for (kind, severity) in worst {
+            let devices = devices_per_kind.get(&kind).map_or(1, |set| set.len()) as u32;
+            // Every further device adds a little, up to a ceiling: a problem
+            // on ten machines is worse than on one, but it is not ten times
+            // worse, and the score should not collapse to zero on repetition.
+            let per_kind = (kind.weight(severity) + (devices.saturating_sub(1)) * 4).min(45);
+
+            match severity {
+                Severity::Critical => critical += per_kind,
+                Severity::High => high += per_kind,
+                Severity::Medium => medium += per_kind,
+                Severity::Info => {}
+            }
+        }
+
+        let total = (critical + high + medium).min(100);
+        HealthScore {
+            score: (100 - total) as u8,
+            critical_factor: critical.min(100) as u8,
+            high_factor: high.min(100) as u8,
+            medium_factor: medium.min(100) as u8,
+        }
+    }
+
+    /// Categorize health score into risk level.
+    pub fn risk_level(&self) -> &'static str {
+        match self.score {
+            85..=100 => "Excellent",
+            70..=84 => "Good",
+            50..=69 => "Fair",
+            30..=49 => "Poor",
+            _ => "Critical",
+        }
+    }
+
+    /// What the score means, in a sentence, for someone who did not ask for a
+    /// number.
+    pub fn verdict(&self) -> &'static str {
+        match self.score {
+            // Deliberately not "no problems found": a high score can still
+            // carry an issue, and saying otherwise while listing one three
+            // lines below reads as a bug. The report says "nothing found" in
+            // its own words when that is actually true.
+            85..=100 => "looks healthy",
+            70..=84 => "mostly healthy, with something worth fixing",
+            50..=69 => "a few things should be fixed",
+            30..=49 => "several problems need attention",
+            _ => "serious problems need attention now",
+        }
+    }
+}
+
 /// Operating system type (used in device fingerprinting).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -466,6 +676,253 @@ mod tests {
         assert!(Severity::Critical > Severity::High);
         assert!(Severity::High > Severity::Medium);
         assert!(Severity::Medium > Severity::Info);
+    }
+
+    fn finding(id: &str, severity: Severity, port: Option<u16>, service: Option<&str>) -> Finding {
+        Finding {
+            id: id.to_string(),
+            title: id.to_string(),
+            description: String::new(),
+            severity,
+            ip: "192.168.1.10".parse().expect("a valid address"),
+            port,
+            service: service.map(str::to_string),
+            remediation: String::new(),
+            confidence: 1.0,
+        }
+    }
+
+    fn scan_with(devices: usize, findings: Vec<Finding>) -> ScanResult {
+        let mut devices: Vec<Device> = (1..=devices)
+            .map(|last| {
+                Device::new(
+                    format!("192.168.1.{last}")
+                        .parse()
+                        .expect("a valid address"),
+                )
+            })
+            .collect();
+        if let Some(first) = devices.first_mut() {
+            first.findings = findings;
+        }
+
+        ScanResult {
+            started_at: "2026-10-01T00:00:00Z".to_string(),
+            config: ScanConfig {
+                interface: "eth0".to_string(),
+                target: "192.168.1.0/24".to_string(),
+                timeout_ms: 1000,
+                concurrency: 8,
+                discovery_only: false,
+            },
+            devices,
+            summary: FindingSummary::new(),
+        }
+    }
+
+    /// The identifier decides the kind, so a check that names its findings
+    /// conventionally is classified without the port being consulted.
+    #[test]
+    fn test_issue_kinds_come_from_the_finding_identity() {
+        let cases = [
+            (
+                "open_port_445",
+                Some(445),
+                Some("SMB"),
+                IssueKind::FileSharing,
+            ),
+            (
+                "smb_139_exposed",
+                Some(139),
+                Some("NetBIOS"),
+                IssueKind::FileSharing,
+            ),
+            (
+                "telnet_23_exposed",
+                Some(23),
+                Some("Telnet"),
+                IssueKind::PlainTextLogin,
+            ),
+            (
+                "ftp_21_exposed",
+                Some(21),
+                Some("FTP"),
+                IssueKind::PlainTextLogin,
+            ),
+            ("gateway_upnp_exposed", None, None, IssueKind::Upnp),
+            (
+                "gateway_http_admin_available",
+                Some(80),
+                None,
+                IssueKind::RouterAdmin,
+            ),
+            (
+                "cve-CVE-2021-41773",
+                Some(80),
+                Some("Apache"),
+                IssueKind::KnownFlaws,
+            ),
+            (
+                "nvd-CVE-2021-41773",
+                Some(443),
+                Some("nginx"),
+                IssueKind::KnownFlaws,
+            ),
+            (
+                "tls-legacy-accepted",
+                Some(443),
+                Some("https"),
+                IssueKind::WeakEncryption,
+            ),
+            (
+                "snmp_161_exposed",
+                Some(161),
+                Some("SNMP"),
+                IssueKind::NetworkManagement,
+            ),
+        ];
+
+        for (id, port, service, expected) in cases {
+            let finding = finding(id, Severity::High, port, service);
+            assert_eq!(IssueKind::of(&finding), expected, "for {id}");
+        }
+    }
+
+    /// A check that does not follow the convention still lands in the right
+    /// place, because the port is the fallback.
+    #[test]
+    fn test_a_port_is_enough_when_the_identifier_says_nothing() {
+        let by_port = finding("check_v2", Severity::High, Some(3389), None);
+        assert_eq!(IssueKind::of(&by_port), IssueKind::RemoteAccess);
+
+        let unknown = finding("check_v2", Severity::High, Some(9999), None);
+        assert_eq!(IssueKind::of(&unknown), IssueKind::Other);
+    }
+
+    #[test]
+    fn test_a_clean_network_scores_100_at_any_size() {
+        assert_eq!(
+            HealthScore::from_result(&scan_with(1, Vec::new())).score,
+            100
+        );
+        assert_eq!(
+            HealthScore::from_result(&scan_with(40, Vec::new())).score,
+            100
+        );
+    }
+
+    /// One issue reported on two ports is one problem. Charging for both would
+    /// mean the score depended on how many ports a check happened to report.
+    #[test]
+    fn test_one_issue_on_two_ports_is_charged_once() {
+        let score = HealthScore::from_result(&scan_with(
+            1,
+            vec![
+                finding("open_port_445", Severity::High, Some(445), Some("SMB")),
+                finding("open_port_139", Severity::High, Some(139), Some("NetBIOS")),
+            ],
+        ));
+
+        assert_eq!(score.high_factor, 18);
+        assert_eq!(score.score, 82);
+    }
+
+    #[test]
+    fn test_a_critical_exposure_costs_more_than_a_high_one() {
+        let critical = HealthScore::from_result(&scan_with(
+            1,
+            vec![finding(
+                "telnet_23_exposed",
+                Severity::Critical,
+                Some(23),
+                None,
+            )],
+        ));
+        let high = HealthScore::from_result(&scan_with(
+            1,
+            vec![finding(
+                "open_port_445",
+                Severity::High,
+                Some(445),
+                Some("SMB"),
+            )],
+        ));
+
+        assert!(
+            critical.score < high.score,
+            "{} < {}",
+            critical.score,
+            high.score
+        );
+        assert_eq!(critical.risk_level(), "Fair");
+        assert_eq!(high.risk_level(), "Good");
+    }
+
+    /// The second device with the same problem adds less than the first did,
+    /// and the tenth does not drive the score to zero.
+    #[test]
+    fn test_repetition_costs_less_each_time() {
+        let one = HealthScore::from_result(&scan_with(
+            1,
+            vec![finding(
+                "open_port_445",
+                Severity::High,
+                Some(445),
+                Some("SMB"),
+            )],
+        ));
+
+        let mut ten = scan_with(10, Vec::new());
+        for device in ten.devices.iter_mut() {
+            device.findings = vec![finding(
+                "open_port_445",
+                Severity::High,
+                Some(445),
+                Some("SMB"),
+            )];
+        }
+        let many = HealthScore::from_result(&ten);
+
+        assert!(many.score < one.score);
+        assert!(
+            many.score > 0,
+            "the score should not collapse: {}",
+            many.score
+        );
+        assert_eq!(many.high_factor, 45, "capped per kind");
+    }
+
+    #[test]
+    fn test_informational_findings_are_free() {
+        let score = HealthScore::from_result(&scan_with(
+            1,
+            vec![finding("tls-self-signed", Severity::Info, Some(443), None)],
+        ));
+
+        assert_eq!(score.score, 100);
+        assert_eq!(score.verdict(), "looks healthy");
+    }
+
+    #[test]
+    fn test_risk_levels_and_verdicts_agree() {
+        let levels = [
+            (95, "Excellent"),
+            (75, "Good"),
+            (60, "Fair"),
+            (40, "Poor"),
+            (10, "Critical"),
+        ];
+
+        for (score, level) in levels {
+            let health = HealthScore {
+                score,
+                critical_factor: 0,
+                high_factor: 0,
+                medium_factor: 0,
+            };
+            assert_eq!(health.risk_level(), level);
+            assert!(!health.verdict().is_empty());
+        }
     }
 
     #[test]

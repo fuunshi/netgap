@@ -182,39 +182,24 @@ impl PortScanner {
                 device.add_open_port(port);
 
                 // Generate finding for dangerous ports
-                if is_critical_port(port) {
+                if let Some(severity) = port_risk(port) {
                     let service = get_service_name(port);
-                    let mut finding = Finding {
+                    let finding = Finding {
                         id: format!("open_port_{}", port),
-                        title: format!("Open {} port ({})", service, port),
+                        title: format!("{} is reachable ({})", service, port),
                         description: format!(
-                            "Port {} ({}) is open and accessible. This service may expose the device to attacks.",
-                            port, service
+                            "Port {} ({}) is open and accepting connections. {}",
+                            port,
+                            service,
+                            risk_note(port)
                         ),
-                        severity: Severity::High,
+                        severity,
                         ip: device.ip,
                         port: Some(port),
                         service: Some(service.to_string()),
-                        remediation: format!("Review {} service configuration, restrict access via firewall if not needed", service),
+                        remediation: remediation_for(port, service),
                         confidence: 1.0,
                     };
-
-                    if port == 23 {
-                        finding.severity = Severity::Critical;
-                        finding.title = "TELNET EXPOSED - CRITICAL VULNERABILITY".to_string();
-                        finding.description =
-                            "Telnet (port 23) is open! All credentials sent in cleartext."
-                                .to_string();
-                        finding.remediation =
-                            "Disable Telnet immediately. Use SSH for remote access.".to_string();
-                    } else if port == 445 || port == 139 {
-                        finding.severity = Severity::High;
-                        finding.title = format!("SMB exposed on port {}", port);
-                        finding.description = "SMB (file sharing) is accessible externally. Vulnerable to ransomware and data theft.".to_string();
-                        finding.remediation =
-                            "Block SMB ports from external access using firewall rules."
-                                .to_string();
-                    }
 
                     device.add_finding(finding);
                 }
@@ -241,9 +226,71 @@ impl PortScanner {
     }
 }
 
-/// Check if a port is considered critical/dangerous.
-fn is_critical_port(port: u16) -> bool {
-    matches!(port, 23 | 139 | 445) // Telnet, NetBIOS, SMB
+/// How much an open port on its own is worth reporting, or `None` when the
+/// port is unremarkable and should not become a finding.
+///
+/// `None` is the answer for most of the scanned list — 443 open on a computer
+/// is not a problem, and a report full of not-problems is one nobody reads.
+/// What is here is the set where an open port *is* the finding: anything that
+/// carries a password in the clear, or hands over control of the machine.
+fn port_risk(port: u16) -> Option<Severity> {
+    match port {
+        // Everything typed into these crosses the network readable.
+        23 | 512 | 513 | 514 => Some(Severity::Critical),
+        // Access to files or to the desktop itself.
+        139 | 445 | 3389 | 5900..=5902 => Some(Severity::High),
+        // A database on a network is usually meant to be reachable only by the
+        // application that uses it.
+        3306 | 5432 | 6379 | 27017 => Some(Severity::High),
+        // Unencrypted, but a person has to be using it at the time.
+        21 | 161 => Some(Severity::Medium),
+        _ => None,
+    }
+}
+
+/// Why an open port matters, in one clause that completes "…connections. {this}".
+fn risk_note(port: u16) -> &'static str {
+    match port {
+        23 => "Telnet sends everything typed into it, including the password, in readable form.",
+        512..=514 => {
+            "The r-services accept logins over the network without encryption, and often without \
+             a password."
+        }
+        139 => "NetBIOS file sharing lets other machines read and write files on this one.",
+        445 => "SMB file sharing lets other machines read and write files on this one.",
+        3389 => "Remote Desktop lets someone at another machine take over this one.",
+        5900..=5902 => "VNC lets someone at another machine see and control this screen.",
+        3306 | 5432 => "A database is answering on the network.",
+        6379 | 27017 => {
+            "A database is answering on the network, and these often ship without a password."
+        }
+        21 => "FTP sends the password in readable form.",
+        161 => "SNMP can describe the device's model, software and traffic to anyone who asks.",
+        _ => "It may expose the device to attack.",
+    }
+}
+
+/// What to do about an open port, phrased as the first thing to try.
+fn remediation_for(port: u16, service: &str) -> String {
+    match port {
+        23 => "Disable Telnet and use SSH instead.".to_string(),
+        512..=514 => "Disable the r-services; use SSH instead.".to_string(),
+        139 | 445 => {
+            "Turn file sharing off on this computer if it is not needed, and check that the \
+             shared folders require a password."
+                .to_string()
+        }
+        3389 => "Turn Remote Desktop off if it is not used.".to_string(),
+        5900..=5902 => {
+            "Turn the VNC server off if it is not used, and set a password if it is.".to_string()
+        }
+        3306 | 5432 | 6379 | 27017 => {
+            "Restrict the database to the machines that need it, and set a password.".to_string()
+        }
+        21 => "Use SFTP or SCP instead of FTP.".to_string(),
+        161 => "Turn SNMP off, or change the community string from its default.".to_string(),
+        _ => format!("Restrict access to {service} with a firewall rule if it is not needed."),
+    }
 }
 
 /// Get common service name for a port.
@@ -299,10 +346,34 @@ mod tests {
     }
 
     #[test]
-    fn test_is_critical_port() {
-        assert!(is_critical_port(23)); // Telnet
-        assert!(is_critical_port(445)); // SMB
-        assert!(!is_critical_port(443)); // HTTPS is not critical
+    fn test_port_risk() {
+        assert_eq!(port_risk(23), Some(Severity::Critical)); // Telnet
+        assert_eq!(port_risk(514), Some(Severity::Critical)); // rsh
+        assert_eq!(port_risk(445), Some(Severity::High)); // SMB
+        assert_eq!(port_risk(3389), Some(Severity::High)); // RDP
+        assert_eq!(port_risk(3306), Some(Severity::High)); // MySQL
+        assert_eq!(port_risk(161), Some(Severity::Medium)); // SNMP
+
+        // An open HTTPS port is not a problem worth a finding.
+        assert_eq!(port_risk(443), None);
+        assert_eq!(port_risk(80), None);
+        assert_eq!(port_risk(22), None);
+    }
+
+    /// Every port that produces a finding needs a note and a fix, since both
+    /// are rendered to the user.
+    #[test]
+    fn test_every_risky_port_has_an_explanation() {
+        for port in [
+            23, 512, 513, 514, 139, 445, 3389, 5900, 3306, 5432, 6379, 27017, 21, 161,
+        ] {
+            assert!(port_risk(port).is_some(), "{port} should be a finding");
+            assert!(!risk_note(port).is_empty(), "{port} needs a note");
+            assert!(
+                !remediation_for(port, "service").is_empty(),
+                "{port} needs a fix"
+            );
+        }
     }
 
     #[test]

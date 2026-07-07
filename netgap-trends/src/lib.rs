@@ -215,51 +215,10 @@ impl ChangeDetection {
     }
 }
 
-/// Network health score (0-100 scale).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct HealthScore {
-    pub score: u8,
-    pub port_factor: u8,
-    pub vuln_factor: u8,
-    pub device_factor: u8,
-}
-
-impl HealthScore {
-    /// Calculate health score from scan history.
-    /// Formula: 100 - (port_penalty + vuln_penalty + device_penalty)
-    pub fn calculate(history: &ScanHistory) -> Self {
-        // Port penalty: 1 point per open port (cap at 30)
-        let port_penalty = (history.total_ports as u8).min(30);
-
-        // Vulnerability penalty: 20 points for critical, 10 for high (cap at 50)
-        let vuln_penalty =
-            (history.critical_findings as u8 * 20 + history.high_findings as u8 * 10).min(50);
-
-        // Device penalty: 1 point per device (cap at 20)
-        let device_penalty = (history.device_count as u8).min(20);
-
-        let total_penalty = (port_penalty + vuln_penalty + device_penalty).min(100);
-        let score = (100_u16.saturating_sub(total_penalty as u16)) as u8;
-
-        HealthScore {
-            score,
-            port_factor: port_penalty,
-            vuln_factor: vuln_penalty,
-            device_factor: device_penalty,
-        }
-    }
-
-    /// Categorize health score into risk level.
-    pub fn risk_level(&self) -> &'static str {
-        match self.score {
-            85..=100 => "Excellent",
-            70..=84 => "Good",
-            50..=69 => "Fair",
-            30..=49 => "Poor",
-            _ => "Critical",
-        }
-    }
-}
+// The score lives in `netgap-core` because the report crate needs it too and
+// this crate would drag SQLite in behind it. Re-exported so callers that know
+// it from here keep working.
+pub use netgap_core::HealthScore;
 
 /// Alert triggered by network changes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -372,6 +331,37 @@ impl AlertRule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A scan result with `device_count` devices, the given findings attached
+    /// to the first of them.
+    fn create_test_result(device_count: usize, findings: Vec<netgap_core::Finding>) -> ScanResult {
+        let mut devices: Vec<netgap_core::Device> = (1..=device_count)
+            .map(|last| {
+                netgap_core::Device::new(
+                    format!("192.168.1.{last}")
+                        .parse()
+                        .expect("a valid address"),
+                )
+            })
+            .collect();
+
+        if let Some(first) = devices.first_mut() {
+            first.findings = findings;
+        }
+
+        ScanResult {
+            started_at: Utc::now().to_rfc3339(),
+            config: netgap_core::ScanConfig {
+                interface: "eth0".to_string(),
+                target: "192.168.1.0/24".to_string(),
+                timeout_ms: 1000,
+                concurrency: 8,
+                discovery_only: false,
+            },
+            devices,
+            summary: netgap_core::FindingSummary::new(),
+        }
+    }
 
     fn create_test_history(
         id: &str,
@@ -515,60 +505,23 @@ mod tests {
             .any(|c| matches!(c, NetworkChange::NewService { port: 80, .. })));
     }
 
+    /// The network's size no longer moves the score: only what was found on
+    /// it does.
     #[test]
-    fn test_health_score_calculation() {
-        let history = create_test_history("test", 5, 10, 2, 3);
-        let score = HealthScore::calculate(&history);
+    fn test_a_quiet_scan_of_many_devices_scores_clean() {
+        let mut result = create_test_result(12, Vec::new());
+        let score = HealthScore::from_result(&result);
 
-        assert!(score.score > 0);
-        assert!(score.score <= 100);
-        assert_eq!(score.port_factor, 10);
-        assert_eq!(score.vuln_factor, 50); // capped at 50
-        assert_eq!(score.device_factor, 5);
-    }
+        assert_eq!(score.score, 100);
 
-    #[test]
-    fn test_health_score_risk_levels() {
-        assert_eq!(
-            HealthScore {
-                score: 90,
-                port_factor: 5,
-                vuln_factor: 5,
-                device_factor: 0
+        // The same holds when the devices have ports open but nothing is
+        // actually wrong with them.
+        for device in result.devices.iter_mut() {
+            for port in [53, 631, 8080] {
+                device.add_open_port(port);
             }
-            .risk_level(),
-            "Excellent"
-        );
-        assert_eq!(
-            HealthScore {
-                score: 75,
-                port_factor: 10,
-                vuln_factor: 15,
-                device_factor: 0
-            }
-            .risk_level(),
-            "Good"
-        );
-        assert_eq!(
-            HealthScore {
-                score: 55,
-                port_factor: 20,
-                vuln_factor: 25,
-                device_factor: 0
-            }
-            .risk_level(),
-            "Fair"
-        );
-        assert_eq!(
-            HealthScore {
-                score: 35,
-                port_factor: 30,
-                vuln_factor: 35,
-                device_factor: 0
-            }
-            .risk_level(),
-            "Poor"
-        );
+        }
+        assert_eq!(HealthScore::from_result(&result).score, 100);
     }
 
     #[test]

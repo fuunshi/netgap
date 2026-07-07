@@ -1912,6 +1912,9 @@ async fn cmd_watch(
     println!("Interval: {}s | Press Ctrl+C to stop\n", interval_secs);
 
     let mut last_history: Option<ScanHistory> = None;
+    // Kept alongside the history so the trend compares like with like: the
+    // score cannot be recomputed from a snapshot.
+    let mut last_health: Option<HealthScore> = None;
     let mut last_mappings: Option<std::collections::HashMap<std::net::Ipv4Addr, String>> = None;
 
     // The gateway is the address worth impersonating, so a change there reads
@@ -1973,11 +1976,15 @@ async fn cmd_watch(
                 let current_history =
                     ScanHistory::from_scan_result(format!("scan-{}", scan_count), &result);
 
+                // Scored from the result rather than the history snapshot: the
+                // score is charged per kind of problem, and the snapshot keeps
+                // only counts.
+                let curr_health = HealthScore::from_result(&result);
+
                 // Detect changes if we have previous history
                 if let Some(prev) = &last_history {
                     let changes = ChangeDetection::detect_changes(prev, &current_history);
-                    let prev_health = HealthScore::calculate(prev);
-                    let curr_health = HealthScore::calculate(&current_history);
+                    let prev_health = last_health.unwrap_or(curr_health);
 
                     let health_drop = if curr_health.score < prev_health.score {
                         Some(prev_health.score as i16 - curr_health.score as i16)
@@ -2026,15 +2033,15 @@ async fn cmd_watch(
                     );
                 } else {
                     println!("✓ Discovered {} device(s)", current_history.device_count);
-                    let health = HealthScore::calculate(&current_history);
                     println!(
                         "  Health Score: {}/100 ({})",
-                        health.score,
-                        health.risk_level()
+                        curr_health.score,
+                        curr_health.risk_level()
                     );
                 }
 
                 last_history = Some(current_history);
+                last_health = Some(curr_health);
                 check_for_address_conflicts(&mut last_mappings, &plan, gateway);
 
                 if check_dhcp {

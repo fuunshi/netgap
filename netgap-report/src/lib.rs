@@ -8,8 +8,10 @@
 use netgap_core::{ScanResult, Severity};
 
 pub mod discovery;
+pub mod summary;
 use anyhow::Result;
 pub use discovery::{format_discovery, DiscoveryContext};
+pub use summary::{Issue, RiskSummary};
 
 /// Report formatter with multiple output options.
 pub struct ReportFormatter;
@@ -24,11 +26,14 @@ impl ReportFormatter {
         output
             .push_str("╚════════════════════════════════════════════════════════════════════╝\n\n");
 
-        // Summary statistics
         output.push_str("📊 Scan Summary\n");
         output.push_str(&format!("  Started:  {}\n", result.started_at));
         output.push_str(&format!("  Target:   {}\n", result.config.target));
         output.push_str(&format!("  Interface: {}\n\n", result.config.interface));
+
+        // The conclusion first, in words. Everything below this is the detail
+        // that supports it, and most readers will not need it.
+        output.push_str(&RiskSummary::from_result(result).render());
 
         output.push_str(&format!(
             "Findings: {} Total | 🔴 {} Critical | 🟠 {} High | 🟡 {} Medium | 🔵 {} Info\n\n",
@@ -132,6 +137,11 @@ impl ReportFormatter {
 
         output.push_str(&format!("Target: {}\n", result.config.target));
         output.push_str(&format!("Devices scanned: {}\n", result.devices.len()));
+
+        // The same conclusion the full report leads with: a summary that is
+        // only counts is a summary of the scan, not of the network.
+        output.push_str(&RiskSummary::from_result(result).render());
+
         output.push_str(&format!(
             "Findings: {} (Critical: {}, High: {}, Medium: {}, Info: {})\n\n",
             result.summary.total(),
