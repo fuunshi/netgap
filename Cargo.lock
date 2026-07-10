@@ -908,6 +908,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "colored",
  "crossterm",
  "netgap-assess",
  "netgap-core",

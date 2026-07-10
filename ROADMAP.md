@@ -491,11 +491,46 @@ not per device — it cannot yet say "turn it off on the printer but not on the
 NAS". And `--assess` remains a separate flag: a scan without it reports
 exposure, but not vulnerabilities.
 
-### 10. Shareable HTML discovery report
+### 10. Shareable HTML discovery report — ✅ done
 
-`report --format html` exists for scans; the discovery report has no equivalent.
-Useful when handing the results to someone who knows networks better, or keeping
-a dated snapshot of what the network looked like.
+```
+netgap discover --format html --output network.html
+```
+
+One self-contained file: no scripts, no stylesheets fetched, no fonts — it
+opens from a file:// path on a machine that has never been online, which is
+what makes it something you can email to a landlord or keep in a folder. It
+carries what the terminal report has (counts, trust state, IPv6 addresses)
+plus the full device table with no column truncation, and it collapses to one
+column on a phone with a print stylesheet for paper.
+
+`--output` was added alongside it because "keep a dated snapshot" is the point:
+without it the only way to save a report was to redirect stdout.
+
+**The escaping is the part that matters.** Every string in a report is chosen
+by a device or a person: hostnames from reverse DNS, mDNS names a device
+advertises, service banners, TLS certificate subjects, and labels a user typed.
+Interpolated raw into HTML, a device can put a `<script>` tag in a page that
+someone opens later — the report about a hostile device becomes the hostile
+thing, and the reader is the target. `netgap_core::html::escape` now covers
+`& < > " '`, and both HTML writers use it.
+
+That second writer is the older scan export, which had **no escaping at all** —
+finding titles and descriptions arrive from banner text, so a device answering
+with `<img src=x onerror=...>` in its `Server:` header was writing script into
+the report of every scan that found it. Fixed here, with a test that pushes a
+hostile hostname, title and description through a real database and asserts
+none of them survive as markup.
+
+Two smaller things the work turned up: writing the colourised terminal report
+to a file embedded ANSI escape codes in it, because `colored` decides by
+looking at stdout, which is still a terminal when the destination is a file;
+and JSON output said "open it in a browser". Both fixed.
+
+**Still open:** the scan HTML export keeps its own older styling and was not
+converted to the shared one, so the two reports look different. A test asserts
+the discovery document fetches nothing from the network; the scan export has
+no equivalent guard.
 
 ### 11. Alerts that reach the user
 

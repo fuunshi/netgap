@@ -8,7 +8,9 @@
 
 use anyhow::{anyhow, Result};
 use chrono::Utc;
-use netgap_core::{Device, Finding, FindingSummary, OsType, ScanConfig, ScanResult, Severity};
+use netgap_core::{
+    html::escape, Device, Finding, FindingSummary, OsType, ScanConfig, ScanResult, Severity,
+};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -734,19 +736,19 @@ impl ScanStore {
         html.push_str("<div class='metadata'>\n");
         html.push_str(&format!(
             "<div class='metadata-item'><strong>Scan ID:</strong> {}</div>\n",
-            metadata.id
+            escape(&metadata.id)
         ));
         html.push_str(&format!(
             "<div class='metadata-item'><strong>Date:</strong> {}</div>\n",
-            metadata.created_at
+            escape(&metadata.created_at)
         ));
         html.push_str(&format!(
             "<div class='metadata-item'><strong>Interface:</strong> {}</div>\n",
-            metadata.interface
+            escape(&metadata.interface)
         ));
         html.push_str(&format!(
             "<div class='metadata-item'><strong>Target:</strong> {}</div>\n",
-            metadata.target
+            escape(&metadata.target)
         ));
         html.push_str("</div>\n");
 
@@ -780,7 +782,8 @@ impl ScanStore {
             for (ip, count) in devices {
                 html.push_str(&format!(
                     "<div class='device-section'><h3>{} ({} findings)</h3>\n",
-                    ip, count
+                    escape(&ip),
+                    count
                 ));
 
                 let mut findings_stmt = self.conn.prepare(
@@ -813,18 +816,19 @@ impl ScanStore {
                     html.push_str(&format!("<div class='finding {}'>\n", severity_class));
                     html.push_str(&format!(
                         "<div class='finding-title'>[{}] {}</div>\n",
-                        severity, title
+                        escape(&severity),
+                        escape(&title)
                     ));
                     if let Some(d) = desc {
                         html.push_str(&format!(
                             "<div class='finding-detail'><strong>Details:</strong> {}</div>\n",
-                            d
+                            escape(&d)
                         ));
                     }
                     if let Some(r) = remediation {
                         html.push_str(&format!(
                             "<div class='finding-detail'><strong>Remediation:</strong> {}</div>\n",
-                            r
+                            escape(&r)
                         ));
                     }
                     html.push_str("</div>\n");
@@ -1017,6 +1021,30 @@ mod tests {
     fn test_scan_store_creation() {
         let result = ScanStore::open(Path::new(":memory:"));
         assert!(result.is_ok());
+    }
+
+    /// Banner text and certificate subjects reach a report straight from the
+    /// device it describes, so an exported page has to treat them as text.
+    #[test]
+    fn test_exported_html_escapes_what_a_device_said() {
+        let mut store = ScanStore::open(Path::new(":memory:")).expect("open store");
+
+        let mut result = sample_result();
+        result.devices[0].hostname = Some("<script>alert('x')</script>".to_string());
+        result.devices[0].findings[0].title = "<img src=x onerror=alert(1)>".to_string();
+        result.devices[0].findings[0].description = "\"><svg onload=alert(2)>".to_string();
+
+        let scan_id = store.save_scan(&result).expect("save");
+        let html = store.export_html(&scan_id).expect("export");
+
+        assert!(!html.contains("<script"), "script tag survived");
+        assert!(!html.contains("<img"), "img tag survived");
+        assert!(!html.contains("<svg"), "svg tag survived");
+        // The finding text is rendered, so the escaped form should be there.
+        assert!(
+            html.contains("&lt;img src=x onerror=alert(1)&gt;"),
+            "the finding should still be readable as text"
+        );
     }
 
     #[test]

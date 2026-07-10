@@ -342,7 +342,7 @@ fn is_link_local(address: &str) -> bool {
 ///
 /// Returns `None` for timestamps that cannot be parsed, which leaves the
 /// column blank rather than showing a wrong age.
-fn relative_age(timestamp: &str) -> Option<String> {
+pub(crate) fn relative_age(timestamp: &str) -> Option<String> {
     let seen = chrono::DateTime::parse_from_rfc3339(timestamp).ok()?;
     let elapsed = chrono::Utc::now().signed_duration_since(seen.with_timezone(&chrono::Utc));
 
@@ -369,7 +369,7 @@ fn relative_age(timestamp: &str) -> Option<String> {
 ///
 /// MAC is the identity: it survives DHCP changing the address. Devices with no
 /// MAC cannot be matched and are reported as unrecognized.
-fn is_trusted(device: &Device, trusted: &HashSet<String>) -> bool {
+pub(crate) fn is_trusted(device: &Device, trusted: &HashSet<String>) -> bool {
     device
         .mac
         .as_deref()
@@ -383,7 +383,7 @@ pub fn normalize_mac(mac: &str) -> String {
 }
 
 /// Whether a MAC is locally administered (randomized for privacy).
-fn is_private_mac(mac: &str) -> bool {
+pub(crate) fn is_private_mac(mac: &str) -> bool {
     if mac.is_empty() {
         return false;
     }

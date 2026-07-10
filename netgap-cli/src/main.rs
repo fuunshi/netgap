@@ -97,6 +97,10 @@ enum Commands {
         #[arg(short, long, default_value = "report")]
         format: String,
 
+        /// Write the report to a file instead of stdout (useful with --format html)
+        #[arg(short, long)]
+        output: Option<std::path::PathBuf>,
+
         /// Mark every device found as trusted (useful for a first run)
         #[arg(long)]
         trust_all: bool,
@@ -241,8 +245,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             trust_all,
             identify,
             no_save,
+            output,
         } => {
-            cmd_discover(discovery, &format, trust_all, identify, no_save).await?;
+            cmd_discover(
+                discovery,
+                &format,
+                trust_all,
+                identify,
+                no_save,
+                output.as_deref(),
+            )
+            .await?;
         }
         Commands::Trust { device, label } => {
             cmd_trust(device, label)?;
@@ -535,8 +548,12 @@ async fn cmd_discover(
     trust_all: bool,
     identify: bool,
     no_save: bool,
+    output: Option<&std::path::Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let plan = discovery_args.resolve(format == "json")?;
+    // Anything machine-readable or written to a file runs without the
+    // privilege prompt, which would otherwise land in the middle of a
+    // document.
+    let plan = discovery_args.resolve(format != "report" || output.is_some())?;
 
     eprintln!(
         "🔍 Discovering devices on {} ({})\n",
@@ -591,37 +608,55 @@ async fn cmd_discover(
         );
     }
 
-    match format {
-        "json" => {
-            println!("{}", serde_json::to_string_pretty(&devices)?);
-        }
-        _ => {
-            let new_devices = devices
-                .iter()
-                .filter(|device| device.first_seen.is_none())
-                .count();
+    let new_devices = devices
+        .iter()
+        .filter(|device| device.first_seen.is_none())
+        .count();
 
-            // The report is the result, so it goes to stdout.
-            let context = DiscoveryContext {
-                interface: &plan.interface.name,
-                target: &plan.target,
-                trusted: &trust_list.macs(),
-                labels: &trust_list.labels(),
-                gateway: netgap_interfaces::default_gateway_ipv4().map(std::net::IpAddr::V4),
-                local: plan
-                    .interface
-                    .ipv4_network()
-                    .map(|network| std::net::IpAddr::V4(network.ip())),
-            };
-            println!("{}", format_discovery(&devices, &context));
+    let context = DiscoveryContext {
+        interface: &plan.interface.name,
+        target: &plan.target,
+        trusted: &trust_list.macs(),
+        labels: &trust_list.labels(),
+        gateway: netgap_interfaces::default_gateway_ipv4().map(std::net::IpAddr::V4),
+        local: plan
+            .interface
+            .ipv4_network()
+            .map(|network| std::net::IpAddr::V4(network.ip())),
+    };
 
-            if new_devices > 0 {
-                eprintln!(
-                    "   Recorded {} device(s) for the first time; the next scan will report what changed.",
-                    new_devices
-                );
-            }
+    // A report written to a file is read later, on paper or in an editor;
+    // colour codes that were meant for a terminal would land in it as
+    // escape sequences. `colored` decides by looking at stdout, which is
+    // still a terminal when the destination is a file.
+    if output.is_some() {
+        colored::control::set_override(false);
+    }
+
+    let rendered = match format {
+        "json" => serde_json::to_string_pretty(&devices)?,
+        "html" => netgap_report::format_discovery_html(&devices, &context),
+        _ => format_discovery(&devices, &context),
+    };
+
+    match output {
+        Some(path) => {
+            std::fs::write(path, &rendered)
+                .map_err(|error| format!("could not write {}: {error}", path.display()))?;
+            eprintln!(
+                "✓ Report written to {} {}",
+                path.display(),
+                how_to_open(format)
+            );
         }
+        None => println!("{rendered}"),
+    }
+
+    if new_devices > 0 {
+        eprintln!(
+            "   Recorded {} device(s) for the first time; the next scan will report what changed.",
+            new_devices
+        );
     }
 
     if !no_save && !devices.is_empty() {
@@ -662,6 +697,15 @@ fn record_discovery(
             eprintln!("   ⚠️  Could not record this discovery: {error}");
             Ok(())
         }
+    }
+}
+
+/// How to read the file that was just written, which depends on what is in it.
+fn how_to_open(format: &str) -> &'static str {
+    match format {
+        "html" => "— open it in a browser to read or share",
+        "json" => "— machine-readable, for scripts and other tools",
+        _ => "— plain text",
     }
 }
 

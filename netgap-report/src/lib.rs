@@ -8,9 +8,11 @@
 use netgap_core::{ScanResult, Severity};
 
 pub mod discovery;
+pub mod html;
 pub mod summary;
 use anyhow::Result;
 pub use discovery::{format_discovery, DiscoveryContext};
+pub use html::format_discovery_html;
 pub use summary::{Issue, RiskSummary};
 
 /// Report formatter with multiple output options.

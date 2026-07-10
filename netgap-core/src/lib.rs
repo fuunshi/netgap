@@ -208,6 +208,36 @@ pub mod paths {
     }
 }
 
+/// Writing text into HTML.
+///
+/// A scan report is built from strings a remote device chose: hostnames it
+/// answers reverse DNS with, mDNS names it advertises, service banners, TLS
+/// certificate subjects. Interpolating any of those into HTML unescaped means
+/// a device can put a `<script>` tag into a page someone later opens — the
+/// report becomes the attack, and the person reading it about their network
+/// is the target.
+pub mod html {
+    /// Escape text for use in HTML element content and in quoted attributes.
+    ///
+    /// `'` is escaped as well as `"`, so the result is also safe inside a
+    /// single-quoted attribute — the two quoting styles are used
+    /// interchangeably in these documents.
+    pub fn escape(text: &str) -> String {
+        let mut escaped = String::with_capacity(text.len());
+        for character in text.chars() {
+            match character {
+                '&' => escaped.push_str("&amp;"),
+                '<' => escaped.push_str("&lt;"),
+                '>' => escaped.push_str("&gt;"),
+                '"' => escaped.push_str("&quot;"),
+                '\'' => escaped.push_str("&#39;"),
+                _ => escaped.push(character),
+            }
+        }
+        escaped
+    }
+}
+
 /// Severity level of a finding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
@@ -670,6 +700,24 @@ impl FindingSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The strings in a report come from the devices being reported on, so
+    /// the escaping is what stands between a device's banner and a script tag
+    /// running in the reader's browser.
+    #[test]
+    fn test_html_escaping_closes_every_way_in() {
+        assert_eq!(
+            html::escape("<script>alert('x')</script>"),
+            "&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;"
+        );
+        assert_eq!(
+            html::escape("onmouseover=\"steal()\""),
+            "onmouseover=&quot;steal()&quot;"
+        );
+        // Ampersands first, or the escaping would escape itself.
+        assert_eq!(html::escape("&lt;"), "&amp;lt;");
+        assert_eq!(html::escape("plain text"), "plain text");
+    }
 
     #[test]
     fn test_severity_ordering() {
