@@ -188,6 +188,81 @@ netgap report --format json      # json, summary, markdown, html, csv
 netgap report --scan-id <id1> --compare <id2>  # Compare
 ```
 
+## Alerts
+
+A scanner you have to remember to run is not a monitor. Point netgap at a
+webhook once and it will tell you when something changes:
+
+```bash
+netgap alert --url https://hooks.slack.com/services/... --provider slack
+netgap alert --test                    # prove it works before trusting it
+netgap alert                           # show what is configured
+```
+
+Alerts fire from `netgap scan`, so anything that runs a scan can alert:
+cron, a systemd timer, a CI job. Only *changes* are sent — a scan every
+fifteen minutes that finds the same open port every fifteen minutes stays
+quiet, because a monitor that repeats itself is one you mute.
+
+By default it alerts on a serious finding that was not there last time.
+Other triggers are opt-in, because they are noisy on real networks:
+
+```bash
+netgap alert --new-device        # a device that has not been seen before
+netgap alert --device-offline    # a device that stopped answering
+netgap alert --health-drop 20    # the score fell by 20 points or more
+netgap alert --off               # stop, keeping the URL
+```
+
+Every scan of the network compares against the previous scan *of the same
+network*, so scanning two subnets does not make each look new to the other.
+`--no-save` disables alerts, since there is then no history to compare with.
+
+The URL is treated as a secret: it is written `0600` and shown masked. Plain
+`http://` is refused unless you pass `--allow-http`, because the alert
+describes your network in detail.
+
+### Running it on a schedule
+
+```bash
+# crontab -e — every 15 minutes, no prompts, failures kept in a log
+*/15 * * * * /usr/local/bin/netgap scan -y >>"$HOME/.netgap-cron.log" 2>&1
+```
+
+`-y` skips the privilege prompt so it works unattended; without raw-socket
+capability it falls back to the TCP sweep and still alerts on what it finds.
+The output goes to a log rather than nowhere, so a webhook that stops
+delivering leaves a trace. Do not pass `--no-save`: the comparison against
+the previous scan is what makes an alert mean something.
+For a systemd timer:
+
+```ini
+# ~/.config/systemd/user/netgap-watch.service
+[Unit]
+Description=Check the network for changes
+[Service]
+Type=oneshot
+ExecStart=%h/.cargo/bin/netgap scan -y
+```
+
+```ini
+# ~/.config/systemd/user/netgap-watch.timer
+[Unit]
+Description=Run the network check every 15 minutes
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+systemctl --user enable --now netgap-watch.timer
+```
+
+A machine with `CAP_NET_RAW` — or running as root — gets the full ARP sweep
+and finds more devices than the unprivileged fallback.
+
 ## Storage
 
 All scan results are saved automatically to:

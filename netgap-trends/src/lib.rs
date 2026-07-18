@@ -265,39 +265,54 @@ pub struct AlertRule {
 #[derive(Debug, Clone)]
 pub enum AlertCondition {
     CriticalVulnDetected,
-    HealthScoreDrop { threshold: u8 },
+    /// A device gained findings it did not have before, at any severity worth
+    /// reporting. Separate from the critical case because most of what a scan
+    /// turns up is serious without being critical.
+    VulnerabilityRegressed,
+    HealthScoreDrop {
+        threshold: u8,
+    },
     NewDevice,
     DeviceOffline,
-    MultipleNewServices { count: usize },
+    MultipleNewServices {
+        count: usize,
+    },
 }
 
 impl AlertRule {
+    /// Whether this rule is about the change at all, setting aside how many
+    /// are needed to trigger it.
+    ///
+    /// Callers that report *what* triggered an alert — rather than only that
+    /// something did — need this to pick the changes worth sending.
+    pub fn matches(&self, change: &NetworkChange) -> bool {
+        match &self.condition {
+            AlertCondition::CriticalVulnDetected => {
+                matches!(change, NetworkChange::CriticalVulnDetected { .. })
+            }
+            AlertCondition::VulnerabilityRegressed => {
+                matches!(change, NetworkChange::VulnerabilityRegressed { .. })
+            }
+            AlertCondition::NewDevice => matches!(change, NetworkChange::NewDevice { .. }),
+            AlertCondition::DeviceOffline => matches!(change, NetworkChange::DeviceGone { .. }),
+            AlertCondition::MultipleNewServices { .. } => {
+                matches!(change, NetworkChange::NewService { .. })
+            }
+            // A health drop is not about one change; it is about the score.
+            AlertCondition::HealthScoreDrop { .. } => false,
+        }
+    }
+
     /// Evaluate if rule should trigger based on changes and health change.
     pub fn should_trigger(&self, changes: &[NetworkChange], health_drop: Option<i16>) -> bool {
         match &self.condition {
-            AlertCondition::CriticalVulnDetected => changes
-                .iter()
-                .any(|c| matches!(c, NetworkChange::CriticalVulnDetected { .. })),
             AlertCondition::HealthScoreDrop { threshold } => {
-                if let Some(drop) = health_drop {
-                    drop >= *threshold as i16
-                } else {
-                    false
-                }
+                health_drop.is_some_and(|drop| drop >= *threshold as i16)
             }
-            AlertCondition::NewDevice => changes
-                .iter()
-                .any(|c| matches!(c, NetworkChange::NewDevice { .. })),
-            AlertCondition::DeviceOffline => changes
-                .iter()
-                .any(|c| matches!(c, NetworkChange::DeviceGone { .. })),
             AlertCondition::MultipleNewServices { count } => {
-                let new_services = changes
-                    .iter()
-                    .filter(|c| matches!(c, NetworkChange::NewService { .. }))
-                    .count();
-                new_services >= *count
+                changes.iter().filter(|c| self.matches(c)).count() >= *count
             }
+            _ => changes.iter().any(|change| self.matches(change)),
         }
     }
 }

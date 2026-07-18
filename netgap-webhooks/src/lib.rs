@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::time::Duration;
 
 /// Webhook provider types
@@ -23,40 +24,62 @@ impl WebhookProvider {
 }
 
 /// Webhook Alert Payload
+///
+/// Most of what this scanner finds is not a CVE — an open Telnet port, file
+/// sharing left on, a device that appeared on the network — so the payload
+/// leads with a title and a description, and carries CVE fields only when the
+/// finding actually has one. An alert that says "CVE: open_port_445, CVSS: 0.0"
+/// is worse than one that says what happened.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebhookAlert {
     pub alert_id: String,
     pub severity: String, // Critical, High, Medium, Low, Info
-    pub cvss_score: f32,  // 0.0-10.0
-    pub cve_id: String,   // CVE-2021-44228
+    pub title: String,
     pub description: String,
-    pub affected_ip: String,
+    /// Addresses this is about, in the order they were found.
+    pub affected: Vec<String>,
     pub affected_service: Option<String>,
+    /// Present only when a CVE is what was found.
+    pub cve_id: Option<String>,
+    pub cvss_score: Option<f32>,
     pub timestamp: String, // ISO8601
     pub remediation: Option<String>,
     pub reference_url: Option<String>,
 }
 
 impl WebhookAlert {
-    pub fn new(
-        severity: &str,
-        cvss_score: f32,
-        cve_id: &str,
-        description: &str,
-        affected_ip: &str,
-    ) -> Self {
+    /// An alert about something that happened, with no CVE attached.
+    pub fn new(severity: &str, title: &str, description: &str) -> Self {
         Self {
-            alert_id: format!("{}-{}", cve_id, affected_ip),
+            // Stable per alert kind and severity, so a receiver can group or
+            // deduplicate repeats.
+            alert_id: format!("netgap-{}-{}", severity.to_lowercase(), slug(title)),
             severity: severity.to_string(),
-            cvss_score,
-            cve_id: cve_id.to_string(),
+            title: title.to_string(),
             description: description.to_string(),
-            affected_ip: affected_ip.to_string(),
+            affected: Vec::new(),
             affected_service: None,
+            cve_id: None,
+            cvss_score: None,
             timestamp: chrono::Utc::now().to_rfc3339(),
             remediation: None,
             reference_url: None,
         }
+    }
+
+    /// An alert about a published vulnerability.
+    pub fn for_cve(severity: &str, cve_id: &str, cvss_score: f32, description: &str) -> Self {
+        let mut alert = WebhookAlert::new(severity, cve_id, description);
+        alert.alert_id = format!("netgap-{cve_id}");
+        alert.cve_id = Some(cve_id.to_string());
+        alert.cvss_score = Some(cvss_score);
+        alert.reference_url = Some(format!("https://nvd.nist.gov/vuln/detail/{cve_id}"));
+        alert
+    }
+
+    pub fn affecting(mut self, addresses: &[String]) -> Self {
+        self.affected = addresses.to_vec();
+        self
     }
 
     pub fn with_service(mut self, service: &str) -> Self {
@@ -73,6 +96,30 @@ impl WebhookAlert {
         self.reference_url = Some(url.to_string());
         self
     }
+
+    /// The addresses as one line, for the providers that print a single field.
+    pub fn affected_summary(&self) -> String {
+        match self.affected.len() {
+            0 => "—".to_string(),
+            1 => self.affected[0].clone(),
+            count => format!("{} (+{} more)", self.affected[0], count - 1),
+        }
+    }
+}
+
+/// A short identifier safe to put in an alert id.
+fn slug(text: &str) -> String {
+    text.chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
 }
 
 /// Webhook Configuration
@@ -249,20 +296,29 @@ impl WebhookDeliveryManager {
     }
 
     fn format_slack(&self, alert: &WebhookAlert) -> Result<String> {
+        let mut fields = vec![
+            json!({"title": "Affected", "value": alert.affected_summary(), "short": true}),
+            json!({"title": "Time", "value": alert.timestamp.clone(), "short": true}),
+            json!({"title": "What to do", "value": alert.remediation.clone().unwrap_or_else(|| "See the scan report".to_string()), "short": false}),
+        ];
+        // Only when there is one. An empty CVE row teaches the reader to
+        // ignore the field.
+        if let Some(cve) = &alert.cve_id {
+            fields.insert(0, json!({"title": "CVE", "value": cve, "short": true}));
+        }
+        if let Some(score) = alert.cvss_score {
+            fields.insert(
+                1,
+                json!({"title": "CVSS Score", "value": format!("{score:.1}"), "short": true}),
+            );
+        }
+
         let payload = serde_json::json!({
-            "text": format!("🚨 {} Security Alert", alert.severity),
+            "text": format!("{} {}", self.severity_mark(&alert.severity), alert.title),
             "attachments": [{
                 "color": self.severity_color(&alert.severity),
-                "fields": [
-                    {"title": "CVE", "value": alert.cve_id, "short": true},
-                    {"title": "CVSS Score", "value": alert.cvss_score.to_string(), "short": true},
-                    {"title": "Affected IP", "value": alert.affected_ip, "short": true},
-                    {"title": "Service", "value": alert.affected_service.clone().unwrap_or_else(|| "Unknown".to_string()), "short": true},
-                    {"title": "Description", "value": alert.description.clone(), "short": false},
-                    {"title": "Remediation", "value": alert.remediation.clone().unwrap_or_else(|| "See reference URL".to_string()), "short": false},
-                    {"title": "Reference", "value": alert.reference_url.clone().unwrap_or_else(|| "N/A".to_string()), "short": false},
-                    {"title": "Time", "value": alert.timestamp.clone(), "short": false},
-                ]
+                "text": alert.description.clone(),
+                "fields": fields,
             }]
         });
         serde_json::to_string(&payload)
@@ -270,18 +326,28 @@ impl WebhookDeliveryManager {
     }
 
     fn format_discord(&self, alert: &WebhookAlert) -> Result<String> {
+        let mut fields = vec![
+            json!({"name": "Affected", "value": alert.affected_summary(), "inline": true}),
+            json!({"name": "What to do", "value": alert.remediation.clone().unwrap_or_else(|| "See the scan report".to_string()), "inline": false}),
+            json!({"name": "Time", "value": alert.timestamp.clone(), "inline": false}),
+        ];
+        if let Some(cve) = &alert.cve_id {
+            fields.insert(0, json!({"name": "CVE", "value": cve, "inline": true}));
+        }
+        if let Some(score) = alert.cvss_score {
+            fields.insert(
+                1,
+                json!({"name": "CVSS Score", "value": format!("{score:.1}"), "inline": true}),
+            );
+        }
+
         let payload = serde_json::json!({
-            "content": format!("🚨 {} Security Alert", alert.severity),
+            "content": format!("{} {}", self.severity_mark(&alert.severity), alert.title),
             "embeds": [{
-                "title": alert.cve_id.clone(),
+                "title": alert.title.clone(),
                 "description": alert.description.clone(),
                 "color": self.severity_color_decimal(&alert.severity),
-                "fields": [
-                    {"name": "CVSS Score", "value": alert.cvss_score.to_string(), "inline": true},
-                    {"name": "Affected IP", "value": alert.affected_ip.clone(), "inline": true},
-                    {"name": "Service", "value": alert.affected_service.clone().unwrap_or_else(|| "Unknown".to_string()), "inline": true},
-                    {"name": "Remediation", "value": alert.remediation.clone().unwrap_or_else(|| "See reference".to_string()), "inline": false},
-                ]
+                "fields": fields,
             }]
         });
         serde_json::to_string(&payload)
@@ -289,21 +355,36 @@ impl WebhookDeliveryManager {
     }
 
     fn format_mattermost(&self, alert: &WebhookAlert) -> Result<String> {
+        let mut fields = vec![
+            json!({"title": "Affected", "value": alert.affected_summary(), "short": true}),
+            json!({"title": "What to do", "value": alert.remediation.clone().unwrap_or_else(|| "See the scan report".to_string()), "short": false}),
+        ];
+        if let Some(cve) = &alert.cve_id {
+            fields.insert(0, json!({"title": "CVE", "value": cve, "short": true}));
+        }
+
         let payload = serde_json::json!({
-            "text": format!("🚨 {} Security Alert: {}", alert.severity, alert.cve_id),
+            "text": format!("{} {}", self.severity_mark(&alert.severity), alert.title),
             "attachments": [{
                 "color": self.severity_color(&alert.severity),
                 "text": alert.description.clone(),
-                "fields": [
-                    {"title": "CVSS Score", "value": alert.cvss_score.to_string(), "short": true},
-                    {"title": "Affected IP", "value": alert.affected_ip.clone(), "short": true},
-                    {"title": "Service", "value": alert.affected_service.clone().unwrap_or_else(|| "Unknown".to_string()), "short": true},
-                    {"title": "Remediation", "value": alert.remediation.clone().unwrap_or_else(|| "See reference".to_string()), "short": false},
-                ]
+                "fields": fields,
             }]
         });
         serde_json::to_string(&payload)
             .map_err(|e| anyhow!("Failed to format Mattermost message: {}", e))
+    }
+
+    /// The mark that goes in front of the headline. Text rather than an emoji
+    /// for the severities that matter, so the message still reads in a client
+    /// that strips them.
+    fn severity_mark(&self, severity: &str) -> &'static str {
+        match severity {
+            "Critical" => "🚨 CRITICAL:",
+            "High" => "🟠 HIGH:",
+            "Medium" => "🟡 MEDIUM:",
+            _ => "ℹ️ INFO:",
+        }
     }
 
     fn severity_color(&self, severity: &str) -> &'static str {
@@ -331,36 +412,58 @@ impl WebhookDeliveryManager {
 mod tests {
     use super::*;
 
+    /// Most of what this scanner finds is not a vulnerability with a
+    /// catalogue entry, and the alert must not pretend otherwise.
     #[test]
-    fn test_webhook_alert_creation() {
+    fn test_a_finding_that_is_not_a_cve_carries_no_cve_fields() {
         let alert = WebhookAlert::new(
-            "Critical",
-            9.8,
-            "CVE-2021-44228",
-            "Log4j RCE",
-            "192.168.1.100",
+            "High",
+            "File sharing is switched on for 2 computers",
+            "SMB is reachable on two machines.",
+        )
+        .affecting(&["192.168.1.10".to_string(), "192.168.1.11".to_string()]);
+
+        assert_eq!(alert.severity, "High");
+        assert!(alert.cve_id.is_none());
+        assert!(alert.cvss_score.is_none());
+        assert_eq!(alert.affected_summary(), "192.168.1.10 (+1 more)");
+
+        let manager = WebhookDeliveryManager::new(WebhookConfig::new("https://example.test"));
+        let payload = manager.format_payload(&alert).expect("payload");
+        assert!(
+            !payload.contains("CVE"),
+            "no empty CVE row should be rendered: {payload}"
         );
-        assert_eq!(alert.severity, "Critical");
-        assert_eq!(alert.cvss_score, 9.8);
-        assert_eq!(alert.cve_id, "CVE-2021-44228");
+        assert!(payload.contains("File sharing"));
+    }
+
+    #[test]
+    fn test_a_cve_alert_carries_its_reference() {
+        let alert = WebhookAlert::for_cve("Critical", "CVE-2021-44228", 10.0, "Log4Shell");
+
+        assert_eq!(alert.cve_id.as_deref(), Some("CVE-2021-44228"));
+        assert_eq!(alert.cvss_score, Some(10.0));
+        assert!(alert
+            .reference_url
+            .as_deref()
+            .is_some_and(|url| url.ends_with("CVE-2021-44228")));
+
+        // The identifier is stable for the same vulnerability, so a receiver
+        // can tell a repeat from a new alert.
+        let again = WebhookAlert::for_cve("Critical", "CVE-2021-44228", 10.0, "Log4Shell");
+        assert_eq!(alert.alert_id, again.alert_id);
     }
 
     #[test]
     fn test_webhook_alert_builder() {
-        let alert = WebhookAlert::new(
-            "High",
-            7.5,
-            "CVE-2023-01234",
-            "SSH weakness",
-            "192.168.1.50",
-        )
-        .with_service("OpenSSH")
-        .with_remediation("Update to latest version")
-        .with_reference("https://nvd.nist.gov/vuln/detail/CVE-2023-01234");
+        let alert = WebhookAlert::new("High", "SSH is exposed", "Port 22 is reachable.")
+            .affecting(&["192.168.1.50".to_string()])
+            .with_service("OpenSSH")
+            .with_remediation("Restrict it to machines that need it.");
 
-        assert_eq!(alert.affected_service.unwrap(), "OpenSSH");
+        assert_eq!(alert.affected_service.as_deref(), Some("OpenSSH"));
         assert!(alert.remediation.is_some());
-        assert!(alert.reference_url.is_some());
+        assert_eq!(alert.affected_summary(), "192.168.1.50");
     }
 
     #[test]
@@ -405,10 +508,58 @@ mod tests {
         let config =
             WebhookConfig::new("https://test.com/webhook").with_provider(WebhookProvider::Generic);
         let manager = WebhookDeliveryManager::new(config);
-        let alert = WebhookAlert::new("Critical", 9.8, "CVE-2021-44228", "Test", "192.168.1.1");
+        let alert = WebhookAlert::for_cve("Critical", "CVE-2021-44228", 9.8, "Log4Shell")
+            .affecting(&["192.168.1.1".to_string()]);
 
         let payload = manager.format_generic(&alert).unwrap();
         assert!(payload.contains("CVE-2021-44228"));
         assert!(payload.contains("9.8"));
+        assert!(payload.contains("192.168.1.1"));
+    }
+
+    /// Every provider has to render an alert that came from a plain finding,
+    /// because that is most of them.
+    #[test]
+    fn test_every_provider_renders_an_alert_without_a_cve() {
+        let alert = WebhookAlert::new(
+            "High",
+            "File sharing is switched on",
+            "SMB is reachable on one computer.",
+        )
+        .affecting(&["192.168.1.10".to_string()]);
+
+        // The generic payload is JSON for another program, where a null field
+        // is an honest "not set".
+        let generic = WebhookDeliveryManager::new(WebhookConfig::new("https://example.test"));
+        let parsed: serde_json::Value =
+            serde_json::from_str(&generic.format_payload(&alert).expect("generic payload"))
+                .expect("valid json");
+        assert_eq!(parsed["title"], "File sharing is switched on");
+        assert!(parsed["cve_id"].is_null());
+
+        // The chat providers render text for a person, where a literal "null"
+        // would be a bug rather than a value.
+        for provider in [
+            WebhookProvider::Slack,
+            WebhookProvider::Discord,
+            WebhookProvider::MatterMost,
+        ] {
+            let manager = WebhookDeliveryManager::new(
+                WebhookConfig::new("https://example.test").with_provider(provider),
+            );
+            let payload = manager
+                .format_payload(&alert)
+                .unwrap_or_else(|error| panic!("{provider:?} failed: {error}"));
+
+            assert!(payload.contains("File sharing"), "{provider:?}: {payload}");
+            assert!(
+                !payload.contains("null"),
+                "{provider:?} rendered an absent field: {payload}"
+            );
+            assert!(
+                !payload.contains("CVE"),
+                "{provider:?} showed a CVE row for a finding with no CVE: {payload}"
+            );
+        }
     }
 }

@@ -18,6 +18,8 @@ netgap-fingerprint = { path = "../netgap-fingerprint" }
 netgap-mdns = { path = "../netgap-mdns" }
 netgap-services = { path = "../netgap-services" }
 netgap-trends = { path = "../netgap-trends" }
+netgap-webhooks = { path = "../netgap-webhooks" }
+toml.workspace = true
 netgap-report = { path = "../netgap-report" }
 netgap-storage = { path = "../netgap-storage" }
 netgap-assess = { path = "../netgap-assess" }

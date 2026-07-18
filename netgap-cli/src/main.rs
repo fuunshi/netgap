@@ -15,6 +15,7 @@ use std::collections::HashSet;
 use std::net::IpAddr;
 use std::time::Duration;
 
+mod alerts;
 mod discovery;
 mod interactive;
 mod trust;
@@ -178,6 +179,10 @@ enum Commands {
         /// Output format: table, json, summary
         #[arg(short, long, default_value = "table")]
         format: String,
+
+        /// Do not send alerts, even if a webhook is configured
+        #[arg(long)]
+        no_alert: bool,
     },
 
     /// Display results from the last scan or export reports
@@ -211,6 +216,61 @@ enum Commands {
         /// Ask the network who provides DHCP, and report servers other than the gateway
         #[arg(long)]
         check_dhcp: bool,
+
+        /// Do not send alerts, even if a webhook is configured
+        #[arg(long)]
+        no_alert: bool,
+    },
+
+    /// Send alerts to a webhook when something changes
+    Alert {
+        /// Set the webhook URL to send to
+        #[arg(long)]
+        url: Option<String>,
+
+        /// Message format for the endpoint: generic, slack, discord, mattermost
+        #[arg(long)]
+        provider: Option<String>,
+
+        /// Allow a plain http:// endpoint (the alert describes your network)
+        #[arg(long)]
+        allow_http: bool,
+
+        /// Alert when a serious finding appears that was not there last time
+        #[arg(long, conflicts_with = "no_critical")]
+        critical: bool,
+
+        /// Stop alerting about new findings
+        #[arg(long)]
+        no_critical: bool,
+
+        /// Alert when a device that has not been seen before joins
+        #[arg(long, conflicts_with = "no_new_device")]
+        new_device: bool,
+
+        /// Stop alerting about new devices
+        #[arg(long)]
+        no_new_device: bool,
+
+        /// Alert when a device that was there stops answering
+        #[arg(long, conflicts_with = "no_device_offline")]
+        device_offline: bool,
+
+        /// Stop alerting when a device stops answering
+        #[arg(long)]
+        no_device_offline: bool,
+
+        /// Alert when the health score falls by this much in one scan
+        #[arg(long)]
+        health_drop: Option<u8>,
+
+        /// Send a test alert to the configured webhook and report what happened
+        #[arg(long)]
+        test: bool,
+
+        /// Stop sending alerts (keeps the URL, turns it off)
+        #[arg(long)]
+        off: bool,
     },
 }
 
@@ -280,6 +340,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             threat_intel_update,
             no_save,
             format,
+            no_alert,
         } => {
             cmd_scan(
                 discovery,
@@ -292,6 +353,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 threat_intel_update,
                 no_save,
                 &format,
+                no_alert,
             )
             .await?;
         }
@@ -307,8 +369,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             discovery,
             interval,
             check_dhcp,
+            no_alert,
         } => {
-            cmd_watch(discovery, interval, check_dhcp).await?;
+            cmd_watch(discovery, interval, check_dhcp, no_alert).await?;
+        }
+        Commands::Alert {
+            url,
+            provider,
+            allow_http,
+            critical,
+            no_critical,
+            new_device,
+            no_new_device,
+            device_offline,
+            no_device_offline,
+            health_drop,
+            test,
+            off,
+        } => {
+            let changes = alerts::AlertChanges {
+                url,
+                provider,
+                allow_http,
+                critical: if critical {
+                    Some(true)
+                } else if no_critical {
+                    Some(false)
+                } else {
+                    None
+                },
+                new_device: if new_device {
+                    Some(true)
+                } else if no_new_device {
+                    Some(false)
+                } else {
+                    None
+                },
+                device_offline: if device_offline {
+                    Some(true)
+                } else if no_device_offline {
+                    Some(false)
+                } else {
+                    None
+                },
+                health_drop,
+                off,
+            };
+
+            cmd_alert(changes, test).await?;
         }
     }
 
@@ -369,6 +477,7 @@ async fn cmd_scan(
     threat_intel_update: bool,
     no_save: bool,
     format: &str,
+    no_alert: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mdns = discovery_args.mdns;
 
@@ -529,6 +638,10 @@ async fn cmd_scan(
     println!("{}", output);
 
     if !no_save && !result.devices.is_empty() {
+        // The scan before this one is what an alert compares against, so it
+        // has to be read before this one is written.
+        let previous = previous_scan(&plan.target);
+
         match netgap_storage::ScanStore::open_default()
             .and_then(|mut store| store.save_scan(&result))
         {
@@ -537,9 +650,66 @@ async fn cmd_scan(
             }
             Err(error) => eprintln!("⚠️  Could not save scan to history: {}", error),
         }
+
+        if !no_alert {
+            send_alerts(previous.as_ref(), &result).await;
+        }
+    } else if !no_alert && no_save {
+        eprintln!("   (--no-save: no history to compare against, so no alerts were considered)");
     }
 
     Ok(())
+}
+
+/// The last recorded result for a target, if there is one.
+///
+/// Matched on the network rather than on recency alone: a scan of one subnet
+/// must not be compared against a scan of a different one, or every device
+/// would look new and every finding would look like a regression.
+fn previous_scan(target: &str) -> Option<ScanResult> {
+    let store = netgap_storage::ScanStore::open_default().ok()?;
+    let scans = store.list_scans().ok()?;
+
+    let previous = scans
+        .into_iter()
+        .filter(|scan| scan.target == target)
+        .max_by_key(|scan| scan.created_at.clone())?;
+
+    store.load_scan(&previous.id).ok()
+}
+
+/// Send an alert if a webhook is configured and something changed.
+async fn send_alerts(previous: Option<&ScanResult>, current: &ScanResult) {
+    let settings = match alerts::AlertSettings::load() {
+        Ok(Some(settings)) => settings,
+        // Not configured is the normal case, and not worth a message.
+        Ok(None) => return,
+        Err(error) => {
+            eprintln!("   ⚠️  Alerts are configured but could not be read: {error}");
+            return;
+        }
+    };
+
+    if !settings.enabled {
+        return;
+    }
+
+    if previous.is_none() {
+        eprintln!("   (first scan of this network: nothing to compare against, so no alert)");
+        return;
+    }
+
+    let outcome = alerts::alert_on_changes(&settings, previous, current).await;
+
+    match (outcome.sent, &outcome.error) {
+        (true, _) => eprintln!(
+            "🔔 Alert sent for {} change(s) to {}",
+            outcome.changes.len(),
+            alerts::mask_url(&settings.url)
+        ),
+        (false, Some(error)) => eprintln!("   ⚠️  Alert could not be sent: {error}"),
+        (false, None) => {}
+    }
 }
 
 async fn cmd_discover(
@@ -698,6 +868,108 @@ fn record_discovery(
             Ok(())
         }
     }
+}
+
+/// Configure, inspect, and test where alerts go.
+async fn cmd_alert(
+    changes: alerts::AlertChanges,
+    test: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if test {
+        // Test against what is configured, not against what this run changed.
+        let Some(settings) = alerts::AlertSettings::load()? else {
+            eprintln!("No webhook is configured. Set one first:");
+            eprintln!("  netgap alert --url https://hooks.example.com/... --provider slack");
+            return Ok(());
+        };
+
+        println!(
+            "Sending a test alert to {}\n",
+            alerts::mask_url(&settings.url)
+        );
+        let alert = netgap_webhooks::WebhookAlert::new(
+            "Info",
+            "Test alert from netgap",
+            "If you can read this, alerts are wired up. This one is not about \
+             anything that happened on your network.",
+        )
+        .affecting(&["—".to_string()]);
+
+        match settings.manager().send(&alert).await {
+            Ok(()) => {
+                println!("✓ Delivered. Nothing further to check.");
+                return Ok(());
+            }
+            Err(error) => {
+                // Not an Err return: the command did its job, and the answer
+                // is that the endpoint refused it.
+                eprintln!("✗ Delivery failed: {error}");
+                eprintln!("  The endpoint, the URL, and the network path are the things to check.");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    let display_only = changes.is_display_only();
+    let notes = changes.describe();
+    let settings = changes.apply()?;
+
+    for note in notes {
+        println!("✓ {note}");
+    }
+
+    let Some(settings) = settings else {
+        if display_only {
+            println!("No alerts are configured. To set them up:");
+            println!("  netgap alert --url <webhook-url> [--provider slack|discord|mattermost]");
+            println!("\nThen check it works:");
+            println!("  netgap alert --test");
+        } else {
+            println!("Alerts are off and no webhook is configured.");
+        }
+        return Ok(());
+    };
+
+    if let Some(path) = alerts::AlertSettings::path() {
+        if let Some(parent) = path.parent() {
+            println!("\nSettings: {}", path.display());
+            let _ = parent;
+        }
+    }
+
+    println!(
+        "\nWebhook:  {} ({})",
+        alerts::mask_url(&settings.url),
+        settings.provider.as_str()
+    );
+    println!("Alerts:   {}", if settings.enabled { "on" } else { "off" });
+    let yes_no = |enabled: bool| if enabled { "yes" } else { "no" };
+    println!("Sending:");
+    for (what, value) in [
+        ("new findings", yes_no(settings.rules.critical).to_string()),
+        ("new devices", yes_no(settings.rules.new_device).to_string()),
+        (
+            "devices going offline",
+            yes_no(settings.rules.device_offline).to_string(),
+        ),
+        (
+            "health score drops",
+            match settings.rules.health_drop {
+                Some(drop) => format!("{drop}+ points"),
+                None => "no".to_string(),
+            },
+        ),
+    ] {
+        println!("  {what:<22} {value}");
+    }
+
+    if settings.enabled {
+        println!("\nCheck it works with: netgap alert --test");
+        println!("On a schedule, alerts fire from 'netgap scan' — see the README section on");
+        println!("running it from cron or a systemd timer.");
+    }
+
+    Ok(())
 }
 
 /// How to read the file that was just written, which depends on what is in it.
@@ -1941,6 +2213,7 @@ async fn cmd_watch(
     discovery_args: DiscoveryArgs,
     interval_secs: u64,
     check_dhcp: bool,
+    no_alert: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Resolve once: re-detecting the interface every cycle would also make the
     // scan target wander between cycles.
@@ -1959,6 +2232,9 @@ async fn cmd_watch(
     // Kept alongside the history so the trend compares like with like: the
     // score cannot be recomputed from a snapshot.
     let mut last_health: Option<HealthScore> = None;
+    // Kept for the same reason: an alert describes what changed, and the
+    // snapshot holds counts rather than findings.
+    let mut last_result: Option<ScanResult> = None;
     let mut last_mappings: Option<std::collections::HashMap<std::net::Ipv4Addr, String>> = None;
 
     // The gateway is the address worth impersonating, so a change there reads
@@ -2084,8 +2360,15 @@ async fn cmd_watch(
                     );
                 }
 
+                // Alerts go out from the same place they do in `scan`, so a
+                // watching machine and a scheduled one say the same things.
+                if !no_alert {
+                    send_alerts(last_result.as_ref(), &result).await;
+                }
+
                 last_history = Some(current_history);
                 last_health = Some(curr_health);
+                last_result = Some(result);
                 check_for_address_conflicts(&mut last_mappings, &plan, gateway);
 
                 if check_dhcp {

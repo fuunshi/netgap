@@ -532,12 +532,73 @@ converted to the shared one, so the two reports look different. A test asserts
 the discovery document fetches nothing from the network; the scan export has
 no equivalent guard.
 
-### 11. Alerts that reach the user
+### 11. Alerts that reach the user — ✅ done
 
-`netgap-webhooks` (alert delivery, 6 tests) and the `AlertRule` types are both
-unreachable from the CLI — alerts only print inside `watch`. Firing them on a
-critical finding from `scan`, and on a schedule via a systemd timer or cron, is
-what makes this a monitor rather than something you remember to run.
+```bash
+netgap alert --url https://hooks.slack.com/services/... --provider slack
+netgap alert --test
+netgap alert --new-device --health-drop 20
+netgap alert --off
+```
+
+Alerts fire from `scan`, so anything that runs a scan can alert — cron, a
+systemd timer, a CI job. The README now carries a crontab line and a systemd
+unit, and `--test` exists because a webhook nobody has ever seen arrive is a
+webhook people find out about during the incident it was meant to catch.
+
+**Alerts are about change, not state.** A scan every fifteen minutes finds the
+same open port every fifteen minutes; a monitor that repeats itself is one
+that gets muted. Each scan is compared against the previous scan of the *same
+network* — matching on target, so scanning two subnets does not make each look
+new to the other. `--no-save` disables alerting, since there is then no
+history to compare against.
+
+**The default rule is the one that matters**: a serious finding that was not
+there last time. New devices are off by default because guests and phones that
+randomize their address are indistinguishable from intruders, and an alert
+that fires every time someone's friend joins the Wi-Fi is one nobody reads.
+`--new-device` and `--device-offline` turn them on for anyone who wants them.
+
+**Two things had to be rebuilt first.** `WebhookAlert` was shaped around
+CVEs — `cve_id`, `cvss_score`, no title — so a finding about file sharing
+would have gone out as "CVE: open_port_445, CVSS: 0.0", which is the kind of
+confident nonsense this codebase has spent its time removing. It now leads
+with a title and a description and carries CVE fields only when there is a
+CVE. Its tests also carried a fabricated identifier, `CVE-2023-01234`, which
+is replaced with a real one.
+
+And `AlertCondition` had no way to say "a device gained findings", so a new
+SMB exposure — serious, not critical — would have alerted nobody. That
+condition exists now, and the change detector reporting one event as both a
+critical finding and a regression is deduplicated rather than said twice in
+the same message.
+
+**A message that does not say what happened is not an alert.** Verified end to
+end against a local endpoint, the message reads:
+
+```
+🟠 HIGH: 4 changes on your network
+
+192.168.111.187 has security findings it did not have before: NetBIOS is
+reachable (139); SMB is reachable (445); MySQL is reachable (3306).
+192.168.111.125 has security findings it did not have before: RDP is
+reachable (3389).
+...
+```
+
+The URL is treated as the credential it usually is: written `0600`, shown
+masked, and plain `http://` refused unless `--allow-http` says the endpoint is
+local — the message contains the network's addresses and what is wrong with
+them.
+
+**Known limits.** A health-score drop compares scans of whatever depth were
+run, so a `--quick` scan followed by a full one reports a large drop that is
+really a change in what was looked for. Delivery retries twice with backoff
+and then gives up: there is no queue, so an endpoint that is down for an hour
+means that hour's alerts are lost. And the alert is a summary per scan rather
+than a stream — `watch` still prints to the terminal and now sends the same
+messages, but a spoof that starts and stops between two cycles is missed by
+both, which is the same limit the conflict checks have.
 
 ---
 
