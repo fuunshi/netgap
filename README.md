@@ -72,8 +72,8 @@ trade-off and lets you continue or re-run under sudo.
 ## Documentation
 
 - **[QUICKSTART.md](QUICKSTART.md)** - Complete user guide with examples
-- **[PHASE1_COMPLETE.md](PHASE1_COMPLETE.md)** - Phase 1 foundation (CLI, interfaces, scanning)
-- **[PHASE2_COMPLETE.md](PHASE2_COMPLETE.md)** - Phase 2 enhancements (fingerprinting, assessment, storage)
+- **[docs/ROADMAP.md](docs/ROADMAP.md)** - What is done, what is not, and why
+- **[docs/](docs/)** - Development history: phase records and plans
 
 ## Architecture
 
@@ -395,10 +395,10 @@ Contributions welcome! The codebase is modular and well-tested:
 3. Ensure all tests pass: `cargo test`
 4. Update documentation
 
-See [PHASE2_COMPLETE.md](PHASE2_COMPLETE.md) for architecture details.
+See [docs/PHASE2_COMPLETE.md](docs/PHASE2_COMPLETE.md) for architecture details.
 
 ---
 
 **Ready to scan?** Start with [QUICKSTART.md](QUICKSTART.md)
 
-**Want technical details?** See [PHASE2_COMPLETE.md](PHASE2_COMPLETE.md)
+**Want technical details?** See [docs/PHASE2_COMPLETE.md](docs/PHASE2_COMPLETE.md)

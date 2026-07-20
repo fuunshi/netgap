@@ -914,7 +914,7 @@ dependencies = [
 
 [[package]]
 name = "netgap-assess"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "netgap-core",
@@ -925,7 +925,7 @@ dependencies = [
 
 [[package]]
 name = "netgap-cli"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -953,7 +953,7 @@ dependencies = [
 
 [[package]]
 name = "netgap-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -963,7 +963,7 @@ dependencies = [
 
 [[package]]
 name = "netgap-discover"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "dns-lookup",
@@ -979,7 +979,7 @@ dependencies = [
 
 [[package]]
 name = "netgap-fingerprint"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "netgap-core",
@@ -991,10 +991,12 @@ dependencies = [
 
 [[package]]
 name = "netgap-interfaces"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
+ "ipnetwork",
  "netgap-core",
+ "network-interface",
  "pnet",
  "pnet_datalink",
  "thiserror 1.0.69",
@@ -1002,7 +1004,7 @@ dependencies = [
 
 [[package]]
 name = "netgap-mdns"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "log",
@@ -1015,7 +1017,7 @@ dependencies = [
 
 [[package]]
 name = "netgap-probes"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -1029,7 +1031,7 @@ dependencies = [
 
 [[package]]
 name = "netgap-raw-sockets"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "futures",
@@ -1045,7 +1047,7 @@ dependencies = [
 
 [[package]]
 name = "netgap-report"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1057,7 +1059,7 @@ dependencies = [
 
 [[package]]
 name = "netgap-scan"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "netgap-core",
@@ -1067,7 +1069,7 @@ dependencies = [
 
 [[package]]
 name = "netgap-services"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "netgap-core",
  "serde",
@@ -1076,7 +1078,7 @@ dependencies = [
 
 [[package]]
 name = "netgap-storage"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1089,7 +1091,7 @@ dependencies = [
 
 [[package]]
 name = "netgap-threat-intel"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1102,7 +1104,7 @@ dependencies = [
 
 [[package]]
 name = "netgap-trends"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1114,7 +1116,7 @@ dependencies = [
 
 [[package]]
 name = "netgap-webhooks"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1124,6 +1126,18 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-test",
+]
+
+[[package]]
+name = "network-interface"
+version = "1.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4a43439bf756eed340bdf8feba761e2d50c7d47175d87545cd5cbe4a137c4d1"
+dependencies = [
+ "cc",
+ "libc",
+ "thiserror 1.0.69",
+ "winapi",
 ]
 
 [[package]]

@@ -602,11 +602,55 @@ both, which is the same limit the conflict checks have.
 
 ---
 
+## Release and platform support
+
+### 12. A release pipeline, and a Windows build — ✅ done
+
+`.github/workflows/release.yml` builds a Linux binary and a Windows executable
+on every push to `main` that changes code, and publishes them as a GitHub
+release with a `SHA256SUMS` file. The version comes from the tags: this is
+v1.0.0, and each release after it takes the next patch number. Documentation
+commits do not trigger it — a release nobody can tell apart from the last one
+is noise.
+
+The release rewrites the version in `Cargo.toml` before building, so the
+binary's `--version` matches the tag it was published under. That is also why
+the release build is the one place that does not use `--locked`.
+
+**Windows needed real work, not just a second matrix entry.** The raw-layer
+paths — ARP, the DHCP probe, ICMPv6 neighbour discovery, the `/proc`
+neighbour table, the capability check — are Unix, and `pnet`'s datalink layer
+links against Npcap. A binary built that way refuses to *start* without a
+packet-capture driver installed, which is not something to hand someone as a
+download. So on Windows those modules are compiled out and discovery uses the
+TCP sweep, interface enumeration goes through the `network-interface` crate
+instead of `pnet`, and the parts that do not exist there say so — "IPv6: not
+implemented on this platform" rather than a report that quietly omits every
+IPv6-only device.
+
+**How that was verified without a Windows machine.** Two ways, because the
+obvious one — push and see — costs a release per attempt:
+
+- The interface enumeration has a `portable-interfaces` feature that switches
+  Unix to the same provider Windows uses. The CI test job runs the whole suite
+  with it on, so the code Windows executes is tested on Linux on every push.
+- The `cfg` conditions were temporarily inverted so a Linux build takes every
+  non-Unix branch, and the workspace was built and tested that way: 271 tests
+  pass in the Windows configuration, and the binary finds interfaces and runs
+  a discovery sweep. That found two call sites where an item had been gated
+  but its caller had not, which the compiler reports only under Windows.
+
+What Windows still does not have: ARP and the DHCP check, and therefore the
+address-conflict detection that reads the neighbour table. Port scanning,
+service identification, TLS inspection, CVE matching, reports and alerts all
+work there.
+
 ## Engineering health
 
 - `netgap-raw-sockets` is a framework stub (`scan_ip` returns `Ok(None)`) with
   no caller. Either finish it or delete it; today it only reads as working code
-  in the crate list.
+  in the crate list. It is now Unix-only, which does not make it useful — it
+  makes it stop breaking the Windows build.
 - No integration tests exercise the CLI end to end; there are unit tests only.
 - Discovery has no tests against captured traffic (pcap fixtures), so the ARP
   parsing path is only covered by hand-built frames.

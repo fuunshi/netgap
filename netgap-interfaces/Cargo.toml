@@ -5,9 +5,23 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+# Enumerate with the portable crate instead of pnet on Unix. Off by default;
+# the Windows build takes this path by cfg either way. It exists so the code
+# Windows runs can be exercised by tests on Linux.
+portable-interfaces = []
+
 [dependencies]
 netgap-core = { path = "../netgap-core" }
-pnet.workspace = true
-pnet_datalink.workspace = true
+ipnetwork.workspace = true
+network-interface.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
+
+# pnet's datalink layer is needed to enumerate interfaces on Unix, and is
+# intentionally absent on Windows: it links against Npcap, and a binary that
+# will not start without a packet-capture driver installed is not one to hand
+# someone as a download.
+[target.'cfg(unix)'.dependencies]
+pnet.workspace = true
+pnet_datalink.workspace = true

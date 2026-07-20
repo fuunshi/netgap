@@ -11,10 +11,12 @@ socket2.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
 log = "0.4"
+futures.workspace = true
+
+# Everything this stub is built from is Unix: pnet's datalink layer links
+# against a packet-capture driver, and the privilege check is `geteuid`.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 pnet.workspace = true
 pnet_datalink.workspace = true
 pnet_packet.workspace = true
-futures.workspace = true
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"

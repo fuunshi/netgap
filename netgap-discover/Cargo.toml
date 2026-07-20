@@ -9,10 +9,17 @@ license.workspace = true
 netgap-core = { path = "../netgap-core" }
 dns-lookup.workspace = true
 socket2.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+
+# The raw-layer discovery paths — ARP, DHCP, ICMPv6 to the all-nodes
+# multicast — are Unix. On Windows they would need Npcap installed to link,
+# and a binary that will not start without a packet-capture driver is not
+# something to hand someone as a download. Windows discovery uses the TCP
+# sweep instead, which needs nothing.
+[target.'cfg(unix)'.dependencies]
 pnet.workspace = true
 pnet_datalink.workspace = true
 pnet_packet.workspace = true
-tokio.workspace = true
-anyhow.workspace = true
 libc.workspace = true
-thiserror.workspace = true

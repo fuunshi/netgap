@@ -17,7 +17,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 authors = ["Pranil Shrestha"]
 license = "MIT"
@@ -31,6 +31,7 @@ config = "0.13"
 dns-lookup = "2"
 futures = "0.3"
 libc = "0.2"
+ipnetwork = "0.20"
 mdns-sd = "0.10"
 network-interface = "1.1"
 notify-rust = "4"

@@ -338,4 +338,4 @@ MIT - See LICENSE file
 
 ---
 
-**Need help?** Check out the comprehensive documentation in PHASE2_COMPLETE.md
+**Need help?** Check out the comprehensive documentation in docs/PHASE2_COMPLETE.md

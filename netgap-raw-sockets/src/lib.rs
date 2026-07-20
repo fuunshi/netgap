@@ -2,6 +2,11 @@
 //!
 //! This module implements ARP (Address Resolution Protocol) scanning using raw sockets,
 //! providing more reliable device discovery than TCP-only approaches.
+//!
+//! Unix only, and not implemented even there: `netgap_discover::arp` is the
+//! working ARP sweep. On other platforms the crate compiles to nothing rather
+//! than to something that cannot work.
+#![cfg(unix)]
 
 use anyhow::{anyhow, Result};
 use pnet::datalink;

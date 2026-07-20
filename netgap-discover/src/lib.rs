@@ -13,20 +13,26 @@
 use anyhow::{anyhow, Result};
 use std::net::Ipv4Addr;
 
+#[cfg(unix)]
 pub mod arp;
 pub mod conflicts;
+#[cfg(unix)]
 pub mod dhcp;
+#[cfg(unix)]
 pub mod ipv6;
 pub mod names;
 pub mod neighbor;
 pub mod privilege;
 pub mod tcp_sweep;
 
+#[cfg(unix)]
 pub use arp::ArpDiscovery;
 pub use conflicts::{
     detect_mac_changes, detect_shared_macs, snapshot_mappings, MacChange, SharedMac,
 };
+#[cfg(unix)]
 pub use dhcp::{DhcpProbe, DhcpServer, ExpectedServers};
+#[cfg(unix)]
 pub use ipv6::Ipv6Neighbour;
 pub use names::resolve_hostnames;
 pub use tcp_sweep::{TcpSweepConfig, TcpSweeper};
@@ -101,6 +107,7 @@ pub fn is_privilege_error(error: &anyhow::Error) -> bool {
 
 /// Map a `datalink::channel` failure to a typed privilege error when the
 /// kernel refused the raw socket.
+#[cfg(unix)]
 pub(crate) fn classify_channel_error(error: std::io::Error) -> anyhow::Error {
     if error.kind() == std::io::ErrorKind::PermissionDenied {
         DiscoveryError::PrivilegeRequired.into()

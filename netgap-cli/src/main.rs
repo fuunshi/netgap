@@ -25,7 +25,7 @@ use discovery::DiscoveryPlan;
 #[derive(Parser)]
 #[command(name = "netgap")]
 #[command(about = "Network security scanner for discovering and assessing vulnerabilities on your LAN", long_about = None)]
-#[command(version = "0.1.0")]
+#[command(version)]
 #[command(author = "Pranil Shrestha")]
 struct Cli {
     #[command(subcommand)]
@@ -981,6 +981,15 @@ fn how_to_open(format: &str) -> &'static str {
     }
 }
 
+/// IPv6 neighbour discovery reads the kernel's table through netlink and
+/// stimulates it with an ICMPv6 socket, neither of which is how Windows works.
+/// The honest answer there is that it is not implemented, rather than a report
+/// that silently omits every IPv6-only device.
+#[cfg(not(unix))]
+fn run_ipv6(_devices: &mut Vec<Device>, _plan: &DiscoveryPlan) {
+    eprintln!("   IPv6: not implemented on this platform (Unix only)");
+}
+
 /// Ask the network's IPv6 side who is there, and fold the answers in.
 ///
 /// IPv4 discovery cannot see a device that answers only on IPv6, and IPv6 has
@@ -988,6 +997,7 @@ fn how_to_open(format: &str) -> &'static str {
 /// is the source instead, and unlike the ARP path it can be read and
 /// stimulated without privileges, so this runs on every discovery rather than
 /// only under sudo.
+#[cfg(unix)]
 fn run_ipv6(devices: &mut Vec<Device>, plan: &DiscoveryPlan) {
     let interface = plan.interface.name.as_str();
 
@@ -1023,6 +1033,7 @@ fn run_ipv6(devices: &mut Vec<Device>, plan: &DiscoveryPlan) {
 
 /// Whether the scan covers the interface's own network, rather than a slice of
 /// it the user narrowed by hand.
+#[cfg(unix)]
 fn is_whole_link(plan: &DiscoveryPlan) -> bool {
     let Some(network) = plan.interface.ipv4_network() else {
         return false;
@@ -1944,6 +1955,7 @@ fn service_name_for_port(port: u16) -> Option<&'static str> {
 /// A DHCP server decides what gateway and DNS server a device will use, so a
 /// second one on a network can quietly redirect everything that device sends.
 /// Finding it needs privileges: a DHCP client binds port 68.
+#[cfg(unix)]
 async fn check_dhcp_servers(plan: &DiscoveryPlan, gateway: Option<std::net::Ipv4Addr>) {
     use netgap_discover::dhcp::{DhcpProbe, ExpectedServers};
 
@@ -2243,7 +2255,11 @@ async fn cmd_watch(
     let gateway = netgap_interfaces::default_gateway_ipv4();
 
     if check_dhcp {
+        #[cfg(unix)]
         check_dhcp_servers(&plan, gateway).await;
+
+        #[cfg(not(unix))]
+        eprintln!("   DHCP check: not implemented on this platform (Unix only)");
     }
     let mut scan_count = 0;
 
@@ -2372,7 +2388,11 @@ async fn cmd_watch(
                 check_for_address_conflicts(&mut last_mappings, &plan, gateway);
 
                 if check_dhcp {
+                    #[cfg(unix)]
                     check_dhcp_servers(&plan, gateway).await;
+
+                    #[cfg(not(unix))]
+                    eprintln!("   DHCP check: not implemented on this platform (Unix only)");
                 }
             }
             Err(e) => {

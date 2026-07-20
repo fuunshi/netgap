@@ -32,6 +32,10 @@ jobs:
       # `--locked` so CI builds the dependencies the lockfile pins rather than
       # silently resolving new ones.
       - run: cargo test --workspace --locked
+      # The interface code the Windows build takes, exercised where a test
+      # runner is cheap. Without this it would only ever run on Windows, which
+      # is the machine nobody watching this workflow has.
+      - run: cargo test --workspace --locked --features netgap-interfaces/portable-interfaces
 
   lint:
     name: Format and lints

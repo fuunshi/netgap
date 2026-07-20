@@ -7,11 +7,11 @@
 
 use anyhow::{anyhow, Result};
 use netgap_core::Device;
-use netgap_discover::{
-    hosts_in_cidr, is_privilege_error, parse_cidr, privilege, ArpDiscovery, DiscoveryConfig,
-    TcpSweepConfig, TcpSweeper,
-};
+use netgap_discover::{hosts_in_cidr, parse_cidr, TcpSweepConfig, TcpSweeper};
+#[cfg(unix)]
+use netgap_discover::{is_privilege_error, privilege, ArpDiscovery, DiscoveryConfig};
 use netgap_interfaces::{get_interface, get_interface_auto, get_interface_cidr, InterfaceInfo};
+#[cfg(unix)]
 use std::io::{self, IsTerminal, Write};
 use std::net::Ipv4Addr;
 
@@ -44,6 +44,10 @@ pub struct DiscoveryPlan {
     pub max_hosts: usize,
     /// Whether a failed ARP attempt may silently fall back to TCP. False when
     /// the user explicitly asked for ARP.
+    ///
+    /// Unix only: elsewhere the TCP sweep is the method rather than the
+    /// fallback, so there is nothing to fall back from.
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub allow_fallback: bool,
     /// Whether to ask devices to identify themselves over mDNS.
     pub mdns: bool,
@@ -92,14 +96,24 @@ pub fn resolve_plan(
     let (network, prefix) = parse_cidr(&target)?;
     hosts_in_cidr(network, prefix, max_hosts)?;
 
+    // Raw sockets are a Unix business here. On Windows the TCP sweep is not a
+    // fallback, it is the method, so the privilege prompt has nothing to offer.
+    #[cfg(unix)]
     let privileged = privilege::has_cap_net_raw();
+    #[cfg(not(unix))]
+    let privileged = false;
 
     let (method, allow_fallback) = match requested {
         // An explicit choice is honored, and falling back would contradict it.
         Some(method) => (method, false),
         None if privileged => (DiscoveryMethod::Arp, true),
         None => {
+            #[cfg(unix)]
             choose_fallback(&target, assume_yes, non_interactive)?;
+
+            #[cfg(not(unix))]
+            let _ = (assume_yes, non_interactive);
+
             (DiscoveryMethod::Tcp, true)
         }
     };
@@ -116,6 +130,7 @@ pub fn resolve_plan(
 
 /// Explain the trade-off and let the user decide between continuing
 /// unprivileged or exiting to re-run under sudo.
+#[cfg(unix)]
 fn choose_fallback(target: &str, assume_yes: bool, non_interactive: bool) -> Result<()> {
     if assume_yes || non_interactive || std::env::var_os("CI").is_some() {
         eprintln!(
@@ -169,6 +184,7 @@ fn choose_fallback(target: &str, assume_yes: bool, non_interactive: bool) -> Res
 }
 
 /// This invocation, prefixed with sudo, so the user can copy-paste it.
+#[cfg(unix)]
 fn sudo_command_line() -> String {
     let mut args = std::env::args();
     let program = args.next().unwrap_or_else(|| "netgap".to_string());
@@ -179,6 +195,7 @@ fn sudo_command_line() -> String {
 /// Run discovery according to the plan.
 pub async fn run(plan: &DiscoveryPlan) -> Result<Vec<Device>> {
     match plan.method {
+        #[cfg(unix)]
         DiscoveryMethod::Arp => match run_arp(plan).await {
             Ok(devices) => Ok(devices),
             Err(error) if plan.allow_fallback && is_privilege_error(&error) => {
@@ -190,11 +207,16 @@ pub async fn run(plan: &DiscoveryPlan) -> Result<Vec<Device>> {
             }
             Err(error) => Err(error),
         },
+        // Unreachable on Windows, where nothing selects the ARP method, and
+        // the compiler is told as much rather than pretending it can happen.
+        #[cfg(not(unix))]
+        DiscoveryMethod::Arp => run_tcp(plan).await,
         DiscoveryMethod::Tcp => run_tcp(plan).await,
     }
 }
 
 /// Raw-socket ARP sweep.
+#[cfg(unix)]
 async fn run_arp(plan: &DiscoveryPlan) -> Result<Vec<Device>> {
     let config = DiscoveryConfig {
         interface_name: plan.interface.name.clone(),
@@ -215,6 +237,7 @@ async fn run_arp(plan: &DiscoveryPlan) -> Result<Vec<Device>> {
 /// Only a raw-socket sweep can see this: the unprivileged path reads the
 /// kernel's table, which holds one entry per address and so cannot show two
 /// devices claiming it. Watch mode covers that case by comparing across scans.
+#[cfg(unix)]
 fn report_arp_conflicts(conflicts: &[netgap_discover::MacChange]) {
     if conflicts.is_empty() {
         return;

@@ -9,9 +9,8 @@
 //! The chosen interface is persisted as a preference and reused on later runs.
 
 use anyhow::{anyhow, Result};
+use ipnetwork::Ipv4Network;
 use netgap_core::paths;
-use pnet::datalink;
-use pnet::ipnetwork::{IpNetwork, Ipv4Network};
 use std::io::{self, Write};
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 use std::path::{Path, PathBuf};
@@ -99,55 +98,168 @@ impl InterfaceInfo {
     }
 }
 
+/// What the platform told us about one interface, before any interpretation.
+///
+/// Two providers fill this in — pnet on Unix, `network-interface` everywhere
+/// else — so that everything below is written once.
+struct RawInterface {
+    name: String,
+    ipv4: Option<Ipv4Addr>,
+    prefix: Option<u8>,
+    ipv6: Option<String>,
+    mac: Option<String>,
+    is_up: bool,
+    is_lower_up: bool,
+    is_loopback: bool,
+}
+
+/// Enumerate interfaces with pnet.
+///
+/// The default on Unix. Not used on Windows: pnet's datalink layer links
+/// against Npcap, which would make the binary refuse to start on a machine
+/// that does not have the driver installed.
+#[cfg(all(unix, not(feature = "portable-interfaces")))]
+fn enumerate_interfaces() -> Vec<RawInterface> {
+    use pnet::datalink;
+    use pnet::ipnetwork::IpNetwork;
+
+    datalink::interfaces()
+        .into_iter()
+        .map(|iface| {
+            // Prefer a routable IPv4 when an interface has several.
+            let ipv4_net = iface
+                .ips
+                .iter()
+                .filter_map(|ip| match ip {
+                    IpNetwork::V4(net) => Some(*net),
+                    _ => None,
+                })
+                .fold(None, |best: Option<Ipv4Network>, net| match best {
+                    Some(current) if is_usable_ipv4(current.ip()) => Some(current),
+                    _ if is_usable_ipv4(net.ip()) => Some(net),
+                    Some(current) => Some(current),
+                    None => Some(net),
+                });
+
+            let ipv6 = iface.ips.iter().find_map(|ip| match ip {
+                IpNetwork::V6(ipv6) => Some(ipv6.ip().to_string()),
+                _ => None,
+            });
+
+            RawInterface {
+                name: iface.name.clone(),
+                ipv4: ipv4_net.map(|net| net.ip()),
+                prefix: ipv4_net.map(|net| net.prefix()),
+                ipv6,
+                mac: iface.mac.map(|mac| mac.to_string()),
+                is_up: iface.is_up(),
+                is_lower_up: iface.is_lower_up(),
+                is_loopback: iface.is_loopback()
+                    || ipv4_net.map(|net| net.ip().is_loopback()).unwrap_or(false),
+            }
+        })
+        .collect()
+}
+
+/// Enumerate interfaces with the `network-interface` crate.
+///
+/// Used on Windows, and on Unix when the `portable-interfaces` feature is on —
+/// which is how the code path Windows takes gets exercised by tests that run
+/// on Linux.
+#[cfg(any(not(unix), feature = "portable-interfaces"))]
+fn enumerate_interfaces() -> Vec<RawInterface> {
+    use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
+
+    let Ok(interfaces) = NetworkInterface::show() else {
+        return Vec::new();
+    };
+
+    interfaces
+        .into_iter()
+        .map(|interface| {
+            let mut ipv4 = None;
+            let mut prefix = None;
+            let mut ipv6 = None;
+
+            for address in &interface.addr {
+                match address {
+                    // The same preference as the pnet path: a routable IPv4
+                    // beats a link-local one when an interface has both.
+                    Addr::V4(v4) if ipv4.is_none() || !is_usable_ipv4(ipv4.unwrap_or(v4.ip)) => {
+                        ipv4 = Some(v4.ip);
+                        prefix = v4.netmask.and_then(prefix_from_netmask);
+                    }
+                    Addr::V6(v6) if ipv6.is_none() => ipv6 = Some(v6.ip.to_string()),
+                    _ => {}
+                }
+            }
+
+            let is_loopback = interface.name.to_ascii_lowercase().contains("loopback")
+                || ipv4.is_some_and(|ip| ip.is_loopback());
+
+            RawInterface {
+                name: interface.name.clone(),
+                ipv4,
+                prefix,
+                ipv6,
+                mac: interface.mac_addr.clone(),
+                // This crate reports configuration, not link state, so an
+                // address is the best signal available that the interface is
+                // usable. A disconnected adapter has none.
+                is_up: ipv4.is_some() || interface.addr.iter().any(|a| matches!(a, Addr::V6(_))),
+                is_lower_up: true,
+                is_loopback,
+            }
+        })
+        .collect()
+}
+
+/// Turn a dotted netmask into a prefix length.
+///
+/// A netmask is a run of ones followed by zeros; anything else (a
+/// non-contiguous mask, which some old configurations use) has no prefix
+/// length and is reported as `None` rather than guessed at.
+#[allow(dead_code)]
+fn prefix_from_netmask(netmask: Ipv4Addr) -> Option<u8> {
+    let bits = u32::from(netmask);
+    let prefix = bits.leading_ones() as u8;
+
+    // Check the mask is contiguous: shifting the ones off must leave nothing.
+    let restored = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix)
+    };
+    (restored == bits).then_some(prefix)
+}
+
 /// Get all available network interfaces on the system.
 pub fn get_interfaces() -> Result<Vec<InterfaceInfo>> {
     let route_ip = default_route_ip();
-
     let mut result = Vec::new();
 
-    for iface in datalink::interfaces() {
-        // Prefer a routable IPv4 when an interface has several.
-        let ipv4_net = iface
-            .ips
-            .iter()
-            .filter_map(|ip| match ip {
-                IpNetwork::V4(net) => Some(*net),
-                _ => None,
-            })
-            .fold(None, |best: Option<Ipv4Network>, net| match best {
-                Some(current) if is_usable_ipv4(current.ip()) => Some(current),
-                _ if is_usable_ipv4(net.ip()) => Some(net),
-                Some(current) => Some(current),
-                None => Some(net),
-            });
-
-        let ipv6 = iface.ips.iter().find_map(|ip| match ip {
-            IpNetwork::V6(ipv6) => Some(ipv6.ip().to_string()),
+    for raw in enumerate_interfaces() {
+        let ipv4_net = match (raw.ipv4, raw.prefix) {
+            (Some(ip), Some(prefix)) => Ipv4Network::new(ip, prefix).ok(),
             _ => None,
-        });
+        };
 
-        let mac = iface.mac.map(|m| m.to_string());
-        let ipv4 = ipv4_net.map(|net| net.ip().to_string());
-        let prefix = ipv4_net.map(|net| net.prefix());
-        let cidr = ipv4_net.map(|net| format!("{}/{}", net.network(), net.prefix()));
-        let is_loopback =
-            iface.is_loopback() || ipv4_net.map(|net| net.ip().is_loopback()).unwrap_or(false);
-        let is_default_route = match (route_ip, ipv4_net) {
-            (Some(route), Some(net)) => route == net.ip(),
+        let is_default_route = match (route_ip, raw.ipv4) {
+            (Some(route), Some(ip)) => route == ip,
             _ => false,
         };
 
         result.push(InterfaceInfo {
-            name: iface.name.clone(),
-            ipv4,
-            ipv6,
-            mac,
-            is_up: iface.is_up(),
-            is_lower_up: iface.is_lower_up(),
-            is_loopback,
+            name: raw.name,
+            ipv4: raw.ipv4.map(|ip| ip.to_string()),
+            ipv6: raw.ipv6,
+            mac: raw.mac,
+            is_up: raw.is_up,
+            is_lower_up: raw.is_lower_up,
+            is_loopback: raw.is_loopback,
             is_default_route,
-            prefix,
-            cidr,
+            prefix: raw.prefix,
+            cidr: ipv4_net.map(|net| format!("{}/{}", net.network(), net.prefix())),
         });
     }
 
@@ -712,6 +824,68 @@ mod tests {
         if let Some(gateway) = default_gateway_ipv4() {
             assert!(is_usable_ipv4(gateway));
         }
+    }
+
+    /// Whichever provider is in use, enumeration has to find this machine's
+    /// interfaces. A provider that returned nothing would pass every other
+    /// test in this file by finding nothing to disagree with.
+    #[test]
+    fn test_enumeration_finds_this_machine() {
+        let interfaces = get_interfaces().expect("enumerate interfaces");
+
+        assert!(!interfaces.is_empty(), "no interfaces found at all");
+        assert!(
+            interfaces.iter().any(|iface| iface.is_loopback),
+            "loopback should be among them: {:?}",
+            interfaces.iter().map(|i| &i.name).collect::<Vec<_>>()
+        );
+        assert!(
+            interfaces.iter().any(|iface| iface.ipv4.is_some()),
+            "no interface reported an IPv4 address"
+        );
+
+        // A CIDR that does not match the address it came from is the failure
+        // this crate exists to prevent.
+        for iface in interfaces.iter().filter(|iface| iface.cidr.is_some()) {
+            let cidr = iface.cidr.as_deref().expect("checked");
+            assert!(
+                cidr.contains('/'),
+                "{} reported a malformed CIDR: {cidr}",
+                iface.name
+            );
+        }
+
+        if default_route_ip().is_some() {
+            assert!(
+                interfaces.iter().any(|iface| iface.is_default_route),
+                "nothing owns the default route, though one exists"
+            );
+        }
+    }
+
+    /// A netmask is a run of ones followed by zeros. Anything else has no
+    /// prefix length, and guessing one would silently scan the wrong range.
+    #[test]
+    fn test_netmask_becomes_a_prefix_length() {
+        assert_eq!(
+            prefix_from_netmask("255.255.255.0".parse().unwrap()),
+            Some(24)
+        );
+        assert_eq!(
+            prefix_from_netmask("255.255.0.0".parse().unwrap()),
+            Some(16)
+        );
+        assert_eq!(
+            prefix_from_netmask("255.255.255.252".parse().unwrap()),
+            Some(30)
+        );
+        assert_eq!(
+            prefix_from_netmask("255.255.255.255".parse().unwrap()),
+            Some(32)
+        );
+        assert_eq!(prefix_from_netmask("0.0.0.0".parse().unwrap()), Some(0));
+        // Non-contiguous: no prefix length describes this.
+        assert_eq!(prefix_from_netmask("255.0.255.0".parse().unwrap()), None);
     }
 
     #[test]
