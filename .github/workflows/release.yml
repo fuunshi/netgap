@@ -80,20 +80,32 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # musl, not glibc: a binary built against the runner's glibc only
+          # runs on distributions at least that new. This one is static, so it
+          # runs on anything.
           - os: ubuntu-latest
-            label: Linux x86_64
+            label: Linux x86_64 (static)
+            target: x86_64-unknown-linux-musl
             archive: netgap-${{ needs.version.outputs.version }}-linux-x86_64.tar.gz
           - os: windows-latest
             label: Windows x86_64
+            target: x86_64-pc-windows-msvc
             archive: netgap-${{ needs.version.outputs.version }}-windows-x86_64.zip
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: release-${{ matrix.os }}
+          key: release-${{ matrix.target }}
+
+      # The musl target needs a C toolchain for the bundled SQLite.
+      - name: Install musl tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       # The binary reports its own version, and a download whose --version
       # disagrees with its tag is a bug report waiting to happen. The manifest
@@ -109,14 +121,14 @@ jobs:
           grep '^version' Cargo.toml
 
       - name: Build
-        run: cargo build --release --bin netgap
+        run: cargo build --release --bin netgap --target ${{ matrix.target }}
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
-          tar -czf "${{ matrix.archive }}" -C target/release netgap
+          tar -czf "${{ matrix.archive }}" -C "target/${{ matrix.target }}/release" netgap
           echo "built ${{ matrix.archive }}"
 
       - name: Package (Windows)
@@ -124,7 +136,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          7z a "${{ matrix.archive }}" ./target/release/netgap.exe
+          7z a "${{ matrix.archive }}" "./target/${{ matrix.target }}/release/netgap.exe"
           echo "built ${{ matrix.archive }}"
 
       - uses: actions/upload-artifact@v4
