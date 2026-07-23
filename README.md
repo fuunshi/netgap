@@ -4,7 +4,7 @@ A production-ready network security scanner written in Rust. Discover devices on
 
 [![CI](https://github.com/fuunshi/netgap/actions/workflows/ci.yml/badge.svg)](https://github.com/fuunshi/netgap/actions/workflows/ci.yml)
 
-**Current Status:** ✅ 274 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
+**Current Status:** ✅ 337 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
 
 ## Quick Features
 
@@ -21,6 +21,7 @@ A production-ready network security scanner written in Rust. Discover devices on
 - 🛡️ **Gateway Checks** - Admin interface exposure and UPnP on the router itself
 - 🚨 **Address Conflicts** - Alerts when an address, especially the gateway's, changes hands
 - 🕵️ **Rogue DHCP** - Asks the network who hands out addresses, and says if it is not the router
+- 🖥️ **Interactive View** - A plain full-screen UI for picking an interface, scanning and browsing results
 
 ## Getting Started
 
@@ -28,6 +29,17 @@ A production-ready network security scanner written in Rust. Discover devices on
 ```bash
 cargo build --release
 ```
+
+### Or Use the Interactive View
+```bash
+./target/release/netgap ui
+```
+
+Arrow keys move, Enter opens, Esc goes back, `?` lists every key. The first
+screen lists the real network interfaces (press `a` for bridges and tunnels),
+the next chooses discovery method and whether to scan ports, and the results
+screen shows each device with its vendor, ports and findings. Scans started
+here go into the same history `netgap report` reads.
 
 ### Run a Scan
 ```bash
@@ -114,26 +126,26 @@ netgap-discover ── netgap-scan ── netgap-interfaces
 
 ## Test Coverage
 
-**255 tests passing** across the workspace:
+**337 tests passing** across the workspace:
 
 | Crate | Purpose | Tests |
 |-------|---------|-------|
-| netgap-core | Shared types | 6 |
-| netgap-interfaces | NIC enumeration, LAN-aware selection | 14 |
-| netgap-discover | ARP sweep, TCP fallback, address conflicts | 39 |
-| netgap-scan | Port scanning | 4 |
-| netgap-report | Output formatting | 3 |
-| netgap-fingerprint | Device fingerprinting | 12 |
+| netgap-core | Shared types, health scoring, HTML escaping | 18 |
+| netgap-interfaces | NIC enumeration, LAN-aware selection | 17 |
+| netgap-discover | ARP sweep, TCP fallback, IPv6 neighbours, conflicts | 70 |
+| netgap-scan | Port scanning and risk classification | 6 |
+| netgap-report | Terminal, summary and HTML formatting | 30 |
+| netgap-fingerprint | Device fingerprinting | 24 |
 | netgap-assess | Vulnerability and gateway checks | 10 |
-| netgap-probes | Service, version and TLS probes | 21 |
-| netgap-storage | Result persistence and device history | 11 |
-| netgap-services | Service/CVE database | 13 |
-| netgap-trends | History and change detection | 8 |
+| netgap-probes | Service, version and TLS probes | 22 |
+| netgap-storage | Result persistence and device history | 12 |
+| netgap-services | Service/CVE database | 19 |
+| netgap-trends | History and change detection | 7 |
 | netgap-mdns | mDNS service discovery | 15 |
 | netgap-raw-sockets | Raw ARP framework (not yet wired up) | 7 |
 | netgap-threat-intel | NVD client and CVE cache | 17 |
-| netgap-webhooks | Alert delivery | 6 |
-| netgap-cli | Assessment/severity mapping | 5 |
+| netgap-webhooks | Alert delivery | 8 |
+| netgap-cli | Commands, alerts, discovery and the interactive UI | 55 |
 
 ## Performance
 
@@ -148,11 +160,14 @@ netgap-discover ── netgap-scan ── netgap-interfaces
 ✅ **Trait-Based** - Pluggable checks and probes for extensibility
 ✅ **Workspace Org** - Each subsystem is an independent crate
 ✅ **Zero Unsafe** - Except where required (socket operations)
-✅ **No External TUI** - Interactive menus use stdin/stdout
+✅ **Small Terminal UI** - crossterm only; no widget framework to keep patched
 
 ## CLI Commands
 
 ```bash
+# Full-screen interactive view: interfaces, scans, devices and findings
+netgap ui
+
 # List interfaces (marks loopback, virtual and default-route devices)
 netgap interfaces
 

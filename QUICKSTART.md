@@ -13,6 +13,29 @@ cargo build --release
 
 ## Basic Commands
 
+### Interactive View
+
+```bash
+./target/release/netgap ui
+```
+
+Opens a full-screen terminal view. It is the same scanner as the commands
+below, with a list to choose from instead of flags:
+
+- **Interfaces** — the network interfaces netgap can scan, starting on the one
+  it would have chosen automatically. `a` also shows bridges, tunnels and
+  loopback.
+- **Scan options** — Enter on an interface, then choose the discovery method
+  (Auto, ARP, TCP) and whether to scan service ports.
+- **Devices** — every device found, with vendor, open ports, OS guess and
+  findings. The selected device is detailed at the bottom.
+- **Saved scans** — `d` lists the scans already in the database; Enter opens
+  one and shows what it found.
+
+Arrow keys move, Enter opens or starts, Esc goes back, `?` lists every key and
+`q` quits. Scans started here are saved to the same history as
+`netgap scan`, so they show up in `netgap report` too.
+
 ### List Network Interfaces
 
 ```bash

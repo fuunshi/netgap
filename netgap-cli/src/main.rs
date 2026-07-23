@@ -19,6 +19,7 @@ mod alerts;
 mod discovery;
 mod interactive;
 mod trust;
+mod ui;
 
 use discovery::DiscoveryPlan;
 
@@ -88,6 +89,9 @@ impl DiscoveryArgs {
 enum Commands {
     /// List available network interfaces
     Interfaces,
+
+    /// Open the full-screen interactive view (interfaces, scans and findings)
+    Ui,
 
     /// Discover devices on the local network and report what they are
     Discover {
@@ -298,6 +302,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Commands::Interfaces => {
             cmd_interfaces()?;
+        }
+        Commands::Ui => {
+            ui::run().await?;
         }
         Commands::Discover {
             discovery,
@@ -986,8 +993,10 @@ fn how_to_open(format: &str) -> &'static str {
 /// The honest answer there is that it is not implemented, rather than a report
 /// that silently omits every IPv6-only device.
 #[cfg(not(unix))]
-fn run_ipv6(_devices: &mut Vec<Device>, _plan: &DiscoveryPlan) {
-    eprintln!("   IPv6: not implemented on this platform (Unix only)");
+fn run_ipv6(_devices: &mut Vec<Device>, plan: &DiscoveryPlan) {
+    if !plan.quiet {
+        eprintln!("   IPv6: not implemented on this platform (Unix only)");
+    }
 }
 
 /// Ask the network's IPv6 side who is there, and fold the answers in.
@@ -1006,13 +1015,17 @@ fn run_ipv6(devices: &mut Vec<Device>, plan: &DiscoveryPlan) {
         Err(error) => {
             // An IPv4-only network is the common case, so this is a note, not
             // a warning: nothing is wrong.
-            eprintln!("   IPv6: skipped ({error})");
+            if !plan.quiet {
+                eprintln!("   IPv6: skipped ({error})");
+            }
             return;
         }
     };
 
     if neighbours.is_empty() {
-        eprintln!("   IPv6: no neighbours answered (normal on an IPv4-only network)");
+        if !plan.quiet {
+            eprintln!("   IPv6: no neighbours answered (normal on an IPv4-only network)");
+        }
         return;
     }
 
@@ -1028,7 +1041,9 @@ fn run_ipv6(devices: &mut Vec<Device>, plan: &DiscoveryPlan) {
         String::new()
     };
 
-    eprintln!("   IPv6: {} neighbour(s){}", neighbours.len(), only_ipv6);
+    if !plan.quiet {
+        eprintln!("   IPv6: {} neighbour(s){}", neighbours.len(), only_ipv6);
+    }
 }
 
 /// Whether the scan covers the interface's own network, rather than a slice of
@@ -1108,17 +1123,19 @@ async fn enrich_devices(plan: &DiscoveryPlan, devices: &mut [Device], identify: 
     // Names first: reverse DNS is unreliable on many networks, so it gets a
     // bounded budget and stays quiet when it finds nothing.
     let named = netgap_discover::resolve_hostnames(devices, Duration::from_secs(3)).await;
-    if named > 0 {
+    if named > 0 && !plan.quiet {
         eprintln!("   Resolved {} hostname(s)", named);
     }
 
     // Optionally probe service ports, which is what makes type guesses useful.
     if identify {
-        eprintln!(
-            "   Identifying device types (probing {} port(s) on {} host(s))...",
-            IDENTIFY_PORTS.len(),
-            devices.len()
-        );
+        if !plan.quiet {
+            eprintln!(
+                "   Identifying device types (probing {} port(s) on {} host(s))...",
+                IDENTIFY_PORTS.len(),
+                devices.len()
+            );
+        }
 
         let ipv4_targets: Vec<std::net::Ipv4Addr> = devices
             .iter()
@@ -1148,7 +1165,11 @@ async fn enrich_devices(plan: &DiscoveryPlan, devices: &mut [Device], identify: 
                     }
                 }
             }
-            Err(error) => eprintln!("   ⚠️  Identification probe failed: {}", error),
+            Err(error) => {
+                if !plan.quiet {
+                    eprintln!("   ⚠️  Identification probe failed: {}", error);
+                }
+            }
         }
     }
 

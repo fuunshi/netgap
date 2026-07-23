@@ -70,6 +70,11 @@ impl Default for ScanConfig {
 /// High-performance async TCP port scanner.
 pub struct PortScanner {
     config: ScanConfig,
+    /// Suppress the per-device progress lines.
+    ///
+    /// Set by the full-screen UI, which draws its own progress and would
+    /// otherwise have stderr written over the frame.
+    quiet: bool,
 }
 
 impl Default for PortScanner {
@@ -81,12 +86,21 @@ impl Default for PortScanner {
 impl PortScanner {
     /// Create a new port scanner with custom configuration.
     pub fn new(config: ScanConfig) -> Self {
-        PortScanner { config }
+        PortScanner {
+            config,
+            quiet: false,
+        }
     }
 
     /// Create with default configuration (top 20 ports, 2s timeout, 32 concurrent).
     pub fn with_default_config() -> Self {
         PortScanner::new(ScanConfig::default())
+    }
+
+    /// Suppress progress output, for a caller that draws its own.
+    pub fn quiet(mut self, quiet: bool) -> Self {
+        self.quiet = quiet;
+        self
     }
 
     /// Scan a single IP address for open ports.
@@ -164,16 +178,20 @@ impl PortScanner {
             // would read as "no open ports" rather than "not scanned".
             if let IpAddr::V6(address) = device.ip {
                 if (address.segments()[0] & 0xffc0) == 0xfe80 {
-                    eprintln!(
-                        "  · Not port-scanning {}: link-local IPv6 needs an interface to be \
-                         reached, which this device does not record",
-                        device.ip
-                    );
+                    if !self.quiet {
+                        eprintln!(
+                            "  · Not port-scanning {}: link-local IPv6 needs an interface to be \
+                             reached, which this device does not record",
+                            device.ip
+                        );
+                    }
                     continue;
                 }
             }
 
-            eprintln!("🔍 Scanning {} for open ports...", device.ip);
+            if !self.quiet {
+                eprintln!("🔍 Scanning {} for open ports...", device.ip);
+            }
             let open_ports = self
                 .scan_ip_with_progress(device.ip, progress.clone())
                 .await?;
@@ -205,10 +223,12 @@ impl PortScanner {
                 }
             }
 
-            if device.open_ports.is_empty() {
-                eprintln!("  ✓ No dangerous open ports found");
-            } else {
-                eprintln!("  ⚠ Found {} open port(s)", device.open_ports.len());
+            if !self.quiet {
+                if device.open_ports.is_empty() {
+                    eprintln!("  ✓ No dangerous open ports found");
+                } else {
+                    eprintln!("  ⚠ Found {} open port(s)", device.open_ports.len());
+                }
             }
         }
 

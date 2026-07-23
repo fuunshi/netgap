@@ -645,6 +645,40 @@ address-conflict detection that reads the neighbour table. Port scanning,
 service identification, TLS inspection, CVE matching, reports and alerts all
 work there.
 
+---
+
+## For people who would rather not type flags
+
+### 13. An interactive view — ✅ done
+
+`netgap ui` opens a full-screen terminal view over the same engine as the
+subcommands. It has three jobs: pick an interface, run a scan, and read what
+was found. The screens are the interface list (physical interfaces by default,
+`a` for everything including bridges and tunnels), the scan options (discovery
+method and whether to scan ports), the device list with the selected device's
+details and findings, and the scan history already in the database.
+
+```
+netgap ui
+```
+
+- Nothing is reimplemented: the UI calls `discovery::run`, the same
+  `run_ipv6`/`enrich_devices` helpers and `PortScanner` as `netgap scan`. A
+  scan started here is saved to the same SQLite history and shows up in
+  `netgap report`.
+- The interface screen starts on the interface the CLI would have chosen
+  (saved preference, then score), and filters out loopback and virtual
+  interfaces by default. Bridges are one keypress away because scanning a
+  docker network is a legitimate thing to want.
+- It is drawn with crossterm, which was already a dependency. No widget
+  framework was added: ratatui 0.27 pulled advisories that were removed
+  earlier, and the UI is lists and keys, not a dashboard.
+- Scanning is quiet. The scan helpers take a `quiet` flag so a library's
+  progress line cannot be written across a drawn frame; the CLI leaves it off
+  and keeps its usual output.
+- Alerts are a scheduled-scan feature and do not fire from the UI. Run
+  `netgap scan` from cron or a timer for that.
+
 ## Engineering health
 
 - `netgap-raw-sockets` is a framework stub (`scan_ip` returns `Ok(None)`) with

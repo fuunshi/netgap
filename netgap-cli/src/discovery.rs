@@ -51,6 +51,11 @@ pub struct DiscoveryPlan {
     pub allow_fallback: bool,
     /// Whether to ask devices to identify themselves over mDNS.
     pub mdns: bool,
+    /// Suppress progress notes on stderr.
+    ///
+    /// The full-screen UI owns the terminal, so a stray line from a scan would
+    /// land in the middle of a drawn frame. The CLI leaves this false.
+    pub quiet: bool,
 }
 
 impl DiscoveryPlan {
@@ -125,6 +130,7 @@ pub fn resolve_plan(
         max_hosts,
         allow_fallback,
         mdns,
+        quiet: false,
     })
 }
 
@@ -199,10 +205,12 @@ pub async fn run(plan: &DiscoveryPlan) -> Result<Vec<Device>> {
         DiscoveryMethod::Arp => match run_arp(plan).await {
             Ok(devices) => Ok(devices),
             Err(error) if plan.allow_fallback && is_privilege_error(&error) => {
-                eprintln!(
-                    "⚠  Raw sockets unavailable ({}); falling back to the TCP sweep.",
-                    error
-                );
+                if !plan.quiet {
+                    eprintln!(
+                        "⚠  Raw sockets unavailable ({}); falling back to the TCP sweep.",
+                        error
+                    );
+                }
                 run_tcp(plan).await
             }
             Err(error) => Err(error),
@@ -227,7 +235,9 @@ async fn run_arp(plan: &DiscoveryPlan) -> Result<Vec<Device>> {
     };
 
     let (devices, conflicts) = ArpDiscovery::new(config).scan_with_conflicts().await?;
-    report_arp_conflicts(&conflicts);
+    if !plan.quiet {
+        report_arp_conflicts(&conflicts);
+    }
 
     Ok(devices)
 }
@@ -271,7 +281,9 @@ async fn run_tcp(plan: &DiscoveryPlan) -> Result<Vec<Device>> {
     };
 
     let devices = TcpSweeper::new(config).scan().await?;
-    eprintln!("✓ Discovery complete: found {} host(s)", devices.len());
+    if !plan.quiet {
+        eprintln!("✓ Discovery complete: found {} host(s)", devices.len());
+    }
     Ok(devices)
 }
 
