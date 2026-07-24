@@ -4,10 +4,11 @@ A production-ready network security scanner written in Rust. Discover devices on
 
 [![CI](https://github.com/fuunshi/netgap/actions/workflows/ci.yml/badge.svg)](https://github.com/fuunshi/netgap/actions/workflows/ci.yml)
 
-**Current Status:** ✅ 337 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
+**Current Status:** ✅ 345 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
 
 ## Quick Features
 
+- 🪟 **Window Application** - A point-and-click interface for people who do not use terminals, with a dashboard, scan screen, device list and history
 - 📡 **Device Discovery** - ARP sweep with root, unprivileged TCP fallback without
 - 🔐 **Vulnerability Assessment** - Detects Telnet, FTP, SMB, SNMP, HTTP exposure
 - 📊 **Device Fingerprinting** - MAC OUI, TTL-based OS detection, banner grabbing
@@ -30,7 +31,25 @@ A production-ready network security scanner written in Rust. Discover devices on
 cargo build --release
 ```
 
-### Or Use the Interactive View
+### Open the Window Application
+```bash
+# The build above produces both the command line tool and the window application
+./target/release/netgap-gui
+
+# Open straight onto a screen, if preferred
+./target/release/netgap-gui history
+```
+
+A dashboard of the network's health, the devices that were found, and every
+scan already in the database. Pick an interface, press **Start scan**, and
+watch it run — no flags to remember. **Scan network** is one click from the
+dashboard, **Devices** searches by address, name or vendor, and **History**
+charts the findings recorded over time. Light and dark modes are both built in,
+and a scan started here is saved to the same history `netgap report` reads.
+
+For the command line there is also an interactive terminal view:
+
+### Or Use the Interactive Terminal View
 ```bash
 ./target/release/netgap ui
 ```
@@ -89,17 +108,25 @@ trade-off and lets you continue or re-run under sudo.
 
 ## Architecture
 
-16 specialized Rust crates working in harmony:
+18 specialized Rust crates working in harmony:
 
 ```
-netgap-cli ── netgap-report ── netgap-storage
-                    ↑
+                    netgap-cli     netgap-gui
+                          \          /
+                        netgap-engine
+                     /        |        \
+         netgap-discover  netgap-scan  netgap-fingerprint
+                     \        |        /
+                 netgap-interfaces   netgap-core (types)
+
+netgap-gui ── netgap-report ── netgap-storage
 netgap-assess ── netgap-probes ── netgap-fingerprint
-                    ↑
-netgap-discover ── netgap-scan ── netgap-interfaces
-                    ↑
-            netgap-core (types)
 ```
+
+`netgap-engine` is the scan pipeline itself — plan, discover, merge IPv6
+neighbours, enrich names and vendors, optionally scan ports. The command line,
+`netgap ui` and the window application all call it, so the three front ends
+cannot drift apart.
 
 ## What Gets Scanned
 
@@ -126,7 +153,7 @@ netgap-discover ── netgap-scan ── netgap-interfaces
 
 ## Test Coverage
 
-**337 tests passing** across the workspace:
+**345 tests passing** across the workspace:
 
 | Crate | Purpose | Tests |
 |-------|---------|-------|
@@ -145,7 +172,9 @@ netgap-discover ── netgap-scan ── netgap-interfaces
 | netgap-raw-sockets | Raw ARP framework (not yet wired up) | 7 |
 | netgap-threat-intel | NVD client and CVE cache | 17 |
 | netgap-webhooks | Alert delivery | 8 |
+| netgap-engine | Scan pipeline shared by the CLI, terminal UI and window | 0 |
 | netgap-cli | Commands, alerts, discovery and the interactive UI | 55 |
+| netgap-gui | Window application and its display formatting | 8 |
 
 ## Performance
 
@@ -159,8 +188,10 @@ netgap-discover ── netgap-scan ── netgap-interfaces
 ✅ **Async-Native** - tokio-based concurrent I/O
 ✅ **Trait-Based** - Pluggable checks and probes for extensibility
 ✅ **Workspace Org** - Each subsystem is an independent crate
+✅ **One Scan Pipeline** - `netgap-engine` is shared by the CLI, terminal UI and window, so behaviour cannot diverge
 ✅ **Zero Unsafe** - Except where required (socket operations)
 ✅ **Small Terminal UI** - crossterm only; no widget framework to keep patched
+✅ **Window Without a Web Server** - `netgap-gui` is a native application; scanning a home network needs no account or local server
 
 ## CLI Commands
 
@@ -202,6 +233,20 @@ netgap report --history          # All scans
 netgap report --format json      # json, summary, markdown, html, csv
 netgap report --scan-id <id1> --compare <id2>  # Compare
 ```
+
+## Window Application
+
+```bash
+netgap-gui                    # dashboard
+netgap-gui scan               # open on the scan screen
+netgap-gui devices            # open on the device list
+netgap-gui history            # open on the recorded scans
+netgap-gui --light            # light theme (dark is the default)
+```
+
+Settings, choices and results live in the window; the only thing it writes
+outside the database is an exported report, saved to `~/netgap-<id>.html` or
+`.csv` when you press **Export**.
 
 ## Alerts
 
@@ -340,13 +385,15 @@ Known gaps:
 - UPnP exposure scanning
 - Passive WiFi scanning
 - Mobile app bridges (uniffi-rs)
-- Web UI dashboard
+- Web UI dashboard (the desktop window is `netgap-gui`; a browser interface is still open)
 
 ## Requirements
 
 - Rust 1.70+
 - Linux/macOS/Windows
 - Network access
+- A desktop session with OpenGL for the window application (`netgap-gui`); the
+  command line and `netgap ui` need only a terminal
 - Root (or `setcap cap_net_raw+ep`) for full ARP discovery; without it netgap
   falls back to an unprivileged TCP sweep that finds fewer hosts and resolves
   MAC addresses only for hosts already in the kernel neighbour table

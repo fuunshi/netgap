@@ -1,8 +1,8 @@
 name: Release
 
-# Builds a Linux binary and a Windows executable and publishes them as a
-# GitHub release. The version comes from the tags: the first release is
-# v1.0.0, and each one after it takes the next patch number.
+# Builds the Linux and Windows binaries, including the window application, and
+# publishes them as a GitHub release. The version comes from the tags: the
+# first release is v1.0.0, and each one after it takes the next patch number.
 #
 # Only runs when code changes. A documentation commit does not need a new
 # binary, and a release nobody can tell apart from the last one is noise.
@@ -121,7 +121,13 @@ jobs:
           grep '^version' Cargo.toml
 
       - name: Build
-        run: cargo build --release --bin netgap --target ${{ matrix.target }}
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cargo build --release --bin netgap --bin netgap-gui --target ${{ matrix.target }}
+          else
+            cargo build --release --bin netgap --target ${{ matrix.target }}
+          fi
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
@@ -136,7 +142,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          7z a "${{ matrix.archive }}" "./target/${{ matrix.target }}/release/netgap.exe"
+          7z a "${{ matrix.archive }}" \
+            "./target/${{ matrix.target }}/release/netgap.exe" \
+            "./target/${{ matrix.target }}/release/netgap-gui.exe"
           echo "built ${{ matrix.archive }}"
 
       - uses: actions/upload-artifact@v4
@@ -145,9 +153,52 @@ jobs:
           path: ${{ matrix.archive }}
           if-no-files-found: error
 
+  # The window application cannot be static: it loads the desktop's graphics
+  # libraries when it starts. Building it inside the oldest commonly-deployed
+  # Ubuntu keeps the glibc requirement low enough to run on Debian 12 and
+  # Ubuntu 22.04, which a build on the current runner would not.
+  build-gui-linux:
+    name: Build the window application (Linux)
+    needs: version
+    runs-on: ubuntu-latest
+    container: ubuntu:22.04
+    steps:
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git build-essential curl ca-certificates
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Set the version being released
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -i.bak 's/^version = ".*"/version = "${{ needs.version.outputs.version }}"/' Cargo.toml
+          rm -f Cargo.toml.bak
+          grep '^version' Cargo.toml
+
+      - name: Build
+        run: cargo build --release --bin netgap-gui
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="netgap-gui-${{ needs.version.outputs.version }}-linux-x86_64.tar.gz"
+          tar -czf "$archive" --transform 's,.*/,,' target/release/netgap-gui
+          echo "archive=$archive" >> "$GITHUB_ENV"
+          echo "built $archive"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: netgap-gui-${{ needs.version.outputs.version }}-linux-x86_64.tar.gz
+          path: netgap-gui-${{ needs.version.outputs.version }}-linux-x86_64.tar.gz
+          if-no-files-found: error
+
   publish:
     name: Publish ${{ needs.version.outputs.tag }}
-    needs: [version, build]
+    needs: [version, build, build-gui-linux]
     if: github.event_name == 'push' || inputs.dry_run == false
     runs-on: ubuntu-latest
     steps:

@@ -679,6 +679,72 @@ netgap ui
 - Alerts are a scheduled-scan feature and do not fire from the UI. Run
   `netgap scan` from cron or a timer for that.
 
+### 14. A window application — ✅ done
+
+`netgap ui` still needs a terminal. `netgap-gui` is the same scanner behind a
+native window: a dashboard, a guided scan screen, a searchable device list, and
+the recorded scans with a chart of findings over time. It is additive — the
+command line and the terminal view are unchanged and still shipped.
+
+```
+netgap-gui                 # dashboard
+netgap-gui scan            # open on a screen
+netgap-gui history --light
+```
+
+**The important part is what it does not reimplement.** The scan pipeline had
+been living inside `netgap-cli`'s modules, callable only from there. It is now
+`netgap-engine`: plan validation, ARP/TCP discovery, IPv6 neighbour merging,
+hostname/vendor/type enrichment and the optional port scan. The CLI, `netgap ui`
+and `netgap-gui` all call it, so a fix to discovery or a change to the
+scan-time settings cannot land in one front end and miss the others. Results
+are saved with `netgap-storage`, the same SQLite history `netgap report` reads;
+a scan started in the window is visible to every other command.
+
+**What the window adds for someone who does not read flags:**
+
+- **Dashboard** — health ring with a plain verdict ("Poor — several
+  problems need attention"), device/critical/high counts, severity bars, recent
+  scans, and the top three things to fix, each with a one-line explanation.
+  It opens on the newest recorded scan, so there is something to read before
+  any scan is run.
+- **Scan screen** — interfaces as a readable list (not names only), target
+  network, discovery method with its privilege consequence explained, and a
+  choice between "devices only" and "devices and service ports". Progress has
+  a stage line, elapsed time and an indeterminate bar while the length is
+  unknown.
+- **Devices** — search by address, name, vendor or MAC; severity chips; worst
+  findings first; the selected device's vendor, system, IPv6, open ports and
+  each finding with its fix. Export HTML or CSV from here.
+- **History** — every scan, a bar chart of findings across the last twelve,
+  and a health ring for the selected scan.
+
+Both light and dark themes were designed rather than inverted; the dark theme
+is the default and the toggle sits at the bottom of the sidebar.
+
+**How it was verified.** On Linux (Wayland and X11): the dashboard rendered
+existing history; a full scan was started from the window and completed through
+discover → enrich → ports, switching to the device list with 17 devices and 5
+findings; the result was confirmed in `scans.db` as a new row, so the save path
+is real. Screens were checked at the 1180×780 default and maximized. Two layout
+bugs surfaced that way and were fixed: notes beside the discovery dropdown were
+widening the options card past its column (now wrapped), and the device view
+selected index 0 rather than the worst device (now defaults to the first row of
+the sorted list).
+
+**Not verified:** the Windows build is produced by the same job that builds the
+Windows CLI, but the window itself has not been run on Windows here. The Linux
+GUI downloads are built in an Ubuntu 22.04 container (glibc 2.35) rather than
+the musl static path used by the CLI, because the desktop libraries are loaded
+at run time. Alerts still do not fire from the window — they belong to
+scheduled `netgap scan` runs, and the UI says so nowhere it would need to.
+
+**Known limits.** The window has no automated interaction tests; its
+formatting helpers are unit-tested, the rest was verified by running it. There
+is no scheduling, no webhook configuration and no report comparison in the GUI
+— those remain command-line features. It is a desktop application, not a web
+dashboard, and no server is started.
+
 ## Engineering health
 
 - `netgap-raw-sockets` is a framework stub (`scan_ip` returns `Ok(None)`) with
@@ -690,6 +756,8 @@ netgap ui
   parsing path is only covered by hand-built frames.
 - `--identify` and the discovery sweep duplicate port-probing logic that
   `netgap-probes` should own.
+- The window application has no interaction tests: its formatting helpers are
+  unit-tested, everything else was checked by running it.
 
 ---
 

@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 netgap-core = { path = "../netgap-core" }
+netgap-engine = { path = "../netgap-engine" }
 netgap-interfaces = { path = "../netgap-interfaces" }
 netgap-discover = { path = "../netgap-discover" }
 netgap-scan = { path = "../netgap-scan" }

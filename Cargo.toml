@@ -12,6 +12,8 @@ members = [
     "netgap-probes",
     "netgap-storage",
     "netgap-services",
+    "netgap-engine",
+    "netgap-gui",
     "netgap-cli", "netgap-trends", "netgap-threat-intel", "netgap-webhooks",
 ]
 resolver = "2"

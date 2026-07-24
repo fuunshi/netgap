@@ -1,0 +1,23 @@
+[package]
+name = "netgap-gui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "netgap-gui"
+path = "src/main.rs"
+
+[dependencies]
+# Window, input and rendering. The default glow backend talks to the system
+# OpenGL that every desktop already has; wgpu would drag in a second graphics
+# stack for no benefit on a dashboard.
+eframe = "0.33.3"
+chrono.workspace = true
+tokio.workspace = true
+netgap-core = { path = "../netgap-core" }
+netgap-engine = { path = "../netgap-engine" }
+netgap-interfaces = { path = "../netgap-interfaces" }
+netgap-report = { path = "../netgap-report" }
+netgap-storage = { path = "../netgap-storage" }

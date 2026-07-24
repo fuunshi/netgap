@@ -1,0 +1,16 @@
+[package]
+name = "netgap-engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+netgap-core = { path = "../netgap-core" }
+netgap-interfaces = { path = "../netgap-interfaces" }
+netgap-discover = { path = "../netgap-discover" }
+netgap-scan = { path = "../netgap-scan" }
+netgap-fingerprint = { path = "../netgap-fingerprint" }

@@ -13,7 +13,38 @@ cargo build --release
 
 ## Basic Commands
 
-### Interactive View
+### Window Application
+
+```bash
+./target/release/netgap-gui
+```
+
+For anyone who would rather not use a terminal. It opens on a dashboard with
+the network's health score, device and finding counts, the worst problems in
+plain language, and the most recent scans. Four screens:
+
+- **Dashboard** — how healthy the network is, and what to fix first.
+- **Scan network** — choose an interface, discovery method and whether to
+  check service ports, then watch the scan run.
+- **Devices** — every device found, searchable by address, name or vendor,
+  filterable by severity, with ports and plain-language findings.
+- **History** — every scan in the same database the command line writes, with
+  a finding-count chart over time.
+
+Light and dark themes are built in (the theme button is at the bottom of the
+sidebar). Scans started here are saved to the same history as `netgap scan`.
+
+It can open straight onto a screen, and run in light mode:
+
+```bash
+./target/release/netgap-gui scan
+./target/release/netgap-gui history --light
+```
+
+A desktop session and OpenGL are required; the command line and `netgap ui`
+need only a terminal.
+
+### Interactive Terminal View
 
 ```bash
 ./target/release/netgap ui
@@ -316,7 +347,9 @@ All scan results are automatically saved to SQLite:
 ```
 ┌─────────────────────────────────────────┐
 │  netgap-cli (CLI entrypoint)            │
+│  netgap-gui (window application)        │
 ├─────────────────────────────────────────┤
+│  netgap-engine (the scan pipeline)      │
 │  netgap-report (Format output)          │
 │  netgap-storage (SQLite persistence)    │
 ├─────────────────────────────────────────┤

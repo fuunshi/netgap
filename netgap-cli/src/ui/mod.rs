@@ -12,13 +12,14 @@
 
 mod view;
 
-use crate::discovery::{self, DiscoveryMethod, DiscoveryPlan};
 use anyhow::{anyhow, Result};
 use crossterm::cursor;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use netgap_core::{Device, FindingSummary, ScanConfig, ScanResult};
+use netgap_engine::discovery::{self, DiscoveryMethod, DiscoveryPlan};
+use netgap_engine::enrich::{enrich_devices, run_ipv6};
 use netgap_interfaces::InterfaceInfo;
 use netgap_scan::{PortScanner, ScanConfig as PortScanConfig, TOP_DANGEROUS_PORTS};
 use netgap_storage::{ScanMetadata, ScanStore};
@@ -598,7 +599,7 @@ async fn scan_job(
     let mut devices = discovery::run(&plan).await?;
 
     // IPv6 neighbours annotate devices and can add ones IPv4 missed.
-    crate::run_ipv6(&mut devices, &plan);
+    run_ipv6(&mut devices, &plan);
 
     if devices.is_empty() {
         return Ok(devices);
@@ -608,7 +609,7 @@ async fn scan_job(
         "Found {}. Looking up names and vendors…",
         count_devices(devices.len())
     ));
-    crate::enrich_devices(&plan, &mut devices, false).await;
+    enrich_devices(&plan, &mut devices, false).await;
 
     if full {
         stage(format!(
