@@ -1,11 +1,11 @@
 //! The device list: what was found, and what is wrong with it.
 
-use eframe::egui::{self, Align2, FontId, Pos2, RichText, Sense, Stroke, Ui, Vec2};
+use eframe::egui::{self, Align2, FontId, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 use netgap_core::{Device, Severity};
 
 use crate::app::{NetgapApp, Tab};
 use crate::format;
-use crate::theme::Palette;
+use crate::theme::{self, Palette};
 use crate::widgets;
 
 pub fn show(app: &mut NetgapApp, ui: &mut Ui) {
@@ -105,18 +105,12 @@ pub fn show(app: &mut NetgapApp, ui: &mut Ui) {
 }
 
 fn header(ui: &mut Ui, p: &Palette, count: usize) {
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.label(RichText::new("Devices").size(26.0).strong().color(p.text));
-            if count > 0 {
-                ui.label(
-                    RichText::new(format!("{} found on the network", format::devices(count)))
-                        .size(13.5)
-                        .color(p.muted),
-                );
-            }
-        });
-    });
+    let subtitle = if count > 0 {
+        format!("{} found on the network", format::devices(count))
+    } else {
+        String::new()
+    };
+    widgets::page_header(ui, p, "// 03 · INVENTORY", "Devices", &subtitle, |_| {});
 }
 
 fn filtered_devices(app: &NetgapApp) -> Vec<usize> {
@@ -175,7 +169,8 @@ fn toolbar(app: &mut NetgapApp, ui: &mut Ui, p: &Palette, total: usize, shown: u
             ui.add(
                 egui::TextEdit::singleline(&mut app.device_search)
                     .hint_text("Search address, name or vendor…")
-                    .desired_width(280.0),
+                    .desired_width(280.0)
+                    .font(egui::TextStyle::Monospace),
             );
 
             ui.add_space(6.0);
@@ -232,8 +227,8 @@ fn filter_chip(
         Some(severity) => p.severity(severity),
         None => p.text,
     };
-    let text = RichText::new(label)
-        .size(11.5)
+    let text = RichText::new(theme::tracked(&label.to_uppercase()))
+        .font(theme::mono(9.0))
         .color(if selected { color } else { p.muted });
     let button = egui::Button::new(text)
         .fill(if selected {
@@ -242,7 +237,7 @@ fn filter_chip(
             egui::Color32::TRANSPARENT
         })
         .stroke(Stroke::new(1.0, if selected { color } else { p.border }))
-        .corner_radius(egui::CornerRadius::same(12));
+        .corner_radius(egui::CornerRadius::same(4));
     if ui.add(button).clicked() {
         *current = value;
     }
@@ -292,9 +287,14 @@ fn device_row(ui: &mut Ui, p: &Palette, device: &Device, selected: bool) -> bool
     let painter = ui.painter();
 
     if selected {
-        painter.rect_filled(rect, egui::CornerRadius::same(9), p.accent_soft);
+        painter.rect_filled(rect, egui::CornerRadius::same(7), p.accent_soft);
+        let bar = Rect::from_center_size(
+            Pos2::new(rect.left() + 2.0, rect.center().y),
+            Vec2::new(3.0, 24.0),
+        );
+        painter.rect_filled(bar, egui::CornerRadius::same(2), p.accent);
     } else if response.hovered() {
-        painter.rect_filled(rect, egui::CornerRadius::same(9), p.hover);
+        painter.rect_filled(rect, egui::CornerRadius::same(7), p.hover);
     }
 
     let severity = device.max_severity();
@@ -380,7 +380,7 @@ fn details(app: &mut NetgapApp, ui: &mut Ui, p: &Palette, index: usize) {
     widgets::card(ui, p, |ui| {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
-                ui.label(RichText::new(name).size(19.0).strong().color(p.text));
+                ui.label(RichText::new(name).font(theme::display(16.5)).color(p.text));
                 ui.label(RichText::new(subtitle).size(11.5).color(p.muted));
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -449,10 +449,9 @@ fn details(app: &mut NetgapApp, ui: &mut Ui, p: &Palette, index: usize) {
         ui.add_space(8.0);
 
         ui.label(
-            RichText::new("Open ports")
-                .size(13.0)
-                .strong()
-                .color(p.text),
+            RichText::new(theme::tracked("OPEN PORTS"))
+                .font(theme::mono(9.5))
+                .color(p.muted),
         );
         ui.add_space(4.0);
         if ports.is_empty() {
@@ -479,10 +478,9 @@ fn details(app: &mut NetgapApp, ui: &mut Ui, p: &Palette, index: usize) {
 
         ui.add_space(10.0);
         ui.label(
-            RichText::new(format!("Findings ({})", findings.len()))
-                .size(13.0)
-                .strong()
-                .color(p.text),
+            RichText::new(theme::tracked(&format!("FINDINGS ({})", findings.len())))
+                .font(theme::mono(9.5))
+                .color(p.muted),
         );
         ui.add_space(6.0);
 
@@ -510,8 +508,12 @@ fn details(app: &mut NetgapApp, ui: &mut Ui, p: &Palette, index: usize) {
 }
 
 fn fact(ui: &mut Ui, p: &Palette, label: &str, value: &str) {
-    ui.label(RichText::new(label).size(11.5).color(p.muted));
-    ui.label(RichText::new(value).size(12.0).color(p.text));
+    ui.label(
+        RichText::new(theme::tracked(&label.to_uppercase()))
+            .font(theme::mono(8.5))
+            .color(p.muted),
+    );
+    ui.label(RichText::new(value).font(theme::mono(11.0)).color(p.text));
     ui.end_row();
 }
 

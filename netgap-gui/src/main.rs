@@ -50,7 +50,7 @@ fn main() -> eframe::Result {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Netgap")
             .with_inner_size([1180.0, 780.0])
-            .with_min_inner_size([900.0, 640.0]),
+            .with_min_inner_size([1040.0, 680.0]),
         ..Default::default()
     };
 

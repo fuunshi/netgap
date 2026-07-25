@@ -5,27 +5,20 @@ use netgap_interfaces::InterfaceInfo;
 
 use crate::app::{MethodChoice, NetgapApp, Tab};
 use crate::format;
-use crate::theme::Palette;
+use crate::theme::{self, Palette};
 use crate::widgets;
 
 pub fn show(app: &mut NetgapApp, ui: &mut Ui) {
     let p = app.palette;
 
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.label(
-                RichText::new("Scan network")
-                    .size(26.0)
-                    .strong()
-                    .color(p.text),
-            );
-            ui.label(
-                RichText::new("Pick an interface and say how thoroughly to look.")
-                    .size(13.5)
-                    .color(p.muted),
-            );
-        });
-    });
+    widgets::page_header(
+        ui,
+        &p,
+        "// 02 · RECON",
+        "Scan network",
+        "Pick an interface and say how thoroughly to look.",
+        |_| {},
+    );
 
     ui.add_space(16.0);
 
@@ -153,7 +146,7 @@ fn interface_row(ui: &mut Ui, p: &Palette, interface: &InterfaceInfo, selected: 
         Pos2::new(rect.left() + 36.0, rect.top() + 15.0),
         Align2::LEFT_CENTER,
         &interface.name,
-        FontId::proportional(14.0),
+        FontId::monospace(12.5),
         p.text,
     );
 
@@ -177,7 +170,7 @@ fn interface_row(ui: &mut Ui, p: &Palette, interface: &InterfaceInfo, selected: 
             Pos2::new(tag_x, rect.center().y),
             Align2::LEFT_CENTER,
             "gateway route",
-            FontId::proportional(10.0),
+            FontId::monospace(8.5),
             p.accent,
         );
     }
@@ -202,7 +195,7 @@ fn options_card(app: &mut NetgapApp, ui: &mut Ui, p: &Palette) {
         widgets::label_row(ui, p, "Target network", |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut app.target)
-                    .desired_width(220.0)
+                    .desired_width(ui.available_width())
                     .hint_text("192.168.1.0/24")
                     .font(egui::TextStyle::Monospace),
             );
@@ -212,7 +205,7 @@ fn options_card(app: &mut NetgapApp, ui: &mut Ui, p: &Palette) {
 
         widgets::label_row(ui, p, "Discovery", |ui| {
             egui::ComboBox::from_id_salt("discovery-method")
-                .width(220.0)
+                .width(ui.available_width())
                 .selected_text(app.method.label())
                 .show_ui(ui, |ui| {
                     for method in [MethodChoice::Auto, MethodChoice::Arp, MethodChoice::Tcp] {
@@ -249,7 +242,11 @@ fn options_card(app: &mut NetgapApp, ui: &mut Ui, p: &Palette) {
         ui.separator();
         ui.add_space(8.0);
 
-        ui.label(RichText::new("What to look for").size(13.0).color(p.muted));
+        ui.label(
+            RichText::new(theme::tracked("WHAT TO LOOK FOR"))
+                .font(theme::mono(9.5))
+                .color(p.muted),
+        );
         ui.add_space(4.0);
         ui.radio_value(
             &mut app.full_scan,
@@ -259,7 +256,7 @@ fn options_card(app: &mut NetgapApp, ui: &mut Ui, p: &Palette) {
         ui.radio_value(
             &mut app.full_scan,
             true,
-            "Devices and service ports — check 20 dangerous ports",
+            "Devices and ports — check 20 dangerous ports",
         );
         ui.add_space(2.0);
         widgets::muted(
@@ -282,18 +279,17 @@ fn options_card(app: &mut NetgapApp, ui: &mut Ui, p: &Palette) {
                 .add_sized(
                     [ui.available_width(), 38.0],
                     egui::Button::new(
-                        RichText::new(if app.scanning {
-                            "Scanning…"
+                        RichText::new(theme::tracked(if app.scanning {
+                            "SCANNING…"
                         } else {
-                            "Start scan"
-                        })
-                        .size(14.0)
-                        .strong()
+                            "START SCAN"
+                        }))
+                        .font(theme::display(11.0))
                         .color(p.bg),
                     )
                     .fill(p.accent)
                     .stroke(Stroke::NONE)
-                    .corner_radius(egui::CornerRadius::same(9)),
+                    .corner_radius(egui::CornerRadius::same(5)),
                 )
                 .clicked()
             {
@@ -441,7 +437,7 @@ fn last_result_card(app: &mut NetgapApp, ui: &mut Ui, p: &Palette) {
 /// inside the card instead of widening it.
 fn note(ui: &mut Ui, text: RichText) {
     ui.horizontal_top(|ui| {
-        ui.add_space(150.0);
+        ui.add_space(141.0);
         ui.vertical(|ui| {
             ui.set_max_width(ui.available_width());
             ui.add(egui::Label::new(text).wrap());
