@@ -45,6 +45,15 @@ impl Tab {
             _ => None,
         }
     }
+
+    fn icon(self) -> widgets::NavIcon {
+        match self {
+            Tab::Dashboard => widgets::NavIcon::Dashboard,
+            Tab::Scan => widgets::NavIcon::Scan,
+            Tab::Devices => widgets::NavIcon::Devices,
+            Tab::History => widgets::NavIcon::History,
+        }
+    }
 }
 
 /// How hosts will be found, in the terms the scan screen offers.
@@ -518,64 +527,98 @@ impl NetgapApp {
         let p = self.palette;
 
         egui::SidePanel::left("sidebar")
-            .exact_width(214.0)
+            .exact_width(232.0)
             .resizable(false)
             .frame(
                 egui::Frame::new()
                     .fill(p.panel)
-                    .inner_margin(egui::Margin::symmetric(14, 18)),
+                    .stroke(Stroke::new(1.0, p.border))
+                    .inner_margin(egui::Margin::symmetric(14, 16)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(32.0), egui::Sense::hover());
-                    let painter = ui.painter();
-                    painter.circle_filled(rect.center(), 15.0, p.accent_soft);
-                    painter.circle_stroke(rect.center(), 15.0, Stroke::new(1.5, p.accent));
-                    painter.circle_filled(rect.center(), 4.5, p.accent);
-
-                    ui.add_space(2.0);
+                    widgets::logo_mark(ui, &p, 42.0);
+                    ui.add_space(8.0);
                     ui.vertical(|ui| {
-                        ui.label(RichText::new("netgap").size(20.0).strong().color(p.text));
-                        ui.label(RichText::new("network security").size(10.5).color(p.muted));
+                        ui.add_space(1.0);
+                        ui.label(
+                            RichText::new(theme::tracked("NETGAP"))
+                                .font(theme::display(17.0))
+                                .color(p.text),
+                        );
+                        ui.add_space(1.0);
+                        ui.label(
+                            RichText::new(theme::tracked("NETWORK SECURITY"))
+                                .font(theme::mono(7.5))
+                                .color(p.muted),
+                        );
                     });
                 });
 
-                ui.add_space(28.0);
+                ui.add_space(14.0);
+                widgets::hairline(ui, &p);
+                ui.add_space(14.0);
+
+                ui.label(
+                    RichText::new(theme::tracked("// NAVIGATION"))
+                        .font(theme::mono(8.5))
+                        .color(p.muted),
+                );
+                ui.add_space(8.0);
 
                 for tab in [Tab::Dashboard, Tab::Scan, Tab::Devices, Tab::History] {
-                    if widgets::nav_button(ui, &p, self.tab == tab, tab.label()) {
+                    if widgets::nav_item(ui, &p, self.tab == tab, tab.label(), tab.icon()) {
                         self.tab = tab;
                         if tab == Tab::History {
                             self.reload_history();
                         }
                     }
-                    ui.add_space(2.0);
+                    ui.add_space(5.0);
                 }
 
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                     ui.label(
-                        RichText::new(format!("netgap {}", env!("CARGO_PKG_VERSION")))
-                            .size(11.0)
-                            .color(p.muted),
+                        RichText::new(theme::tracked(&format!(
+                            "NETGAP V{}",
+                            env!("CARGO_PKG_VERSION")
+                        )))
+                        .font(theme::mono(8.0))
+                        .color(p.muted),
                     );
-                    ui.add_space(6.0);
+                    ui.add_space(8.0);
 
-                    let label = if self.theme.is_dark() {
-                        "Light mode"
-                    } else {
-                        "Dark mode"
-                    };
-                    if widgets::secondary_button(ui, &p, label) {
+                    if widgets::theme_toggle(ui, &p, self.theme.is_dark()) {
                         self.toggle_theme();
                     }
 
-                    ui.add_space(10.0);
+                    ui.add_space(14.0);
+
                     ui.label(
-                        RichText::new("Same scanner as the command line.")
-                            .size(11.0)
+                        RichText::new("local only · no account")
+                            .size(10.0)
                             .color(p.muted),
                     );
-                    ui.add_space(4.0);
+                    ui.add_space(2.0);
+                    ui.horizontal(|ui| {
+                        let (rect, _) =
+                            ui.allocate_exact_size(Vec2::splat(9.0), egui::Sense::hover());
+                        let painter = ui.painter();
+                        painter.circle_stroke(
+                            rect.center(),
+                            3.8,
+                            Stroke::new(1.0, p.success.gamma_multiply(0.45)),
+                        );
+                        painter.circle_filled(rect.center(), 2.0, p.success);
+                        ui.add_space(2.0);
+                        ui.label(
+                            RichText::new(theme::tracked("SCANNER ONLINE"))
+                                .font(theme::mono(8.0))
+                                .color(p.text),
+                        );
+                    });
+
+                    ui.add_space(14.0);
+                    widgets::hairline(ui, &p);
                 });
             });
     }
@@ -636,21 +679,26 @@ impl eframe::App for NetgapApp {
                     .fill(self.palette.bg)
                     .inner_margin(egui::Margin::symmetric(26, 22)),
             )
-            .show(ctx, |ui| match self.tab {
-                // The device screen sizes itself to the remaining window and
-                // scrolls its two panes separately. The others are documents
-                // that are taller than a small window, so they scroll whole.
-                Tab::Devices => views::devices::show(self, ui),
-                tab => {
-                    egui::ScrollArea::vertical()
-                        .id_salt(("page", tab.label()))
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| match tab {
-                            Tab::Dashboard => views::dashboard::show(self, ui),
-                            Tab::Scan => views::scan::show(self, ui),
-                            Tab::History => views::history::show(self, ui),
-                            Tab::Devices => unreachable!("handled above"),
-                        });
+            .show(ctx, |ui| {
+                widgets::backdrop(ui, &self.palette);
+
+                match self.tab {
+                    // The device screen sizes itself to the remaining window
+                    // and scrolls its two panes separately. The others are
+                    // documents taller than a small window, so they scroll
+                    // whole.
+                    Tab::Devices => views::devices::show(self, ui),
+                    tab => {
+                        egui::ScrollArea::vertical()
+                            .id_salt(("page", tab.label()))
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| match tab {
+                                Tab::Dashboard => views::dashboard::show(self, ui),
+                                Tab::Scan => views::scan::show(self, ui),
+                                Tab::History => views::history::show(self, ui),
+                                Tab::Devices => unreachable!("handled above"),
+                            });
+                    }
                 }
             });
 

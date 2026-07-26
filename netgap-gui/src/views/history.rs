@@ -1,26 +1,24 @@
 //! Every scan that has been recorded, and how the numbers moved.
 
-use eframe::egui::{self, Align2, FontId, Pos2, RichText, Sense, Ui, Vec2};
+use eframe::egui::{self, Align2, FontId, Pos2, Rect, RichText, Sense, Ui, Vec2};
 use netgap_core::HealthScore;
 
 use crate::app::{NetgapApp, Tab};
 use crate::format::{self, SeverityCounts};
-use crate::theme::Palette;
+use crate::theme::{self, Palette};
 use crate::widgets;
 
 pub fn show(app: &mut NetgapApp, ui: &mut Ui) {
     let p = app.palette;
 
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.label(RichText::new("History").size(26.0).strong().color(p.text));
-            ui.label(
-                RichText::new("Every scan is kept in the same database the command line writes.")
-                    .size(13.5)
-                    .color(p.muted),
-            );
-        });
-    });
+    widgets::page_header(
+        ui,
+        &p,
+        "// 04 · ARCHIVE",
+        "History",
+        "Every scan is kept in the same database the command line writes.",
+        |_| {},
+    );
 
     ui.add_space(16.0);
 
@@ -121,8 +119,12 @@ fn legend(ui: &mut Ui, p: &Palette, color: egui::Color32, label: &str) {
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(Vec2::new(9.0, 9.0), Sense::hover());
         ui.painter()
-            .rect_filled(rect, egui::CornerRadius::same(2), color);
-        ui.label(RichText::new(label).size(10.5).color(p.muted));
+            .rect_filled(rect, egui::CornerRadius::same(1), color);
+        ui.label(
+            RichText::new(theme::tracked(&label.to_uppercase()))
+                .font(theme::mono(8.5))
+                .color(p.muted),
+        );
     });
 }
 
@@ -170,32 +172,32 @@ fn scans_card(
         let (rect, _) =
             ui.allocate_exact_size(Vec2::new(ui.available_width(), 20.0), Sense::hover());
         let painter = ui.painter();
-        let heading = FontId::proportional(10.0);
+        let heading = theme::mono(8.5);
         painter.text(
             Pos2::new(rect.left() + 8.0, rect.center().y),
             Align2::LEFT_CENTER,
-            "WHEN",
+            theme::tracked("WHEN"),
             heading.clone(),
             p.muted,
         );
         painter.text(
             Pos2::new(rect.left() + rect.width() * 0.30, rect.center().y),
             Align2::LEFT_CENTER,
-            "TARGET",
+            theme::tracked("TARGET"),
             heading.clone(),
             p.muted,
         );
         painter.text(
             Pos2::new(rect.left() + rect.width() * 0.66, rect.center().y),
             Align2::LEFT_CENTER,
-            "DEVICES",
+            theme::tracked("DEVICES"),
             heading.clone(),
             p.muted,
         );
         painter.text(
             Pos2::new(rect.left() + rect.width() * 0.82, rect.center().y),
             Align2::LEFT_CENTER,
-            "FINDINGS",
+            theme::tracked("FINDINGS"),
             heading,
             p.muted,
         );
@@ -230,6 +232,11 @@ fn scan_row(ui: &mut Ui, p: &Palette, scan: &netgap_storage::ScanMetadata, selec
 
     if selected {
         painter.rect_filled(rect, egui::CornerRadius::same(7), p.accent_soft);
+        let bar = Rect::from_center_size(
+            Pos2::new(rect.left() + 2.0, rect.center().y),
+            Vec2::new(3.0, 18.0),
+        );
+        painter.rect_filled(bar, egui::CornerRadius::same(2), p.accent);
     } else if response.hovered() {
         painter.rect_filled(rect, egui::CornerRadius::same(7), p.hover);
     }

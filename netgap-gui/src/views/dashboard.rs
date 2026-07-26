@@ -13,22 +13,18 @@ use crate::widgets;
 pub fn show(app: &mut NetgapApp, ui: &mut Ui) {
     let p = app.palette;
 
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.label(RichText::new("Overview").size(26.0).strong().color(p.text));
-            ui.label(
-                RichText::new("Your network, and what needs attention.")
-                    .size(13.5)
-                    .color(p.muted),
-            );
-        });
-
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    widgets::page_header(
+        ui,
+        &p,
+        "// 01 · OVERVIEW",
+        "Dashboard",
+        "Your network, and what needs attention.",
+        |ui| {
             if widgets::primary_button(ui, &p, "Scan network") {
                 app.tab = Tab::Scan;
             }
-        });
-    });
+        },
+    );
 
     ui.add_space(18.0);
 
@@ -176,7 +172,7 @@ fn health_card(ui: &mut Ui, p: &Palette, snapshot: &Snapshot) {
                 );
                 ui.add_space(10.0);
                 ui.label(
-                    RichText::new(format!("Last scan {}", snapshot.last_scan))
+                    RichText::new(format!("scanned {}", snapshot.last_scan))
                         .size(11.5)
                         .color(p.muted),
                 );
@@ -370,17 +366,7 @@ fn empty_state(app: &mut NetgapApp, ui: &mut Ui, p: &Palette) {
     ui.add_space(40.0);
 
     ui.vertical_centered(|ui| {
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(72.0, 72.0), Sense::hover());
-        let painter = ui.painter();
-        painter.circle_filled(rect.center(), 34.0, p.accent_soft);
-        painter.circle_stroke(rect.center(), 34.0, Stroke::new(1.5, p.accent));
-        painter.text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            "◎",
-            FontId::proportional(30.0),
-            p.accent,
-        );
+        widgets::logo_mark(ui, p, 88.0);
 
         ui.add_space(12.0);
         ui.label(
