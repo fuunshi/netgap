@@ -710,8 +710,9 @@ pub fn theme_toggle(ui: &mut Ui, p: &Palette, dark: bool) -> bool {
     response.on_hover_cursor(CursorIcon::PointingHand).clicked()
 }
 
-/// A settings row: label on the left, control on the right.
-pub fn label_row(ui: &mut Ui, p: &Palette, label: &str, add: impl FnOnce(&mut Ui)) {
+/// A settings row: label on the left, control on the right. Returns whatever
+/// the control returns, so a caller can see the text field's response.
+pub fn label_row<R>(ui: &mut Ui, p: &Palette, label: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
     ui.horizontal(|ui| {
         ui.add_sized(
             [132.0, 24.0],
@@ -721,6 +722,178 @@ pub fn label_row(ui: &mut Ui, p: &Palette, label: &str, add: impl FnOnce(&mut Ui
                     .color(p.muted),
             ),
         );
-        add(ui);
-    });
+        add(ui)
+    })
+    .inner
+}
+
+/// Which glyph sits at the start of a text field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldIcon {
+    Search,
+    Target,
+}
+
+/// The id of the device search field, so `Ctrl+F` can focus it from anywhere.
+pub fn search_field_id() -> egui::Id {
+    egui::Id::new("device-search-field")
+}
+
+/// What a text field shows when it is empty, and the shortcut it answers to.
+#[derive(Debug, Clone, Copy)]
+pub struct FieldHint<'a> {
+    /// Placeholder shown while the field is empty.
+    pub text: &'a str,
+    pub icon: FieldIcon,
+    /// Painted on the right while the field is empty and unfocused.
+    pub shortcut: Option<&'a str>,
+}
+
+/// A text field with a proper frame: a leading icon, a focus ring, an optional
+/// shortcut hint, and a clear button once there is something to clear. egui's
+/// own TextEdit is used inside, so editing, selection and IME keep working.
+pub fn text_field(
+    ui: &mut Ui,
+    p: &Palette,
+    id: egui::Id,
+    text: &mut String,
+    hint: FieldHint<'_>,
+    width: f32,
+) -> egui::Response {
+    let focused = ui.memory(|memory| memory.has_focus(id));
+    let mut cleared = false;
+
+    let frame = egui::Frame::new()
+        .fill(p.field)
+        .stroke(Stroke::new(1.0, p.border))
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(10, 5))
+        .show(ui, |ui| {
+            ui.set_width((width - 20.0).max(40.0));
+            ui.horizontal(|ui| {
+                let icon_color = if focused { p.accent } else { p.muted };
+                let (icon_rect, _) = ui.allocate_exact_size(Vec2::splat(15.0), Sense::hover());
+                paint_field_icon(ui.painter(), icon_rect, hint.icon, icon_color);
+                ui.add_space(3.0);
+
+                // Leave room for the clear button or the shortcut hint, so the
+                // caret never runs underneath either.
+                let reserved = if text.is_empty() {
+                    if hint.shortcut.is_some() {
+                        52.0
+                    } else {
+                        0.0
+                    }
+                } else {
+                    22.0
+                };
+
+                let edit = ui.add(
+                    egui::TextEdit::singleline(text)
+                        .id(id)
+                        .frame(false)
+                        .margin(egui::Margin::symmetric(0, 4))
+                        .desired_width((ui.available_width() - reserved).max(24.0))
+                        .hint_text(RichText::new(hint.text).size(12.5).color(p.muted))
+                        .font(egui::TextStyle::Monospace),
+                );
+
+                if !text.is_empty() && clear_button(ui, p) {
+                    cleared = true;
+                }
+
+                edit
+            })
+            .inner
+        });
+
+    if cleared {
+        text.clear();
+        ui.memory_mut(|memory| memory.request_focus(id));
+    }
+
+    let response = frame.inner;
+    let rect = frame.response.rect;
+    let stroke = if response.has_focus() {
+        Stroke::new(1.5, p.accent)
+    } else if frame.response.hovered() {
+        Stroke::new(1.0, p.accent_alpha(130))
+    } else {
+        Stroke::new(1.0, p.border)
+    };
+    ui.painter()
+        .rect_stroke(rect, CornerRadius::same(6), stroke, StrokeKind::Inside);
+
+    if text.is_empty() {
+        if let Some(shortcut) = hint.shortcut.filter(|_| !focused) {
+            ui.painter().text(
+                Pos2::new(rect.right() - 10.0, rect.center().y),
+                Align2::RIGHT_CENTER,
+                theme::tracked(&shortcut.to_uppercase()),
+                theme::mono(8.0),
+                p.muted,
+            );
+        }
+    }
+
+    response
+}
+
+fn paint_field_icon(painter: &Painter, rect: Rect, icon: FieldIcon, color: Color32) {
+    let center = rect.center();
+    let stroke = Stroke::new(1.3, color);
+
+    match icon {
+        FieldIcon::Search => {
+            let lens = center + Vec2::new(-1.0, -1.0);
+            painter.circle_stroke(lens, 4.4, stroke);
+            painter.line_segment(
+                [lens + Vec2::new(3.2, 3.2), lens + Vec2::new(6.3, 6.3)],
+                Stroke::new(1.6, color),
+            );
+        }
+        FieldIcon::Target => {
+            painter.circle_stroke(center, 4.6, stroke);
+            painter.circle_filled(center, 1.1, color);
+            for direction in [
+                Vec2::new(1.0, 0.0),
+                Vec2::new(-1.0, 0.0),
+                Vec2::new(0.0, 1.0),
+                Vec2::new(0.0, -1.0),
+            ] {
+                painter.line_segment(
+                    [center + direction * 5.9, center + direction * 7.4],
+                    Stroke::new(1.2, color),
+                );
+            }
+        }
+    }
+}
+
+fn clear_button(ui: &mut Ui, p: &Palette) -> bool {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::click());
+    let color = if response.hovered() {
+        p.accent
+    } else {
+        p.muted
+    };
+
+    if response.hovered() {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(3), p.hover);
+    }
+
+    let center = rect.center();
+    let arm = 3.1;
+    let stroke = Stroke::new(1.2, color);
+    ui.painter().line_segment(
+        [center + Vec2::new(-arm, -arm), center + Vec2::new(arm, arm)],
+        stroke,
+    );
+    ui.painter().line_segment(
+        [center + Vec2::new(arm, -arm), center + Vec2::new(-arm, arm)],
+        stroke,
+    );
+
+    response.on_hover_cursor(CursorIcon::PointingHand).clicked()
 }

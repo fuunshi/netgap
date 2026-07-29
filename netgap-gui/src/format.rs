@@ -60,9 +60,10 @@ pub fn device_name(device: &Device) -> String {
 
 /// A second line under the IP: vendor and type, when either is known.
 pub fn device_subtitle(device: &Device) -> String {
+    let name = device_name(device);
     let mut parts = Vec::new();
     if let Some(kind) = device.device_type.as_deref().filter(|s| !s.is_empty()) {
-        if Some(kind) != device.hostname.as_deref() {
+        if kind != name {
             parts.push(kind.to_string());
         }
     }
@@ -134,6 +135,37 @@ pub fn date_only(timestamp: &str) -> String {
     }
 }
 
+/// The usual service on a port, for the small labels beside a number. Only
+/// the ports worth scanning are named; the rest are left to the finding, which
+/// carries the name the service reported for itself.
+pub fn port_service(port: u16) -> Option<&'static str> {
+    Some(match port {
+        20 => "FTP data",
+        21 => "FTP",
+        22 => "SSH",
+        23 => "Telnet",
+        25 => "SMTP",
+        53 => "DNS",
+        69 => "TFTP",
+        80 => "HTTP",
+        110 => "POP3",
+        139 => "NetBIOS",
+        143 => "IMAP",
+        161 => "SNMP",
+        389 => "LDAP",
+        443 => "HTTPS",
+        445 => "SMB",
+        631 => "IPP",
+        3306 => "MySQL",
+        3389 => "RDP",
+        5432 => "PostgreSQL",
+        5900 => "VNC",
+        8080 => "HTTP alt",
+        8443 => "HTTPS alt",
+        _ => return None,
+    })
+}
+
 /// Truncate with an ellipsis, counting characters rather than bytes.
 pub fn truncate(text: &str, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
@@ -201,6 +233,10 @@ mod tests {
         assert_eq!(subtitle, "HP");
         let subtitle = device_subtitle(&device(Some("printer.lan"), Some("Printer"), Some("HP")));
         assert_eq!(subtitle, "Printer · HP");
+
+        // The classifier's fallback label is the same as the name it produces.
+        let subtitle = device_subtitle(&device(None, Some("Unknown device"), Some("HP")));
+        assert_eq!(subtitle, "HP");
     }
 
     #[test]
@@ -261,6 +297,13 @@ mod tests {
         assert_eq!(short_time("not a date"), "not a date");
         assert_eq!(relative_time("not a date"), "not a date");
         assert_eq!(date_only("2026-11-03"), "2026-11-03");
+    }
+
+    #[test]
+    fn known_ports_get_a_name() {
+        assert_eq!(port_service(445), Some("SMB"));
+        assert_eq!(port_service(22), Some("SSH"));
+        assert_eq!(port_service(12345), None);
     }
 
     #[test]

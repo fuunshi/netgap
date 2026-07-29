@@ -190,28 +190,36 @@ pub fn apply(ctx: &egui::Context, theme: Theme) {
     visuals.window_corner_radius = CornerRadius::same(10);
     visuals.menu_corner_radius = CornerRadius::same(8);
 
+    // `bg_fill` is used by some widgets and `weak_bg_fill` by buttons and
+    // combo boxes. Both are set, or the built-in controls keep egui's grey
+    // beside the hand-painted fields.
     let widgets = &mut visuals.widgets;
     widgets.noninteractive.bg_fill = palette.card;
+    widgets.noninteractive.weak_bg_fill = palette.card;
     widgets.noninteractive.bg_stroke = Stroke::new(1.0, palette.border);
     widgets.noninteractive.fg_stroke = Stroke::new(1.0, palette.text);
     widgets.noninteractive.corner_radius = CornerRadius::same(8);
 
-    widgets.inactive.bg_fill = palette.card;
+    widgets.inactive.bg_fill = palette.field;
+    widgets.inactive.weak_bg_fill = palette.field;
     widgets.inactive.bg_stroke = Stroke::new(1.0, palette.border);
     widgets.inactive.fg_stroke = Stroke::new(1.0, palette.text);
     widgets.inactive.corner_radius = CornerRadius::same(6);
 
     widgets.hovered.bg_fill = palette.hover;
+    widgets.hovered.weak_bg_fill = palette.hover;
     widgets.hovered.bg_stroke = Stroke::new(1.0, palette.accent);
     widgets.hovered.fg_stroke = Stroke::new(1.0, palette.text);
     widgets.hovered.corner_radius = CornerRadius::same(6);
 
     widgets.active.bg_fill = palette.accent_soft;
+    widgets.active.weak_bg_fill = palette.accent_soft;
     widgets.active.bg_stroke = Stroke::new(1.0, palette.accent);
     widgets.active.fg_stroke = Stroke::new(1.0, palette.accent);
     widgets.active.corner_radius = CornerRadius::same(6);
 
     widgets.open.bg_fill = palette.card;
+    widgets.open.weak_bg_fill = palette.card;
     widgets.open.bg_stroke = Stroke::new(1.0, palette.border);
     widgets.open.corner_radius = CornerRadius::same(6);
 

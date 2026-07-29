@@ -90,7 +90,9 @@ fn interface_card(app: &mut NetgapApp, ui: &mut Ui, p: &Palette) {
         let mut chosen = None;
         egui::ScrollArea::vertical()
             .max_height(268.0)
-            .auto_shrink([false, false])
+            // Shrink to the number of interfaces, so a machine with one
+            // interface does not leave an empty block in the card.
+            .auto_shrink([false, true])
             .show(ui, |ui| {
                 for index in visible {
                     let Some(interface) = app.interfaces.get(index) else {
@@ -192,14 +194,31 @@ fn options_card(app: &mut NetgapApp, ui: &mut Ui, p: &Palette) {
         widgets::section_heading(ui, p, "Scan options", None);
         ui.add_space(12.0);
 
-        widgets::label_row(ui, p, "Target network", |ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut app.target)
-                    .desired_width(ui.available_width())
-                    .hint_text("192.168.1.0/24")
-                    .font(egui::TextStyle::Monospace),
-            );
+        let target_field = widgets::label_row(ui, p, "Target network", |ui| {
+            let width = ui.available_width();
+            widgets::text_field(
+                ui,
+                p,
+                egui::Id::new("scan-target-field"),
+                &mut app.target,
+                widgets::FieldHint {
+                    text: "192.168.1.0/24",
+                    icon: widgets::FieldIcon::Target,
+                    shortcut: None,
+                },
+                width,
+            )
         });
+
+        // Enter in the target field is the same as pressing Start.
+        if target_field.lost_focus()
+            && ui.input(|input| input.key_pressed(egui::Key::Enter))
+            && !app.scanning
+            && app.selected_interface.is_some()
+            && !app.target.trim().is_empty()
+        {
+            app.start_scan();
+        }
 
         ui.add_space(4.0);
 

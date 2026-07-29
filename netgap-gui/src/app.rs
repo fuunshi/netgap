@@ -99,6 +99,22 @@ pub struct LoadedScan {
     pub result: ScanResult,
 }
 
+/// How the newest scan differs from the one before it. Computed once when the
+/// scan is loaded rather than every frame, because it reads both scans from
+/// the database.
+#[derive(Debug, Clone, Default)]
+pub struct ScanChanges {
+    pub new_devices: Vec<String>,
+    pub missing_devices: Vec<String>,
+    /// Critical findings in the newest scan. The store does not say which of
+    /// them also existed before, so the card names them as present, not new.
+    pub critical_in_scan: usize,
+    /// Critical findings the previous scan had and the newest one does not.
+    pub critical_gone: usize,
+    /// When the scan being compared against was recorded, in words.
+    pub previous_when: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Toast {
     pub text: String,
@@ -131,6 +147,8 @@ pub struct NetgapApp {
 
     /// The newest recorded scan, which the dashboard describes.
     pub latest: Option<LoadedScan>,
+    /// Differences between the newest scan and the one before it.
+    pub changes: Option<ScanChanges>,
     /// The scan the device view is showing. Starts as the newest.
     pub selected_scan: Option<LoadedScan>,
 
@@ -190,6 +208,7 @@ impl NetgapApp {
             scans: Vec::new(),
             seen_devices: 0,
             latest: None,
+            changes: None,
             selected_scan: None,
             interfaces,
             interfaces_error,
@@ -224,7 +243,10 @@ impl NetgapApp {
         };
 
         match store.list_scans() {
-            Ok(scans) => self.scans = scans,
+            Ok(scans) => {
+                self.scans = scans;
+                self.store_error = None;
+            }
             Err(error) => {
                 self.store_error = Some(format!("Could not read scan history: {error}"));
             }
@@ -259,6 +281,64 @@ impl NetgapApp {
                 self.store_error = Some(format!("Could not read the latest scan: {error}"));
             }
         }
+
+        self.refresh_changes();
+    }
+
+    /// Read the newest scan and the one before it, and work out what changed.
+    /// Only the dashboard shows this, so a failure stays quiet: the card just
+    /// says it has nothing to compare yet.
+    fn refresh_changes(&mut self) {
+        self.changes = None;
+
+        let Some(latest_id) = self.latest.as_ref().and_then(|scan| scan.id.clone()) else {
+            return;
+        };
+        let Some(previous) = self.scans.iter().find(|scan| scan.id != latest_id).cloned() else {
+            return;
+        };
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+
+        if let Ok(comparison) = store.compare_scans(&previous.id, &latest_id) {
+            // Older scans can contain link-local IPv6 hosts. They read as
+            // noise beside addresses a person recognises, and a link-local
+            // address changing says nothing about the device.
+            let ipv4 = |ip: &String| !ip.contains(':');
+            self.changes = Some(ScanChanges {
+                new_devices: comparison.new_devices.into_iter().filter(ipv4).collect(),
+                missing_devices: comparison
+                    .removed_devices
+                    .into_iter()
+                    .filter(ipv4)
+                    .collect(),
+                critical_in_scan: comparison.new_critical.len(),
+                critical_gone: comparison.resolved_findings.len(),
+                previous_when: crate::format::relative_time(&previous.created_at),
+            });
+        }
+    }
+
+    /// Re-read the history from disk, in case the command line recorded a scan
+    /// while the window was open.
+    pub fn refresh(&mut self) {
+        self.reload_history();
+        self.load_latest();
+        self.toast = Some(Toast::new("History reloaded."));
+    }
+
+    /// Show one device from the latest scan on the Devices screen. The filters
+    /// are cleared so the device is always visible in the list.
+    pub fn open_device(&mut self, index: usize) {
+        let Some(latest) = self.latest.clone() else {
+            return;
+        };
+        self.selected_scan = Some(latest);
+        self.selected_device = Some(index);
+        self.device_search.clear();
+        self.severity_filter = None;
+        self.tab = Tab::Devices;
     }
 
     /// Load one stored scan for the device view and the history detail.
@@ -442,6 +522,7 @@ impl NetgapApp {
                     self.latest = Some(loaded.clone());
                     self.selected_scan = Some(loaded);
                     self.reload_history();
+                    self.refresh_changes();
                     self.tab = Tab::Devices;
 
                     self.toast = Some(Toast::new(match warning {
@@ -474,6 +555,41 @@ impl NetgapApp {
                 self.events = None;
                 self.scan_error = Some("The scan stopped before it reported a result.".to_string());
             }
+        }
+    }
+
+    /// Keyboard equivalents for the things people do most: move between
+    /// screens, jump to the device search, and re-read the history.
+    fn shortcuts(&mut self, ctx: &egui::Context) {
+        let command = egui::Modifiers::COMMAND;
+        let (dashboard, scan, devices, history, find, refresh) = ctx.input_mut(|input| {
+            (
+                input.consume_key(command, egui::Key::Num1),
+                input.consume_key(command, egui::Key::Num2),
+                input.consume_key(command, egui::Key::Num3),
+                input.consume_key(command, egui::Key::Num4),
+                input.consume_key(command, egui::Key::F),
+                input.consume_key(command, egui::Key::R),
+            )
+        });
+
+        if dashboard {
+            self.tab = Tab::Dashboard;
+        } else if scan {
+            self.tab = Tab::Scan;
+        } else if devices {
+            self.tab = Tab::Devices;
+        } else if history {
+            self.tab = Tab::History;
+            self.reload_history();
+        }
+
+        if find {
+            self.tab = Tab::Devices;
+            ctx.memory_mut(|memory| memory.request_focus(widgets::search_field_id()));
+        }
+        if refresh {
+            self.refresh();
         }
     }
 
@@ -664,6 +780,7 @@ impl eframe::App for NetgapApp {
             self.theme_dirty = false;
         }
 
+        self.shortcuts(ctx);
         self.poll_events();
         self.ensure_selection();
 

@@ -166,12 +166,21 @@ fn filtered_devices(app: &NetgapApp) -> Vec<usize> {
 fn toolbar(app: &mut NetgapApp, ui: &mut Ui, p: &Palette, total: usize, shown: usize) {
     widgets::card(ui, p, |ui| {
         ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut app.device_search)
-                    .hint_text("Search address, name or vendor…")
-                    .desired_width(280.0)
-                    .font(egui::TextStyle::Monospace),
+            let search = widgets::text_field(
+                ui,
+                p,
+                widgets::search_field_id(),
+                &mut app.device_search,
+                widgets::FieldHint {
+                    text: "Search address or name…",
+                    icon: widgets::FieldIcon::Search,
+                    shortcut: Some("Ctrl F"),
+                },
+                300.0,
             );
+            if search.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+                app.device_search.clear();
+            }
 
             ui.add_space(6.0);
             filter_chip(ui, p, &mut app.severity_filter, None, "All");
