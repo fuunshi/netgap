@@ -648,7 +648,7 @@ impl NetgapApp {
             .frame(
                 egui::Frame::new()
                     .fill(p.panel)
-                    .stroke(Stroke::new(1.0, p.border))
+                    .stroke(Stroke::new(1.0_f32, p.border))
                     .inner_margin(egui::Margin::symmetric(14, 16)),
             )
             .show(ctx, |ui| {
@@ -722,7 +722,7 @@ impl NetgapApp {
                         painter.circle_stroke(
                             rect.center(),
                             3.8,
-                            Stroke::new(1.0, p.success.gamma_multiply(0.45)),
+                            Stroke::new(1.0_f32, p.success.gamma_multiply(0.45)),
                         );
                         painter.circle_filled(rect.center(), 2.0, p.success);
                         ui.add_space(2.0);
@@ -758,7 +758,7 @@ impl NetgapApp {
             .show(ctx, |ui| {
                 egui::Frame::new()
                     .fill(p.card)
-                    .stroke(Stroke::new(1.0, p.accent))
+                    .stroke(Stroke::new(1.0_f32, p.accent))
                     .corner_radius(egui::CornerRadius::same(10))
                     .inner_margin(egui::Margin::symmetric(16, 11))
                     .show(ui, |ui| {

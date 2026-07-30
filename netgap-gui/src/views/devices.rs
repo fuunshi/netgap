@@ -245,7 +245,10 @@ fn filter_chip(
         } else {
             egui::Color32::TRANSPARENT
         })
-        .stroke(Stroke::new(1.0, if selected { color } else { p.border }))
+        .stroke(Stroke::new(
+            1.0_f32,
+            if selected { color } else { p.border },
+        ))
         .corner_radius(egui::CornerRadius::same(4));
     if ui.add(button).clicked() {
         *current = value;
@@ -384,7 +387,7 @@ fn details(app: &mut NetgapApp, ui: &mut Ui, p: &Palette, index: usize) {
     let ports = device.open_ports.clone();
     let severity = device.max_severity();
     let mut findings: Vec<netgap_core::Finding> = device.findings.clone();
-    findings.sort_by(|a, b| b.severity.cmp(&a.severity));
+    findings.sort_by_key(|finding| std::cmp::Reverse(finding.severity));
 
     widgets::card(ui, p, |ui| {
         ui.horizontal(|ui| {
@@ -471,7 +474,7 @@ fn details(app: &mut NetgapApp, ui: &mut Ui, p: &Palette, index: usize) {
                     egui::Frame::new()
                         .fill(p.field)
                         .corner_radius(egui::CornerRadius::same(5))
-                        .stroke(Stroke::new(1.0, p.border))
+                        .stroke(Stroke::new(1.0_f32, p.border))
                         .inner_margin(egui::Margin::symmetric(7, 2))
                         .show(ui, |ui| {
                             ui.label(
@@ -529,7 +532,7 @@ fn fact(ui: &mut Ui, p: &Palette, label: &str, value: &str) {
 fn finding_card(ui: &mut Ui, p: &Palette, finding: &netgap_core::Finding) {
     egui::Frame::new()
         .fill(p.field)
-        .stroke(Stroke::new(1.0, p.border))
+        .stroke(Stroke::new(1.0_f32, p.border))
         .corner_radius(egui::CornerRadius::same(8))
         .inner_margin(egui::Margin::same(10))
         .show(ui, |ui| {

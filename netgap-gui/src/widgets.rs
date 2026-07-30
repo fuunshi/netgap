@@ -20,7 +20,7 @@ pub fn card(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui)) -> egui::Respon
     let width = ui.available_width();
     egui::Frame::new()
         .fill(p.card)
-        .stroke(Stroke::new(1.0, p.border))
+        .stroke(Stroke::new(1.0_f32, p.border))
         .corner_radius(CornerRadius::same(10))
         .inner_margin(egui::Margin::same(16))
         .show(ui, |ui| {
@@ -74,7 +74,7 @@ pub fn backdrop(ui: &Ui, p: &Palette) {
     while x < rect.right() {
         painter.line_segment(
             [Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())],
-            Stroke::new(1.0, p.grid),
+            Stroke::new(1.0_f32, p.grid),
         );
         x += step;
     }
@@ -83,7 +83,7 @@ pub fn backdrop(ui: &Ui, p: &Palette) {
     while y < rect.bottom() {
         painter.line_segment(
             [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
-            Stroke::new(1.0, p.grid),
+            Stroke::new(1.0_f32, p.grid),
         );
         y += step;
     }
@@ -136,7 +136,7 @@ pub fn paint_logo(painter: &Painter, rect: Rect, p: &Palette) {
         (vertices[1].y + vertices[2].y) / 2.0,
     );
     let tip = center + (gap - center) * 0.70;
-    painter.line_segment([center, tip], Stroke::new(1.0, p.accent_alpha(150)));
+    painter.line_segment([center, tip], Stroke::new(1.0_f32, p.accent_alpha(150)));
     painter.circle_filled(tip, (rect.width() * 0.038).max(1.3), p.accent);
     painter.circle_filled(center, (rect.width() * 0.055).max(1.8), p.accent);
 }
@@ -162,7 +162,7 @@ pub fn nav_item(ui: &mut Ui, p: &Palette, selected: bool, label: &str, icon: Nav
         painter.rect_stroke(
             rect,
             CornerRadius::same(7),
-            Stroke::new(1.0, p.accent_alpha(70)),
+            Stroke::new(1.0_f32, p.accent_alpha(70)),
             StrokeKind::Inside,
         );
 
@@ -210,7 +210,7 @@ pub fn nav_item(ui: &mut Ui, p: &Palette, selected: bool, label: &str, icon: Nav
 }
 
 fn paint_icon(painter: &Painter, rect: Rect, icon: NavIcon, color: Color32, active: bool) {
-    let stroke = Stroke::new(1.4, color);
+    let stroke = Stroke::new(1.4_f32, color);
     let center = rect.center();
 
     match icon {
@@ -352,8 +352,8 @@ pub fn health_ring(ui: &mut Ui, p: &Palette, score: u8, size: f32) -> egui::Resp
     let ticks = 60;
     let lit = ((score as f32 / 100.0) * ticks as f32).round() as usize;
 
-    painter.circle_stroke(center, radius + 7.0, Stroke::new(1.0, p.border));
-    painter.circle_stroke(center, radius - 11.0, Stroke::new(1.0, p.track));
+    painter.circle_stroke(center, radius + 7.0, Stroke::new(1.0_f32, p.border));
+    painter.circle_stroke(center, radius - 11.0, Stroke::new(1.0_f32, p.track));
 
     for index in 0..ticks {
         let angle =
@@ -361,7 +361,7 @@ pub fn health_ring(ui: &mut Ui, p: &Palette, score: u8, size: f32) -> egui::Resp
         let direction = Vec2::angled(angle);
         let major = index % 5 == 0;
         let inner = radius - if major { 7.0 } else { 4.0 };
-        let width = if major { 2.3 } else { 1.3 };
+        let width: f32 = if major { 2.3 } else { 1.3 };
         let tick_color = if index < lit { color } else { p.track };
         painter.line_segment(
             [center + direction * inner, center + direction * radius],
@@ -468,7 +468,7 @@ pub fn trend_chart(ui: &mut Ui, p: &Palette, scans: &[ScanMetadata], height: f32
         let y = baseline - chart_height * step as f32 / 4.0;
         painter.line_segment(
             [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
-            Stroke::new(1.0, p.grid),
+            Stroke::new(1.0_f32, p.grid),
         );
     }
 
@@ -477,7 +477,7 @@ pub fn trend_chart(ui: &mut Ui, p: &Palette, scans: &[ScanMetadata], height: f32
             Pos2::new(rect.left(), baseline),
             Pos2::new(rect.right(), baseline),
         ],
-        Stroke::new(1.0, p.border),
+        Stroke::new(1.0_f32, p.border),
     );
 
     if recent.is_empty() {
@@ -643,7 +643,7 @@ pub fn secondary_button(ui: &mut Ui, p: &Palette, label: &str) -> bool {
         rect,
         CornerRadius::same(5),
         fill,
-        Stroke::new(1.0, border),
+        Stroke::new(1.0_f32, border),
         StrokeKind::Inside,
     );
     painter.galley(rect.center() - galley.size() / 2.0, galley, color);
@@ -671,7 +671,7 @@ pub fn theme_toggle(ui: &mut Ui, p: &Palette, dark: bool) -> bool {
         } else {
             Color32::TRANSPARENT
         },
-        Stroke::new(1.0, if hovered { p.accent } else { p.border }),
+        Stroke::new(1.0_f32, if hovered { p.accent } else { p.border }),
         StrokeKind::Inside,
     );
 
@@ -679,13 +679,13 @@ pub fn theme_toggle(ui: &mut Ui, p: &Palette, dark: bool) -> bool {
     let center = Pos2::new(rect.left() + 17.0, rect.center().y);
     if dark {
         // A sun: switching to the light theme.
-        painter.circle_stroke(center, 3.4, Stroke::new(1.2, color));
+        painter.circle_stroke(center, 3.4, Stroke::new(1.2_f32, color));
         for index in 0..8 {
             let angle = std::f32::consts::TAU * index as f32 / 8.0;
             let direction = Vec2::angled(angle);
             painter.line_segment(
                 [center + direction * 5.3, center + direction * 7.0],
-                Stroke::new(1.2, color),
+                Stroke::new(1.2_f32, color),
             );
         }
     } else {
@@ -765,7 +765,7 @@ pub fn text_field(
 
     let frame = egui::Frame::new()
         .fill(p.field)
-        .stroke(Stroke::new(1.0, p.border))
+        .stroke(Stroke::new(1.0_f32, p.border))
         .corner_radius(CornerRadius::same(6))
         .inner_margin(egui::Margin::symmetric(10, 5))
         .show(ui, |ui| {
@@ -815,11 +815,11 @@ pub fn text_field(
     let response = frame.inner;
     let rect = frame.response.rect;
     let stroke = if response.has_focus() {
-        Stroke::new(1.5, p.accent)
+        Stroke::new(1.5_f32, p.accent)
     } else if frame.response.hovered() {
-        Stroke::new(1.0, p.accent_alpha(130))
+        Stroke::new(1.0_f32, p.accent_alpha(130))
     } else {
-        Stroke::new(1.0, p.border)
+        Stroke::new(1.0_f32, p.border)
     };
     ui.painter()
         .rect_stroke(rect, CornerRadius::same(6), stroke, StrokeKind::Inside);
@@ -841,7 +841,7 @@ pub fn text_field(
 
 fn paint_field_icon(painter: &Painter, rect: Rect, icon: FieldIcon, color: Color32) {
     let center = rect.center();
-    let stroke = Stroke::new(1.3, color);
+    let stroke = Stroke::new(1.3_f32, color);
 
     match icon {
         FieldIcon::Search => {
@@ -849,7 +849,7 @@ fn paint_field_icon(painter: &Painter, rect: Rect, icon: FieldIcon, color: Color
             painter.circle_stroke(lens, 4.4, stroke);
             painter.line_segment(
                 [lens + Vec2::new(3.2, 3.2), lens + Vec2::new(6.3, 6.3)],
-                Stroke::new(1.6, color),
+                Stroke::new(1.6_f32, color),
             );
         }
         FieldIcon::Target => {
@@ -863,7 +863,7 @@ fn paint_field_icon(painter: &Painter, rect: Rect, icon: FieldIcon, color: Color
             ] {
                 painter.line_segment(
                     [center + direction * 5.9, center + direction * 7.4],
-                    Stroke::new(1.2, color),
+                    Stroke::new(1.2_f32, color),
                 );
             }
         }
@@ -885,7 +885,7 @@ fn clear_button(ui: &mut Ui, p: &Palette) -> bool {
 
     let center = rect.center();
     let arm = 3.1;
-    let stroke = Stroke::new(1.2, color);
+    let stroke = Stroke::new(1.2_f32, color);
     ui.painter().line_segment(
         [center + Vec2::new(-arm, -arm), center + Vec2::new(arm, arm)],
         stroke,

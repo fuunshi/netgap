@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Netgap
+GenericName=Network Security Scanner
+Comment=Scan the local network and see what is exposed
+Exec=netgap-gui
+Icon=netgap
+Terminal=false
+Categories=Network;
+Keywords=network;scanner;security;lan;ports;
+StartupNotify=true
+StartupWMClass=netgap-gui

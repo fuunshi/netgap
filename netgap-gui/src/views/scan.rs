@@ -131,7 +131,7 @@ fn interface_row(ui: &mut Ui, p: &Palette, interface: &InterfaceInfo, selected: 
         painter.rect_stroke(
             rect,
             egui::CornerRadius::same(9),
-            Stroke::new(1.0, p.accent),
+            Stroke::new(1.0_f32, p.accent),
             egui::StrokeKind::Inside,
         );
     } else if response.hovered() {
@@ -139,7 +139,7 @@ fn interface_row(ui: &mut Ui, p: &Palette, interface: &InterfaceInfo, selected: 
     }
 
     let radio_center = Pos2::new(rect.left() + 18.0, rect.center().y);
-    painter.circle_stroke(radio_center, 7.0, Stroke::new(1.5, p.muted));
+    painter.circle_stroke(radio_center, 7.0, Stroke::new(1.5_f32, p.muted));
     if selected {
         painter.circle_filled(radio_center, 4.0, p.accent);
     }
@@ -467,7 +467,7 @@ fn note(ui: &mut Ui, text: RichText) {
 fn error_card(ui: &mut Ui, p: &Palette, message: &str) {
     egui::Frame::new()
         .fill(p.card)
-        .stroke(Stroke::new(1.0, p.critical))
+        .stroke(Stroke::new(1.0_f32, p.critical))
         .corner_radius(egui::CornerRadius::same(10))
         .inner_margin(egui::Margin::symmetric(14, 10))
         .show(ui, |ui| {

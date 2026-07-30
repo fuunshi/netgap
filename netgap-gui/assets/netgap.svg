@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Netgap's mark: a network hexagon with one edge left open, and a sweep
+  pointing through the gap. The same shape the window paints in its sidebar,
+  kept here so desktop launchers show it too. Stroke attributes are repeated
+  on every line rather than set on a group, because not every renderer
+  inherits them.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <rect x="0" y="0" width="256" height="256" rx="56" fill="#060a0e"/>
+  <polygon points="230.4,128 179.2,216.67 76.8,216.67 25.6,128 76.8,39.33 179.2,39.33"
+           fill="#062d2a"/>
+  <!-- The edge between the bottom two vertices stays open. -->
+  <line x1="230.4" y1="128" x2="179.2" y2="216.67" stroke="#00f0c8" stroke-width="8.19" stroke-linecap="round"/>
+  <line x1="76.8" y1="216.67" x2="25.6" y2="128" stroke="#00f0c8" stroke-width="8.19" stroke-linecap="round"/>
+  <line x1="25.6" y1="128" x2="76.8" y2="39.33" stroke="#00f0c8" stroke-width="8.19" stroke-linecap="round"/>
+  <line x1="76.8" y1="39.33" x2="179.2" y2="39.33" stroke="#00f0c8" stroke-width="8.19" stroke-linecap="round"/>
+  <line x1="179.2" y1="39.33" x2="230.4" y2="128" stroke="#00f0c8" stroke-width="8.19" stroke-linecap="round"/>
+  <circle cx="230.4" cy="128" r="8.96" fill="#00f0c8"/>
+  <circle cx="179.2" cy="216.67" r="8.96" fill="#00f0c8"/>
+  <circle cx="76.8" cy="216.67" r="8.96" fill="#00f0c8"/>
+  <circle cx="25.6" cy="128" r="8.96" fill="#00f0c8"/>
+  <circle cx="76.8" cy="39.33" r="8.96" fill="#00f0c8"/>
+  <circle cx="179.2" cy="39.33" r="8.96" fill="#00f0c8"/>
+  <line x1="128" y1="128" x2="128" y2="190.07" stroke="#00f0c8" stroke-opacity="0.59" stroke-width="4"/>
+  <circle cx="128" cy="190.07" r="9.73" fill="#00f0c8"/>
+  <circle cx="128" cy="128" r="14.08" fill="#00f0c8"/>
+</svg>

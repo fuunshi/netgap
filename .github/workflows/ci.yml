@@ -21,6 +21,10 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
+# The compiler is pinned in rust-toolchain.toml, so these jobs and a local
+# checkout use the same rustc and clippy. Without it, a newly released lint
+# would fail CI on a commit that passed on the machine that wrote it.
+
 jobs:
   test:
     name: Test

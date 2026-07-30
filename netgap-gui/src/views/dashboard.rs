@@ -832,7 +832,7 @@ fn issues_card(ui: &mut Ui, p: &Palette, snapshot: &Snapshot) {
 fn warning_card(ui: &mut Ui, p: &Palette, title: &str, body: &str) {
     egui::Frame::new()
         .fill(p.card)
-        .stroke(Stroke::new(1.0, p.medium))
+        .stroke(Stroke::new(1.0_f32, p.medium))
         .corner_radius(egui::CornerRadius::same(10))
         .inner_margin(egui::Margin::symmetric(14, 10))
         .show(ui, |ui| {

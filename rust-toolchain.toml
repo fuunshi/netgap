@@ -1,0 +1,10 @@
+# The compiler this project is built and linted with, pinned so that CI and a
+# developer's machine run the same one.
+#
+# Without this, CI used whatever "stable" was that week while the machine used
+# an older install, and a new clippy lint would fail the build on a commit
+# that passed locally. Bump the version here, run the tests, and commit the
+# two together.
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]

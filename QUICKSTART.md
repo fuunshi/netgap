@@ -8,8 +8,18 @@ A production-ready network security scanner built in Rust. Discover devices, ide
 # Build the project
 cargo build --release
 
-# The binary is at: ./target/release/netgap
+# Two binaries come out of it, and they are separate programs:
+#   ./target/release/netgap      the engine and command line
+#   ./target/release/netgap-gui  the window application
 ```
+
+Or download a release, where those two are packaged separately:
+
+- `netgap-…` — the command line. Unpack and run `./netgap` (or `netgap.exe`).
+- `netgap-gui-…` — the window application. On Windows, unpack and
+  double-click `netgap-gui.exe`. On Linux, unpack and run `./install.sh` once;
+  it adds **Netgap** to your applications menu for the current user, no root
+  needed.
 
 ## Basic Commands
 

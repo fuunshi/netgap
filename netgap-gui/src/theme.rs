@@ -180,13 +180,13 @@ pub fn apply(ctx: &egui::Context, theme: Theme) {
 
     visuals.panel_fill = palette.bg;
     visuals.window_fill = palette.panel;
-    visuals.window_stroke = Stroke::new(1.0, palette.border);
+    visuals.window_stroke = Stroke::new(1.0_f32, palette.border);
     visuals.faint_bg_color = palette.card;
     visuals.extreme_bg_color = palette.field;
     visuals.override_text_color = Some(palette.text);
     visuals.hyperlink_color = palette.accent;
     visuals.selection.bg_fill = palette.accent_soft;
-    visuals.selection.stroke = Stroke::new(1.0, palette.accent);
+    visuals.selection.stroke = Stroke::new(1.0_f32, palette.accent);
     visuals.window_corner_radius = CornerRadius::same(10);
     visuals.menu_corner_radius = CornerRadius::same(8);
 
@@ -196,31 +196,31 @@ pub fn apply(ctx: &egui::Context, theme: Theme) {
     let widgets = &mut visuals.widgets;
     widgets.noninteractive.bg_fill = palette.card;
     widgets.noninteractive.weak_bg_fill = palette.card;
-    widgets.noninteractive.bg_stroke = Stroke::new(1.0, palette.border);
-    widgets.noninteractive.fg_stroke = Stroke::new(1.0, palette.text);
+    widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, palette.border);
+    widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, palette.text);
     widgets.noninteractive.corner_radius = CornerRadius::same(8);
 
     widgets.inactive.bg_fill = palette.field;
     widgets.inactive.weak_bg_fill = palette.field;
-    widgets.inactive.bg_stroke = Stroke::new(1.0, palette.border);
-    widgets.inactive.fg_stroke = Stroke::new(1.0, palette.text);
+    widgets.inactive.bg_stroke = Stroke::new(1.0_f32, palette.border);
+    widgets.inactive.fg_stroke = Stroke::new(1.0_f32, palette.text);
     widgets.inactive.corner_radius = CornerRadius::same(6);
 
     widgets.hovered.bg_fill = palette.hover;
     widgets.hovered.weak_bg_fill = palette.hover;
-    widgets.hovered.bg_stroke = Stroke::new(1.0, palette.accent);
-    widgets.hovered.fg_stroke = Stroke::new(1.0, palette.text);
+    widgets.hovered.bg_stroke = Stroke::new(1.0_f32, palette.accent);
+    widgets.hovered.fg_stroke = Stroke::new(1.0_f32, palette.text);
     widgets.hovered.corner_radius = CornerRadius::same(6);
 
     widgets.active.bg_fill = palette.accent_soft;
     widgets.active.weak_bg_fill = palette.accent_soft;
-    widgets.active.bg_stroke = Stroke::new(1.0, palette.accent);
-    widgets.active.fg_stroke = Stroke::new(1.0, palette.accent);
+    widgets.active.bg_stroke = Stroke::new(1.0_f32, palette.accent);
+    widgets.active.fg_stroke = Stroke::new(1.0_f32, palette.accent);
     widgets.active.corner_radius = CornerRadius::same(6);
 
     widgets.open.bg_fill = palette.card;
     widgets.open.weak_bg_fill = palette.card;
-    widgets.open.bg_stroke = Stroke::new(1.0, palette.border);
+    widgets.open.bg_stroke = Stroke::new(1.0_f32, palette.border);
     widgets.open.corner_radius = CornerRadius::same(6);
 
     ctx.set_visuals(visuals);

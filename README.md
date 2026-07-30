@@ -4,7 +4,7 @@ A production-ready network security scanner written in Rust. Discover devices on
 
 [![CI](https://github.com/fuunshi/netgap/actions/workflows/ci.yml/badge.svg)](https://github.com/fuunshi/netgap/actions/workflows/ci.yml)
 
-**Current Status:** ✅ 345 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
+**Current Status:** ✅ 349 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
 
 ## Quick Features
 
@@ -26,14 +26,35 @@ A production-ready network security scanner written in Rust. Discover devices on
 
 ## Getting Started
 
-### Build
+### Download
+
+Each release publishes two downloads per platform, because they are two ways
+to use the same scanner:
+
+| Download | What it is | How to run it |
+| --- | --- | --- |
+| `netgap-<version>-linux-x86_64.tar.gz`<br>`netgap-<version>-windows-x86_64.zip` | The engine and command line: `netgap scan`, `netgap ui`, `netgap report`. One binary, nothing else to install. | `./netgap scan` |
+| `netgap-gui-<version>-linux-x86_64.tar.gz`<br>`netgap-gui-<version>-windows-x86_64.zip` | The window application. | Windows: unpack and double-click `netgap-gui.exe`. Linux: unpack and run `./install.sh` once, then open **Netgap** from your applications menu (or run `./netgap-gui` directly). |
+
+Both read and write the same scan history (`~/.config/netgap/scans.db`), so a
+scan started in the window shows up in `netgap report`, and the other way
+around.
+
+### Build from Source
+
 ```bash
 cargo build --release
 ```
 
+This produces two binaries, and they are separate programs on purpose:
+
+```bash
+./target/release/netgap       # the engine and command line (also `netgap ui`)
+./target/release/netgap-gui   # the window application
+```
+
 ### Open the Window Application
 ```bash
-# The build above produces both the command line tool and the window application
 ./target/release/netgap-gui
 
 # Open straight onto a screen, if preferred
@@ -153,7 +174,7 @@ cannot drift apart.
 
 ## Test Coverage
 
-**345 tests passing** across the workspace:
+**349 tests passing** across the workspace:
 
 | Crate | Purpose | Tests |
 |-------|---------|-------|

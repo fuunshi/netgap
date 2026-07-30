@@ -1,8 +1,16 @@
 name: Release
 
-# Builds the Linux and Windows binaries, including the window application, and
-# publishes them as a GitHub release. The version comes from the tags: the
-# first release is v1.0.0, and each one after it takes the next patch number.
+# Builds and publishes two downloads per platform, because they are two
+# different things to run:
+#
+#   netgap      the engine and command line (scan, ui, report, ...)
+#   netgap-gui  the window application, started with a click
+#
+# They share the same engine and the same scan history, but a person who
+# wants the window should not have to unpack a command line tool to find it.
+#
+# The version comes from the tags: the first release is v1.0.0, and each one
+# after it takes the next patch number.
 #
 # Only runs when code changes. A documentation commit does not need a new
 # binary, and a release nobody can tell apart from the last one is noise.
@@ -13,6 +21,7 @@ on:
       - "**/*.rs"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
       - ".github/workflows/release.yml"
   # For building without publishing: set dry_run to skip the release step.
   workflow_dispatch:
@@ -41,6 +50,10 @@ jobs:
     outputs:
       version: ${{ steps.next.outputs.version }}
       tag: ${{ steps.next.outputs.tag }}
+      cli_linux: ${{ steps.names.outputs.cli_linux }}
+      cli_windows: ${{ steps.names.outputs.cli_windows }}
+      gui_linux: ${{ steps.names.outputs.gui_linux }}
+      gui_windows: ${{ steps.names.outputs.gui_windows }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -73,8 +86,20 @@ jobs:
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
           echo "Releasing v$version (previous: ${latest:-none})"
 
-  build:
-    name: Build for ${{ matrix.label }}
+      # Both downloads are written by two jobs that know nothing about each
+      # other, so the two names live here once.
+      - name: Name the archives
+        id: names
+        run: |
+          set -euo pipefail
+          v="${{ steps.next.outputs.version }}"
+          echo "cli_linux=netgap-$v-linux-x86_64.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "cli_windows=netgap-$v-windows-x86_64.zip" >> "$GITHUB_OUTPUT"
+          echo "gui_linux=netgap-gui-$v-linux-x86_64.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "gui_windows=netgap-gui-$v-windows-x86_64.zip" >> "$GITHUB_OUTPUT"
+
+  build-cli:
+    name: Command line for ${{ matrix.label }}
     needs: version
     strategy:
       fail-fast: false
@@ -86,11 +111,11 @@ jobs:
           - os: ubuntu-latest
             label: Linux x86_64 (static)
             target: x86_64-unknown-linux-musl
-            archive: netgap-${{ needs.version.outputs.version }}-linux-x86_64.tar.gz
+            archive: ${{ needs.version.outputs.cli_linux }}
           - os: windows-latest
             label: Windows x86_64
             target: x86_64-pc-windows-msvc
-            archive: netgap-${{ needs.version.outputs.version }}-windows-x86_64.zip
+            archive: ${{ needs.version.outputs.cli_windows }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -100,7 +125,7 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: release-${{ matrix.target }}
+          key: release-cli-${{ matrix.target }}
 
       # The musl target needs a C toolchain for the bundled SQLite.
       - name: Install musl tools
@@ -122,12 +147,7 @@ jobs:
 
       - name: Build
         shell: bash
-        run: |
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            cargo build --release --bin netgap --bin netgap-gui --target ${{ matrix.target }}
-          else
-            cargo build --release --bin netgap --target ${{ matrix.target }}
-          fi
+        run: cargo build --release --bin netgap --target ${{ matrix.target }}
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
@@ -142,9 +162,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          7z a "${{ matrix.archive }}" \
-            "./target/${{ matrix.target }}/release/netgap.exe" \
-            "./target/${{ matrix.target }}/release/netgap-gui.exe"
+          7z a "${{ matrix.archive }}" "./target/${{ matrix.target }}/release/netgap.exe"
           echo "built ${{ matrix.archive }}"
 
       - uses: actions/upload-artifact@v4
@@ -158,7 +176,7 @@ jobs:
   # Ubuntu keeps the glibc requirement low enough to run on Debian 12 and
   # Ubuntu 22.04, which a build on the current runner would not.
   build-gui-linux:
-    name: Build the window application (Linux)
+    name: Window application (Linux)
     needs: version
     runs-on: ubuntu-latest
     container: ubuntu:22.04
@@ -181,24 +199,76 @@ jobs:
       - name: Build
         run: cargo build --release --bin netgap-gui
 
+      # The archive is what a person unpacks when they want the window: the
+      # binary, the icon and menu entry that make it clickable, and a script
+      # that installs all three for the current user.
       - name: Package
         shell: bash
         run: |
           set -euo pipefail
-          archive="netgap-gui-${{ needs.version.outputs.version }}-linux-x86_64.tar.gz"
-          tar -czf "$archive" --transform 's,.*/,,' target/release/netgap-gui
-          echo "archive=$archive" >> "$GITHUB_ENV"
+          archive="${{ needs.version.outputs.gui_linux }}"
+          staging=$(mktemp -d)
+          cp target/release/netgap-gui "$staging/"
+          cp netgap-gui/assets/netgap.svg "$staging/"
+          cp netgap-gui/assets/netgap.desktop "$staging/"
+          cp netgap-gui/assets/install.sh "$staging/"
+          cp netgap-gui/assets/README.txt "$staging/"
+          chmod 0755 "$staging/netgap-gui" "$staging/install.sh"
+          chmod 0644 "$staging/netgap.svg" "$staging/netgap.desktop" "$staging/README.txt"
+          tar -czf "$archive" -C "$staging" .
+          echo "built $archive"
+          tar -tzvf "$archive"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.version.outputs.gui_linux }}
+          path: ${{ needs.version.outputs.gui_linux }}
+          if-no-files-found: error
+
+  build-gui-windows:
+    name: Window application (Windows)
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-gui-x86_64-pc-windows-msvc
+
+      - name: Set the version being released
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -i.bak 's/^version = ".*"/version = "${{ needs.version.outputs.version }}"/' Cargo.toml
+          rm -f Cargo.toml.bak
+          grep '^version' Cargo.toml
+
+      - name: Build
+        shell: bash
+        run: cargo build --release --bin netgap-gui --target x86_64-pc-windows-msvc
+
+      # A single .exe: double-clicking it is the whole install. The manifest
+      # marks it as a Windows subsystem binary, so it opens without a console
+      # window behind it.
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="${{ needs.version.outputs.gui_windows }}"
+          7z a "$archive" "./target/x86_64-pc-windows-msvc/release/netgap-gui.exe"
           echo "built $archive"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: netgap-gui-${{ needs.version.outputs.version }}-linux-x86_64.tar.gz
-          path: netgap-gui-${{ needs.version.outputs.version }}-linux-x86_64.tar.gz
+          name: ${{ needs.version.outputs.gui_windows }}
+          path: ${{ needs.version.outputs.gui_windows }}
           if-no-files-found: error
 
   publish:
     name: Publish ${{ needs.version.outputs.tag }}
-    needs: [version, build, build-gui-linux]
+    needs: [version, build-cli, build-gui-linux, build-gui-windows]
     if: github.event_name == 'push' || inputs.dry_run == false
     runs-on: ubuntu-latest
     steps:
@@ -211,7 +281,7 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          ls -l
+          ls -lh
           # For a tool people download and run, a checksum in the release is
           # the difference between verifying the download and hoping.
           sha256sum ./*.tar.gz ./*.zip > SHA256SUMS
@@ -221,11 +291,39 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.version.outputs.tag }}
+          CLI_LINUX: ${{ needs.version.outputs.cli_linux }}
+          CLI_WINDOWS: ${{ needs.version.outputs.cli_windows }}
+          GUI_LINUX: ${{ needs.version.outputs.gui_linux }}
+          GUI_WINDOWS: ${{ needs.version.outputs.gui_windows }}
         run: |
           set -euo pipefail
+          notes=$(cat <<'EOF'
+          Two downloads per platform, because they are two ways to use the same scanner:
+
+          **The command line** — the engine, `netgap scan`, `netgap ui` and the reports.
+          One binary, no extra files.
+
+          **The window application** — a dashboard, a scan screen, a searchable device
+          list and the history. Windows: unpack and double-click `netgap-gui.exe`.
+          Linux: unpack and run `./install.sh` once to add Netgap to your applications
+          menu, or just run `./netgap-gui`.
+
+          Both read and write the same scan history, so a scan started in one shows
+          up in the other.
+          EOF
+          )
+
+          notes="$notes
+
+          The files in this release:
+          - $CLI_LINUX (Linux) and $CLI_WINDOWS (Windows) — the command line
+          - $GUI_LINUX (Linux) and $GUI_WINDOWS (Windows) — the window application
+          "
+
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --title "$TAG" \
+            --notes "$notes" \
             --generate-notes \
             dist/*.tar.gz dist/*.zip dist/SHA256SUMS
           echo "Published $TAG"
