@@ -120,8 +120,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # rust-toolchain.toml is the one place the compiler version is written;
+      # read it rather than repeating the number here, or the two drift apart.
+      - name: Read the pinned toolchain
+        id: rust
+        shell: bash
+        run: |
+          channel=$(sed -n 's/^channel = "\([^"]*\)"/\1/p' rust-toolchain.toml)
+          if [ -z "$channel" ]; then
+            echo "rust-toolchain.toml has no channel line" >&2
+            exit 1
+          fi
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ steps.rust.outputs.channel }}
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
@@ -186,7 +199,22 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends git build-essential curl ca-certificates
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+
+      # rust-toolchain.toml is the one place the compiler version is written;
+      # read it rather than repeating the number here, or the two drift apart.
+      - name: Read the pinned toolchain
+        id: rust
+        shell: bash
+        run: |
+          channel=$(sed -n 's/^channel = "\([^"]*\)"/\1/p' rust-toolchain.toml)
+          if [ -z "$channel" ]; then
+            echo "rust-toolchain.toml has no channel line" >&2
+            exit 1
+          fi
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.channel }}
 
       - name: Set the version being released
         shell: bash
@@ -232,7 +260,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # rust-toolchain.toml is the one place the compiler version is written;
+      # read it rather than repeating the number here, or the two drift apart.
+      - name: Read the pinned toolchain
+        id: rust
+        shell: bash
+        run: |
+          channel=$(sed -n 's/^channel = "\([^"]*\)"/\1/p' rust-toolchain.toml)
+          if [ -z "$channel" ]; then
+            echo "rust-toolchain.toml has no channel line" >&2
+            exit 1
+          fi
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.channel }}
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-gui-x86_64-pc-windows-msvc

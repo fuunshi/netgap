@@ -31,7 +31,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # rust-toolchain.toml is the one place the compiler version is written;
+      # read it rather than repeating the number here, or the two drift apart.
+      - name: Read the pinned toolchain
+        id: rust
+        shell: bash
+        run: |
+          channel=$(sed -n 's/^channel = "\([^"]*\)"/\1/p' rust-toolchain.toml)
+          if [ -z "$channel" ]; then
+            echo "rust-toolchain.toml has no channel line" >&2
+            exit 1
+          fi
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.channel }}
       - uses: Swatinem/rust-cache@v2
       # `--locked` so CI builds the dependencies the lockfile pins rather than
       # silently resolving new ones.
@@ -46,8 +60,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # rust-toolchain.toml is the one place the compiler version is written;
+      # read it rather than repeating the number here, or the two drift apart.
+      - name: Read the pinned toolchain
+        id: rust
+        shell: bash
+        run: |
+          channel=$(sed -n 's/^channel = "\([^"]*\)"/\1/p' rust-toolchain.toml)
+          if [ -z "$channel" ]; then
+            echo "rust-toolchain.toml has no channel line" >&2
+            exit 1
+          fi
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ steps.rust.outputs.channel }}
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
