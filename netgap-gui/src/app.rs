@@ -84,9 +84,19 @@ impl MethodChoice {
     pub fn detail(self) -> &'static str {
         match self {
             MethodChoice::Auto => {
-                "Uses ARP when netgap has permission, and the TCP sweep otherwise."
+                if cfg!(windows) {
+                    "ARP, which needs no privileges here, with the TCP sweep as a fallback."
+                } else {
+                    "Uses ARP when netgap has permission, and the TCP sweep otherwise."
+                }
             }
-            MethodChoice::Arp => "Needs root or CAP_NET_RAW. Finds every device on the link.",
+            MethodChoice::Arp => {
+                if cfg!(windows) {
+                    "Asks every address on the link for its hardware address. No privileges needed."
+                } else {
+                    "Needs root or CAP_NET_RAW. Finds every device on the link."
+                }
+            }
             MethodChoice::Tcp => "Works without privileges. Finds fewer devices.",
         }
     }
@@ -216,7 +226,7 @@ impl NetgapApp {
             show_all_interfaces: false,
             target,
             method: MethodChoice::Auto,
-            privileged: discovery::has_cap_net_raw(),
+            privileged: discovery::can_use_arp(),
             full_scan: true,
             scanning: false,
             scan_started: None,

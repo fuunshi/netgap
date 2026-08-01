@@ -622,13 +622,33 @@ paths — ARP, the DHCP probe, ICMPv6 neighbour discovery, the `/proc`
 neighbour table, the capability check — are Unix, and `pnet`'s datalink layer
 links against Npcap. A binary built that way refuses to *start* without a
 packet-capture driver installed, which is not something to hand someone as a
-download. So on Windows those modules are compiled out and discovery uses the
-TCP sweep, interface enumeration goes through the `network-interface` crate
-instead of `pnet`, and the parts that do not exist there say so — "IPv6: not
-implemented on this platform" rather than a report that quietly omits every
-IPv6-only device.
+download. So on Windows those modules are compiled out, interface
+enumeration goes through the `network-interface` crate instead of `pnet`, and
+the parts that do not exist there say so — "IPv6: not implemented on this
+platform" rather than a report that quietly omits every IPv6-only device.
 
-**How that was verified without a Windows machine.** Two ways, because the
+**Discovery on Windows: ARP through `SendARP`.** The first Windows build used
+the TCP sweep for everything, on the assumption that ARP needed a raw socket.
+It does not: `SendARP` in `iphlpapi` asks the system to resolve an address on
+the local link and returns the hardware address that answered — no
+administrator, no Npcap, no driver. That is what `netgap-discover`'s
+`arp_windows` module does, one blocking call per address over a bounded pool
+of worker threads, binding the request to the chosen interface's own IPv4 so a
+machine with more than one adapter asks on the right one. It fixes two things
+the TCP sweep got wrong on Wi-Fi: a device whose ports are all firewalled is
+still visible to ARP, and MAC addresses (and with them the vendor) no longer
+depend on `/proc/net/arp`, which does not exist there.
+
+The second half of that bug was choosing the wrong adapter. Windows reports
+adapter *friendly names* — "Wi-Fi", "Ethernet 2", "vEthernet (WSL)",
+"WireGuard Tunnel" — and the name heuristics were written for `wlp4s0` and
+`eth0`, so no Windows adapter looked physical and none of the virtual ones
+looked virtual. A VPN client holding the default route therefore scored higher
+than the Wi-Fi card, and the sweep covered the tunnel's /32: zero devices, and
+a report that said the network was empty. `is_virtual_name` and
+`is_physical_name` now know both spellings.
+
+**How that was verified without a Windows machine.** Three ways, because the
 obvious one — push and see — costs a release per attempt:
 
 - The interface enumeration has a `portable-interfaces` feature that switches
@@ -639,11 +659,14 @@ obvious one — push and see — costs a release per attempt:
   pass in the Windows configuration, and the binary finds interfaces and runs
   a discovery sweep. That found two call sites where an item had been gated
   but its caller had not, which the compiler reports only under Windows.
+- CI now has a `windows` job that builds the whole workspace on
+  `windows-latest`, so the `SendARP` FFI and the two executables are compiled
+  and linked on every push rather than only at release time.
 
-What Windows still does not have: ARP and the DHCP check, and therefore the
-address-conflict detection that reads the neighbour table. Port scanning,
-service identification, TLS inspection, CVE matching, reports and alerts all
-work there.
+What Windows still does not have: the DHCP check and ICMPv6 neighbour
+discovery, and therefore the address-conflict detection that reads the
+neighbour table. Port scanning, service identification, TLS inspection, CVE
+matching, reports and alerts all work there.
 
 ---
 

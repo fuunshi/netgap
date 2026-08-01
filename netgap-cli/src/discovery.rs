@@ -5,7 +5,7 @@
 //! explaining the unprivileged fallback before a scan starts.
 
 use anyhow::Result;
-use netgap_engine::discovery::{build_plan, has_cap_net_raw};
+use netgap_engine::discovery::{build_plan, can_use_arp};
 use netgap_interfaces::{get_interface, get_interface_auto, get_interface_cidr};
 #[cfg(unix)]
 use std::io::{self, IsTerminal, Write};
@@ -41,7 +41,7 @@ pub fn resolve_plan(
     let requested = match requested {
         Some(method) => Some(method),
         // Automatic with raw sockets: the engine picks ARP.
-        None if has_cap_net_raw() => None,
+        None if can_use_arp() => None,
         None => {
             #[cfg(unix)]
             choose_fallback(&target, assume_yes, non_interactive)?;

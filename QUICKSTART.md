@@ -188,9 +188,12 @@ normal result, especially for phones with private MACs.
 Netgap performs a multi-layer assessment:
 
 ### 1. **Device Discovery**
-- ARP sweep when running as root — finds every host that answers ARP
+- ARP sweep — finds every host that answers ARP. Needs root or `CAP_NET_RAW`
+  on Linux and macOS; on Windows it runs through the system's `SendARP` and
+  needs neither.
 - Unprivileged fallback: TCP connect sweep, where a refused connection still
-  proves the host exists, enriched with MAC addresses from `/proc/net/arp`
+  proves the host exists, enriched with MAC addresses from the neighbour table
+  (`/proc/net/arp` on Linux)
 - Targets are validated: a sweep larger than `--max-hosts` (default 4096) is
   refused rather than flooding the network
 
@@ -338,11 +341,15 @@ All scan results are automatically saved to SQLite:
 - Check network status: `ip link show` (Linux) or `ipconfig` (Windows)
 
 ### "ARP discovery needs root"
-- Netgap switched to the unprivileged TCP fallback. It finds fewer hosts and
-  MAC addresses only for hosts the kernel already knows.
+- Linux and macOS only. Netgap switched to the unprivileged TCP fallback. It
+  finds fewer hosts and MAC addresses only for hosts the kernel already knows.
 - For a complete sweep: `sudo ./target/release/netgap scan`
 - Or grant the capability once:
   `sudo setcap cap_net_raw+ep ./target/release/netgap`
+- On Windows there is nothing to grant — ARP already runs unprivileged. A scan
+  that finds nothing there means the target range is wrong (a VPN's adapter
+  may have been selected) or the network isolates clients from each other,
+  which guest Wi-Fi often does.
 
 ### Scan is slow
 - Use `--quick` to skip port scanning entirely

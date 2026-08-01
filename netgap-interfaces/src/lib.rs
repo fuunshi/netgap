@@ -27,9 +27,16 @@ const VIRTUAL_PREFIXES: &[&str] = &[
     "virbr",
     "vmnet",
     "vboxnet",
+    // Windows reports friendly names, so the virtual adapters there spell
+    // themselves out: Hyper-V, WSL and Docker Desktop all create "vEthernet
+    // (…)" switches, and a VPN client's adapter is named after the client.
+    "vethernet",
     "tun",
     "tap",
     "wg",
+    "wireguard",
+    "openvpn",
+    "vpn",
     "zt",
     "tailscale",
     "utun",
@@ -40,10 +47,29 @@ const VIRTUAL_PREFIXES: &[&str] = &[
     "ip6tnl",
     "dummy",
     "ham",
+    "bluetooth",
 ];
 
 /// Interface name prefixes that conventionally denote a physical NIC.
-const PHYSICAL_PREFIXES: &[&str] = &["eth", "en", "wl", "ww", "em", "ib"];
+///
+/// Linux and macOS name a NIC after its driver (`wlp4s0`, `en0`); Windows
+/// names it after its connection (`Wi-Fi`, `Ethernet 2`, `Local Area
+/// Connection`). Both spellings are here, because getting this wrong on
+/// Windows means every adapter scores the same and the scan can end up
+/// pointed at a VPN tunnel that happens to own the default route.
+const PHYSICAL_PREFIXES: &[&str] = &[
+    "eth",
+    "en",
+    "wl",
+    "ww",
+    "em",
+    "ib",
+    "wi-fi",
+    "wifi",
+    "wireless",
+    "local area connection",
+    "lan",
+];
 
 /// Represents an enumerated network interface.
 #[derive(Debug, Clone)]
@@ -595,7 +621,11 @@ pub fn score_interface(iface: &InterfaceInfo, default_route: Option<&str>) -> i3
 /// Whether a name refers to a loopback/virtual/container/tunnel device.
 pub fn is_virtual_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    lower == "lo"
+    // Windows puts the Wi-Fi Direct adapters under names like "Local Area
+    // Connection* 1"; the asterisk is the only thing that separates them from
+    // a real Ethernet connection.
+    lower.contains('*')
+        || lower == "lo"
         || VIRTUAL_PREFIXES
             .iter()
             .any(|prefix| lower.starts_with(prefix))
@@ -745,6 +775,13 @@ mod tests {
             "tun0",
             "wg0",
             "tailscale0",
+            "vEthernet (WSL)",
+            "vEthernet (Default Switch)",
+            "WireGuard Tunnel",
+            "OpenVPN TAP-Windows6",
+            "TAP-Windows Adapter V9",
+            "Bluetooth Network Connection",
+            "Local Area Connection* 1",
         ] {
             assert!(is_virtual_name(name), "{name} should be virtual");
         }
@@ -756,10 +793,33 @@ mod tests {
             "wlp4s0",
             "wlx90610ca31294",
             "wlan0",
+            "Wi-Fi",
+            "Wi-Fi 2",
+            "Ethernet",
+            "Ethernet 2",
+            "Local Area Connection",
         ] {
             assert!(!is_virtual_name(name), "{name} should not be virtual");
             assert!(is_physical_name(name), "{name} should be physical");
         }
+    }
+
+    #[test]
+    fn test_select_best_prefers_windows_wifi_over_a_tunnel() {
+        // The case that matters on a laptop with a VPN client installed: the
+        // tunnel owns the default route, and the LAN is on the Wi-Fi adapter.
+        let mut wifi = iface("Wi-Fi", "192.168.1.24", 24, false);
+        wifi.mac = Some("c4:b2:5b:0a:03:26".to_string());
+        let mut tunnel = iface("WireGuard Tunnel", "10.7.0.2", 32, true);
+        tunnel.mac = Some("40:11:75:00:00:01".to_string());
+        let candidates = vec![
+            iface("vEthernet (WSL)", "172.28.96.1", 20, false),
+            tunnel,
+            wifi,
+        ];
+
+        let best = select_best(&candidates, Some("WireGuard Tunnel")).expect("a best interface");
+        assert_eq!(best.name, "Wi-Fi");
     }
 
     #[test]

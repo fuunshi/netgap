@@ -13,11 +13,12 @@ tokio.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 
-# The raw-layer discovery paths — ARP, DHCP, ICMPv6 to the all-nodes
-# multicast — are Unix. On Windows they would need Npcap installed to link,
-# and a binary that will not start without a packet-capture driver is not
-# something to hand someone as a download. Windows discovery uses the TCP
-# sweep instead, which needs nothing.
+# The raw-layer discovery paths — packet-level ARP, DHCP, ICMPv6 to the
+# all-nodes multicast — are Unix. Their Windows equivalents would need Npcap
+# installed to link, and a binary that will not start without a
+# packet-capture driver is not something to hand someone as a download.
+# Windows ARP goes through `SendARP` instead (see `arp_windows`), which needs
+# nothing but the system libraries.
 [target.'cfg(unix)'.dependencies]
 pnet.workspace = true
 pnet_datalink.workspace = true

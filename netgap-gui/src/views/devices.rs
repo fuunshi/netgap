@@ -59,7 +59,8 @@ pub fn show(app: &mut NetgapApp, ui: &mut Ui) {
                 ui,
                 &p,
                 "The sweep found nothing. Check that the interface and target are right, \
-                 and try Automatic discovery.",
+                 and that this network lets devices reach each other — guest and public \
+                 Wi-Fi often isolate clients from one another.",
             );
             ui.add_space(8.0);
             if widgets::primary_button(ui, &p, "Try another scan") {

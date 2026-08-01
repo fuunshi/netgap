@@ -15,6 +15,8 @@ use std::net::Ipv4Addr;
 
 #[cfg(unix)]
 pub mod arp;
+/// ARP through `SendARP` on Windows; a compiling stub elsewhere.
+pub mod arp_windows;
 pub mod conflicts;
 #[cfg(unix)]
 pub mod dhcp;

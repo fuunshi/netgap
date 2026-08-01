@@ -1,10 +1,11 @@
 //! Discovery method selection and execution.
 //!
-//! ARP finds every peer on the LAN but needs `CAP_NET_RAW`; without it the
-//! scan falls back to a TCP sweep. Because the fallback sees strictly fewer
-//! hosts, an unprivileged run tells the user what they are giving up and lets
-//! them re-run under sudo. That explanation lives in the CLI; this crate only
-//! decides and runs.
+//! ARP finds every peer on the LAN. On Unix it needs `CAP_NET_RAW`; on
+//! Windows it goes through `SendARP`, which needs no privileges at all.
+//! Without ARP the scan falls back to a TCP sweep. Because the fallback sees
+//! strictly fewer hosts, an unprivileged run tells the user what they are
+//! giving up and lets them re-run under sudo. That explanation lives in the
+//! CLI; this crate only decides and runs.
 
 use anyhow::{anyhow, Result};
 use netgap_core::Device;
@@ -46,10 +47,6 @@ pub struct DiscoveryPlan {
     pub max_hosts: usize,
     /// Whether a failed ARP attempt may silently fall back to TCP. False when
     /// the user explicitly asked for ARP.
-    ///
-    /// Unix only: elsewhere the TCP sweep is the method rather than the
-    /// fallback, so there is nothing to fall back from.
-    #[cfg_attr(not(unix), allow(dead_code))]
     pub allow_fallback: bool,
     /// Whether to ask devices to identify themselves over mDNS.
     pub mdns: bool,
@@ -75,13 +72,22 @@ impl DiscoveryPlan {
     }
 }
 
-/// Whether this process can open a raw socket.
-pub fn has_cap_net_raw() -> bool {
+/// Whether this build can run an ARP sweep without extra setup.
+///
+/// Unix opens a raw socket, which needs root or `CAP_NET_RAW`. Windows asks
+/// the system through `SendARP`, which needs neither an administrator nor a
+/// packet-capture driver — so there is always a complete sweep available
+/// there, and the TCP fallback is only a fallback.
+pub fn can_use_arp() -> bool {
     #[cfg(unix)]
     {
         privilege::has_cap_net_raw()
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        true
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         false
     }
@@ -106,7 +112,7 @@ pub fn build_plan(
     let (method, allow_fallback) = match requested {
         // An explicit choice is honored, and falling back would contradict it.
         Some(method) => (method, false),
-        None if has_cap_net_raw() => (DiscoveryMethod::Arp, true),
+        None if can_use_arp() => (DiscoveryMethod::Arp, true),
         None => (DiscoveryMethod::Tcp, true),
     };
 
@@ -138,9 +144,25 @@ pub async fn run(plan: &DiscoveryPlan) -> Result<Vec<Device>> {
             }
             Err(error) => Err(error),
         },
-        // Unreachable on Windows, where nothing selects the ARP method, and
-        // the compiler is told as much rather than pretending it can happen.
-        #[cfg(not(unix))]
+        // Unprivileged ARP through the Windows API. A sweep that the system
+        // refuses outright (the target not being on this link, say) falls
+        // back to TCP, which at least has a chance across a router.
+        #[cfg(windows)]
+        DiscoveryMethod::Arp => match run_windows_arp(plan).await {
+            Ok(devices) => Ok(devices),
+            Err(error) if plan.allow_fallback => {
+                if !plan.quiet {
+                    eprintln!(
+                        "⚠  ARP discovery failed ({}); falling back to the TCP sweep.",
+                        error
+                    );
+                }
+                run_tcp(plan).await
+            }
+            Err(error) => Err(error),
+        },
+        // Neither raw sockets nor `SendARP`: the TCP sweep is all there is.
+        #[cfg(not(any(unix, windows)))]
         DiscoveryMethod::Arp => run_tcp(plan).await,
         DiscoveryMethod::Tcp => run_tcp(plan).await,
     }
@@ -190,6 +212,26 @@ fn report_arp_conflicts(conflicts: &[netgap_discover::MacChange]) {
          device or a duplicate address."
     );
     eprintln!();
+}
+
+/// ARP sweep through the Windows IP Helper API.
+#[cfg(windows)]
+async fn run_windows_arp(plan: &DiscoveryPlan) -> Result<Vec<Device>> {
+    let config = netgap_discover::arp_windows::ArpSweepConfig {
+        targets: plan.target_hosts()?,
+        source: plan
+            .interface
+            .ipv4
+            .as_deref()
+            .and_then(|ipv4| ipv4.parse().ok()),
+        concurrency: 32,
+    };
+
+    let devices = netgap_discover::arp_windows::sweep(&config).await?;
+    if !plan.quiet {
+        eprintln!("✓ ARP discovery complete: found {} host(s)", devices.len());
+    }
+    Ok(devices)
 }
 
 /// Unprivileged TCP sweep with neighbour-table MAC enrichment.

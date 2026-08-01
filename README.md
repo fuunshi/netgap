@@ -4,12 +4,12 @@ A production-ready network security scanner written in Rust. Discover devices on
 
 [![CI](https://github.com/fuunshi/netgap/actions/workflows/ci.yml/badge.svg)](https://github.com/fuunshi/netgap/actions/workflows/ci.yml)
 
-**Current Status:** ✅ 349 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
+**Current Status:** ✅ 353 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
 
 ## Quick Features
 
 - 🪟 **Window Application** - A point-and-click interface for people who do not use terminals, with a dashboard, scan screen, device list and history
-- 📡 **Device Discovery** - ARP sweep with root, unprivileged TCP fallback without
+- 📡 **Device Discovery** - ARP sweep of the local link (no extra rights on Windows; root or `CAP_NET_RAW` on Linux/macOS), with an unprivileged TCP fallback
 - 🔐 **Vulnerability Assessment** - Detects Telnet, FTP, SMB, SNMP, HTTP exposure
 - 📊 **Device Fingerprinting** - MAC OUI, TTL-based OS detection, banner grabbing
 - 💾 **Result Persistence** - SQLite-backed scan history with analysis
@@ -93,9 +93,11 @@ here go into the same history `netgap report` reads.
 ./target/release/netgap scan --deep -y
 ```
 
-Discovery uses ARP when run as root (most complete), and falls back to an
-unprivileged TCP sweep otherwise. When root is missing, netgap explains the
-trade-off and lets you continue or re-run under sudo.
+Discovery uses ARP, which is the most complete sweep. On Linux and macOS it
+wants root or `CAP_NET_RAW`; on Windows it goes through the system's own
+`SendARP` and needs nothing at all. Without the capability netgap falls back
+to an unprivileged TCP sweep, explains the trade-off, and lets you continue or
+re-run under sudo.
 
 ### See What's On Your Network
 ```bash
@@ -174,13 +176,13 @@ cannot drift apart.
 
 ## Test Coverage
 
-**349 tests passing** across the workspace:
+**353 tests passing** across the workspace:
 
 | Crate | Purpose | Tests |
 |-------|---------|-------|
 | netgap-core | Shared types, health scoring, HTML escaping | 18 |
-| netgap-interfaces | NIC enumeration, LAN-aware selection | 17 |
-| netgap-discover | ARP sweep, TCP fallback, IPv6 neighbours, conflicts | 70 |
+| netgap-interfaces | NIC enumeration, LAN-aware selection | 18 |
+| netgap-discover | ARP sweep, TCP fallback, IPv6 neighbours, conflicts | 73 |
 | netgap-scan | Port scanning and risk classification | 6 |
 | netgap-report | Terminal, summary and HTML formatting | 30 |
 | netgap-fingerprint | Device fingerprinting | 24 |
@@ -195,7 +197,7 @@ cannot drift apart.
 | netgap-webhooks | Alert delivery | 8 |
 | netgap-engine | Scan pipeline shared by the CLI, terminal UI and window | 0 |
 | netgap-cli | Commands, alerts, discovery and the interactive UI | 55 |
-| netgap-gui | Window application and its display formatting | 8 |
+| netgap-gui | Window application and its display formatting | 12 |
 
 ## Performance
 
@@ -342,7 +344,8 @@ systemctl --user enable --now netgap-watch.timer
 ```
 
 A machine with `CAP_NET_RAW` — or running as root — gets the full ARP sweep
-and finds more devices than the unprivileged fallback.
+and finds more devices than the unprivileged fallback. On Windows the same
+sweep is always available and needs no privileges.
 
 ## Storage
 
@@ -415,7 +418,8 @@ Known gaps:
 - Network access
 - A desktop session with OpenGL for the window application (`netgap-gui`); the
   command line and `netgap ui` need only a terminal
-- Root (or `setcap cap_net_raw+ep`) for full ARP discovery; without it netgap
+- Root (or `setcap cap_net_raw+ep`) for full ARP discovery on Linux and macOS;
+  Windows has the full sweep without either. Without the capability netgap
   falls back to an unprivileged TCP sweep that finds fewer hosts and resolves
   MAC addresses only for hosts already in the kernel neighbour table
 
@@ -465,9 +469,12 @@ This allows the same scanning engine to power:
 - Reduce target range (e.g., /25 instead of /24)
 
 **"ARP discovery needs root"**
-- The unprivileged TCP fallback is running. For a complete sweep:
-  `sudo ./target/release/netgap scan`
+- On Linux and macOS the unprivileged TCP fallback is running. For a complete
+  sweep: `sudo ./target/release/netgap scan`
 - Or grant the capability once: `sudo setcap cap_net_raw+ep ./target/release/netgap`
+- On Windows this message does not apply: ARP runs unprivileged through
+  `SendARP`, so a scan that finds nothing is about the target range or the
+  network, not privileges
 
 ## Contributing
 
