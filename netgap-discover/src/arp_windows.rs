@@ -123,6 +123,10 @@ mod platform {
         target: Ipv4Addr,
         source: Option<Ipv4Addr>,
     ) -> Result<Option<[u8; 6]>, std::io::Error> {
+        /// Vista and later report an unanswered ARP request as this rather
+        /// than as a success with an empty address.
+        const ERROR_BAD_NET_NAME: u32 = 67;
+
         let mut buffer = [0u8; 8];
         let mut length = buffer.len() as u32;
 
@@ -138,9 +142,15 @@ mod platform {
             )
         };
 
-        // `ERROR_BAD_NET_NAME` (67) and friends mean the system refused to try,
-        // which is worth reporting; a silent address returns NO_ERROR with a
-        // zero-length or zeroed answer.
+        // Nothing answered. Most of any range is silent, so this is the
+        // ordinary outcome rather than a failure; the sweep counts how many
+        // addresses were asked and reports only if none of them replied.
+        if status == ERROR_BAD_NET_NAME {
+            return Ok(None);
+        }
+        // Any other code is a real answer from the system — `ERROR_NOT_FOUND`
+        // for a source address this machine does not own, `ERROR_NOT_SUPPORTED`
+        // on a platform without ARP — and worth passing up.
         if status != 0 {
             return Err(std::io::Error::from_raw_os_error(status as i32));
         }
