@@ -22,7 +22,11 @@ resolver = "2"
 version = "1.0.0"
 edition = "2021"
 authors = ["Pranil Shrestha"]
-license = "MIT"
+# Offered under either licence, at the user's choice — see LICENSE-MIT and
+# LICENSE-APACHE. The dual form is the Rust convention and is what lets a
+# company standardise on the Apache terms, with their explicit patent grant,
+# without needing anyone's permission.
+license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 anyhow = "1"

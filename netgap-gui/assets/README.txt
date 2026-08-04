@@ -34,3 +34,9 @@ Notes
 
 - Opens on a screen of your choice: ./netgap-gui scan, ./netgap-gui devices,
   ./netgap-gui history, plus --light or --dark.
+
+Licence
+-------
+
+MIT or Apache-2.0, whichever you prefer. Both texts are in this folder.
+Run the scanner only against networks you own or have permission to test.

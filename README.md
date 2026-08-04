@@ -441,7 +441,17 @@ cargo doc --open
 
 ## License
 
-MIT
+MIT **or** Apache-2.0, at your choice — pick whichever suits you.
+
+- [LICENSE-MIT](LICENSE-MIT)
+- [LICENSE-APACHE](LICENSE-APACHE)
+
+The Apache option is there for its explicit patent grant and trademark clause,
+which many companies require before using a tool internally.
+
+Netgap is a scanner: run it only against networks you own or have permission
+to test. Nothing in the licence grants that permission, and neither licence
+restricts what the software may be pointed at.
 
 ## Architecture Notes
 
