@@ -12,17 +12,11 @@ name: Release
 # The version comes from the tags: the first release is v1.0.0, and each one
 # after it takes the next patch number.
 #
-# Only runs when code changes. A documentation commit does not need a new
-# binary, and a release nobody can tell apart from the last one is noise.
+# Publishing is deliberate, not automatic. A push to main runs the tests; a
+# release is a decision — it hands a new version to everyone who downloads,
+# and a version nobody can tell apart from the last one is noise. Start it
+# from the Actions tab ("Run workflow") when the code is worth shipping.
 on:
-  push:
-    branches: [main]
-    paths:
-      - "**/*.rs"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - ".github/workflows/release.yml"
   # For building without publishing: set dry_run to skip the release step.
   workflow_dispatch:
     inputs:
@@ -167,7 +161,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tar -czf "${{ matrix.archive }}" -C "target/${{ matrix.target }}/release" netgap
+          staging=$(mktemp -d)
+          cp "target/${{ matrix.target }}/release/netgap" "$staging/"
+          # The licence travels with the binary: Apache-2.0 requires handing
+          # a copy to everyone who receives the work.
+          cp LICENSE-MIT LICENSE-APACHE "$staging/"
+          tar -czf "${{ matrix.archive }}" -C "$staging" netgap LICENSE-MIT LICENSE-APACHE
           echo "built ${{ matrix.archive }}"
 
       - name: Package (Windows)
@@ -175,7 +174,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          7z a "${{ matrix.archive }}" "./target/${{ matrix.target }}/release/netgap.exe"
+          7z a "${{ matrix.archive }}" "./target/${{ matrix.target }}/release/netgap.exe" LICENSE-MIT LICENSE-APACHE
           echo "built ${{ matrix.archive }}"
 
       - uses: actions/upload-artifact@v4
@@ -241,8 +240,11 @@ jobs:
           cp netgap-gui/assets/netgap.desktop "$staging/"
           cp netgap-gui/assets/install.sh "$staging/"
           cp netgap-gui/assets/README.txt "$staging/"
+          # Apache-2.0 requires anyone who receives the work to get the
+          # licence text with it.
+          cp LICENSE-MIT LICENSE-APACHE "$staging/"
           chmod 0755 "$staging/netgap-gui" "$staging/install.sh"
-          chmod 0644 "$staging/netgap.svg" "$staging/netgap.desktop" "$staging/README.txt"
+          chmod 0644 "$staging/netgap.svg" "$staging/netgap.desktop" "$staging/README.txt" "$staging/LICENSE-MIT" "$staging/LICENSE-APACHE"
           tar -czf "$archive" -C "$staging" .
           echo "built $archive"
           tar -tzvf "$archive"
@@ -299,7 +301,7 @@ jobs:
         run: |
           set -euo pipefail
           archive="${{ needs.version.outputs.gui_windows }}"
-          7z a "$archive" "./target/x86_64-pc-windows-msvc/release/netgap-gui.exe"
+          7z a "$archive" "./target/x86_64-pc-windows-msvc/release/netgap-gui.exe" LICENSE-MIT LICENSE-APACHE
           echo "built $archive"
 
       - uses: actions/upload-artifact@v4
@@ -311,7 +313,7 @@ jobs:
   publish:
     name: Publish ${{ needs.version.outputs.tag }}
     needs: [version, build-cli, build-gui-linux, build-gui-windows]
-    if: github.event_name == 'push' || inputs.dry_run == false
+    if: inputs.dry_run == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

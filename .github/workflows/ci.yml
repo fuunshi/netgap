@@ -3,6 +3,13 @@ name: CI
 on:
   push:
     branches: [main]
+    # A documentation-only change cannot break the build, and a red mark on a
+    # typo fix teaches people to ignore the red mark. Pull requests are still
+    # checked whatever they touch.
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE-*"
   pull_request:
   schedule:
     # An advisory is published against code that has not changed, so the audit

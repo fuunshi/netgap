@@ -607,11 +607,16 @@ both, which is the same limit the conflict checks have.
 ### 12. A release pipeline, and a Windows build — ✅ done
 
 `.github/workflows/release.yml` builds a Linux binary and a Windows executable
-on every push to `main` that changes code, and publishes them as a GitHub
-release with a `SHA256SUMS` file. The version comes from the tags: this is
-v1.0.0, and each release after it takes the next patch number. Documentation
-commits do not trigger it — a release nobody can tell apart from the last one
-is noise.
+and publishes them as a GitHub release with a `SHA256SUMS` file. The version
+comes from the tags: this is v1.0.0, and each release after it takes the next
+patch number.
+
+Publishing is started by hand, from the Actions tab. It used to run on every
+push to `main` that changed code, which meant a release was an accident of
+when a commit landed rather than a decision — and a version nobody can tell
+apart from the last one is noise for everyone who downloads. Tests still run
+on every push; only the publish step waits to be asked. The `dry_run` input
+builds both archives without creating a release.
 
 The release rewrites the version in `Cargo.toml` before building, so the
 binary's `--version` matches the tag it was published under. That is also why
