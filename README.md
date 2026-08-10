@@ -4,7 +4,7 @@ A production-ready network security scanner written in Rust. Discover devices on
 
 [![CI](https://github.com/fuunshi/netgap/actions/workflows/ci.yml/badge.svg)](https://github.com/fuunshi/netgap/actions/workflows/ci.yml)
 
-**Current Status:** ✅ 353 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
+**Current Status:** ✅ 362 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
 
 ## Quick Features
 
@@ -176,7 +176,7 @@ cannot drift apart.
 
 ## Test Coverage
 
-**353 tests passing** across the workspace:
+**362 tests passing** across the workspace:
 
 | Crate | Purpose | Tests |
 |-------|---------|-------|
@@ -196,7 +196,7 @@ cannot drift apart.
 | netgap-threat-intel | NVD client and CVE cache | 17 |
 | netgap-webhooks | Alert delivery | 8 |
 | netgap-engine | Scan pipeline shared by the CLI, terminal UI and window | 0 |
-| netgap-cli | Commands, alerts, discovery and the interactive UI | 55 |
+| netgap-cli | Commands, doctor, alerts, discovery and the interactive UI | 64 |
 | netgap-gui | Window application and its display formatting | 12 |
 
 ## Performance
@@ -224,6 +224,11 @@ netgap ui
 
 # List interfaces (marks loopback, virtual and default-route devices)
 netgap interfaces
+
+# Check that a scan will work here before running one
+netgap doctor                     # interface, privileges, target, link, setup
+netgap doctor --no-probe          # settings only: send no packets
+netgap doctor --target 10.0.0.0/24  # check a range you did not auto-detect
 
 # Discover devices and report what they are
 netgap discover                   # report for humans

@@ -18,6 +18,7 @@ use std::time::Duration;
 
 mod alerts;
 mod discovery;
+mod doctor;
 mod interactive;
 mod trust;
 mod ui;
@@ -90,6 +91,21 @@ impl DiscoveryArgs {
 enum Commands {
     /// List available network interfaces
     Interfaces,
+
+    /// Check that a scan will work here, and say what to fix if it will not
+    Doctor {
+        /// Network interface to check (auto-detected if not specified)
+        #[arg(short, long)]
+        interface: Option<String>,
+
+        /// Target network in CIDR notation to check (default: the interface's)
+        #[arg(short, long)]
+        target: Option<String>,
+
+        /// Only inspect the settings: send no packets, and skip the live probe
+        #[arg(long)]
+        no_probe: bool,
+    },
 
     /// Open the full-screen interactive view (interfaces, scans and findings)
     Ui,
@@ -303,6 +319,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Commands::Interfaces => {
             cmd_interfaces()?;
+        }
+        Commands::Doctor {
+            interface,
+            target,
+            no_probe,
+        } => {
+            doctor::run(interface, target, no_probe).await?;
         }
         Commands::Ui => {
             ui::run().await?;
