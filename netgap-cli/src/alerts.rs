@@ -45,6 +45,10 @@ pub struct Rules {
     pub new_device: bool,
     /// A device that has stopped appearing. Off by default: phones sleep.
     pub device_offline: bool,
+    /// A known device whose open ports changed. On by default: a port that
+    /// was not there before is the first sign of a new service, a compromised
+    /// machine, or someone enabling remote access.
+    pub port_change: bool,
     /// Alert when the health score falls by this much in one scan.
     pub health_drop: Option<u8>,
 }
@@ -55,6 +59,7 @@ impl Default for Rules {
             critical: true,
             new_device: false,
             device_offline: false,
+            port_change: true,
             health_drop: None,
         }
     }
@@ -139,6 +144,9 @@ impl AlertSettings {
             if let Some(offline) = table.get("device_offline").and_then(|flag| flag.as_bool()) {
                 rules.device_offline = offline;
             }
+            if let Some(port_change) = table.get("port_change").and_then(|flag| flag.as_bool()) {
+                rules.port_change = port_change;
+            }
             if let Some(drop) = table.get("health_drop").and_then(|drop| drop.as_integer()) {
                 rules.health_drop = Some(drop.clamp(1, 100) as u8);
             }
@@ -175,6 +183,8 @@ impl AlertSettings {
         text.push_str("# phones that randomize their address, look the same.\n");
         text.push_str(&format!("new_device = {}\n", self.rules.new_device));
         text.push_str(&format!("device_offline = {}\n", self.rules.device_offline));
+        text.push_str("# A known device opened or closed a port.\n");
+        text.push_str(&format!("port_change = {}\n", self.rules.port_change));
         if let Some(drop) = self.rules.health_drop {
             text.push_str(&format!("health_drop = {drop}\n"));
         }
@@ -244,6 +254,9 @@ impl AlertSettings {
                 condition: AlertCondition::DeviceOffline,
             });
         }
+        if self.rules.port_change {
+            rules.push(AlertRule::service_changed());
+        }
         if let Some(threshold) = self.rules.health_drop {
             rules.push(AlertRule::health_drop(threshold));
         }
@@ -261,6 +274,7 @@ pub struct AlertChanges {
     pub critical: Option<bool>,
     pub new_device: Option<bool>,
     pub device_offline: Option<bool>,
+    pub port_change: Option<bool>,
     pub health_drop: Option<u8>,
     pub off: bool,
 }
@@ -274,6 +288,7 @@ impl AlertChanges {
             && self.critical.is_none()
             && self.new_device.is_none()
             && self.device_offline.is_none()
+            && self.port_change.is_none()
             && self.health_drop.is_none()
             && !self.off
     }
@@ -321,6 +336,9 @@ impl AlertChanges {
         if let Some(offline) = self.device_offline {
             settings.rules.device_offline = offline;
         }
+        if let Some(port_change) = self.port_change {
+            settings.rules.port_change = port_change;
+        }
         if let Some(drop) = self.health_drop {
             settings.rules.health_drop = Some(drop.clamp(1, 100));
         }
@@ -350,6 +368,9 @@ impl AlertChanges {
         }
         if let Some(value) = self.device_offline {
             notes.push(on_off("devices going offline", value));
+        }
+        if let Some(value) = self.port_change {
+            notes.push(on_off("devices opening or closing a port", value));
         }
         if let Some(drop) = self.health_drop {
             notes.push(format!("Health score drops of {drop} points or more"));
@@ -792,6 +813,7 @@ mod tests {
         let mut settings = settings();
         settings.provider = WebhookProvider::Slack;
         settings.rules.new_device = true;
+        settings.rules.port_change = false;
         settings.rules.health_drop = Some(15);
 
         let parsed = AlertSettings::from_toml(&settings.to_toml()).expect("parse");
@@ -799,10 +821,20 @@ mod tests {
         assert_eq!(parsed.url, settings.url);
         assert_eq!(parsed.provider, WebhookProvider::Slack);
         assert!(parsed.rules.new_device);
+        assert!(!parsed.rules.port_change);
         assert_eq!(parsed.rules.health_drop, Some(15));
         // Left out of the file, so it comes back as the default.
         assert!(parsed.rules.critical);
         assert!(!parsed.rules.device_offline);
+    }
+
+    /// A file written before port alerts existed must not silently turn them
+    /// on or off: absent means the default, which is on.
+    #[test]
+    fn test_an_old_settings_file_keeps_the_port_default() {
+        let text = "url = \"https://example.test/hook\"\n\n[rules]\ncritical = true\n";
+        let parsed = AlertSettings::from_toml(text).expect("parse");
+        assert!(parsed.rules.port_change);
     }
 
     /// The URL is a credential for most providers, so the copy shown back to
@@ -922,6 +954,63 @@ mod tests {
             outcome.changes[0],
             NetworkChange::NewDevice { .. }
         ));
+    }
+
+    fn device_with_ports(ip: &str, ports: &[u16]) -> Device {
+        let mut device = device(ip, Vec::new());
+        for port in ports {
+            device.add_open_port(*port);
+        }
+        device
+    }
+
+    /// A port that answers now and did not before is the first sign of a new
+    /// service, so it is on by default rather than something to opt into.
+    #[tokio::test]
+    async fn test_a_port_opening_on_a_known_device_is_sent_by_default() {
+        let before = scan(vec![device_with_ports("192.168.111.10", &[22])]);
+        let after = scan(vec![device_with_ports("192.168.111.10", &[22, 3389])]);
+
+        let outcome = alert_on_changes(&settings(), Some(&before), &after).await;
+
+        assert_eq!(outcome.changes.len(), 1, "{:?}", outcome.changes);
+        assert!(matches!(
+            outcome.changes[0],
+            NetworkChange::NewService { port: 3389, .. }
+        ));
+        assert!(
+            outcome.error.is_some(),
+            "delivery should have been attempted"
+        );
+    }
+
+    /// Closing matters too: a service that stops answering is how a machine
+    /// being taken over, or a firewall change, first shows up.
+    #[tokio::test]
+    async fn test_a_port_closing_on_a_known_device_is_sent_by_default() {
+        let before = scan(vec![device_with_ports("192.168.111.10", &[22, 445])]);
+        let after = scan(vec![device_with_ports("192.168.111.10", &[22])]);
+
+        let outcome = alert_on_changes(&settings(), Some(&before), &after).await;
+
+        assert_eq!(outcome.changes.len(), 1, "{:?}", outcome.changes);
+        assert!(matches!(
+            outcome.changes[0],
+            NetworkChange::ServiceClosed { port: 445, .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_port_changes_can_be_turned_off() {
+        let before = scan(vec![device_with_ports("192.168.111.10", &[22])]);
+        let after = scan(vec![device_with_ports("192.168.111.10", &[22, 3389])]);
+
+        let mut settings = settings();
+        settings.rules.port_change = false;
+
+        let outcome = alert_on_changes(&settings, Some(&before), &after).await;
+        assert!(outcome.changes.is_empty(), "no alert when switched off");
+        assert!(outcome.error.is_none());
     }
 
     #[test]

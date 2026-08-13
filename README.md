@@ -4,7 +4,7 @@ A production-ready network security scanner written in Rust. Discover devices on
 
 [![CI](https://github.com/fuunshi/netgap/actions/workflows/ci.yml/badge.svg)](https://github.com/fuunshi/netgap/actions/workflows/ci.yml)
 
-**Current Status:** ✅ 362 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
+**Current Status:** ✅ 367 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
 
 ## Quick Features
 
@@ -176,7 +176,7 @@ cannot drift apart.
 
 ## Test Coverage
 
-**362 tests passing** across the workspace:
+**367 tests passing** across the workspace:
 
 | Crate | Purpose | Tests |
 |-------|---------|-------|
@@ -190,13 +190,13 @@ cannot drift apart.
 | netgap-probes | Service, version and TLS probes | 22 |
 | netgap-storage | Result persistence and device history | 12 |
 | netgap-services | Service/CVE database | 19 |
-| netgap-trends | History and change detection | 7 |
+| netgap-trends | History and change detection | 8 |
 | netgap-mdns | mDNS service discovery | 15 |
 | netgap-raw-sockets | Raw ARP framework (not yet wired up) | 7 |
 | netgap-threat-intel | NVD client and CVE cache | 17 |
 | netgap-webhooks | Alert delivery | 8 |
 | netgap-engine | Scan pipeline shared by the CLI, terminal UI and window | 0 |
-| netgap-cli | Commands, doctor, alerts, discovery and the interactive UI | 64 |
+| netgap-cli | Commands, doctor, alerts, discovery and the interactive UI | 68 |
 | netgap-gui | Window application and its display formatting | 12 |
 
 ## Performance
@@ -292,12 +292,16 @@ cron, a systemd timer, a CI job. Only *changes* are sent — a scan every
 fifteen minutes that finds the same open port every fifteen minutes stays
 quiet, because a monitor that repeats itself is one you mute.
 
-By default it alerts on a serious finding that was not there last time.
-Other triggers are opt-in, because they are noisy on real networks:
+By default it alerts on a serious finding that was not there last time,
+and on a known device opening *or* closing a port — a new one is the first
+sign of a service, or of a machine that has been taken over, and a port that
+stops answering is how a firewall change or a compromise shows up. The other
+triggers are off by default, because they are noisy on real networks:
 
 ```bash
 netgap alert --new-device        # a device that has not been seen before
 netgap alert --device-offline    # a device that stopped answering
+netgap alert --no-port-change    # stop reporting port changes
 netgap alert --health-drop 20    # the score fell by 20 points or more
 netgap alert --off               # stop, keeping the URL
 ```

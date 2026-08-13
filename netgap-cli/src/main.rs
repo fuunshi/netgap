@@ -281,6 +281,14 @@ enum Commands {
         #[arg(long)]
         no_device_offline: bool,
 
+        /// Alert when a known device opens or closes a port (on by default)
+        #[arg(long, conflicts_with = "no_port_change")]
+        port_change: bool,
+
+        /// Stop alerting when a device's open ports change
+        #[arg(long, conflicts_with = "port_change")]
+        no_port_change: bool,
+
         /// Alert when the health score falls by this much in one scan
         #[arg(long)]
         health_drop: Option<u8>,
@@ -414,6 +422,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             no_new_device,
             device_offline,
             no_device_offline,
+            port_change,
+            no_port_change,
             health_drop,
             test,
             off,
@@ -439,6 +449,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 device_offline: if device_offline {
                     Some(true)
                 } else if no_device_offline {
+                    Some(false)
+                } else {
+                    None
+                },
+                port_change: if port_change {
+                    Some(true)
+                } else if no_port_change {
                     Some(false)
                 } else {
                     None
@@ -982,6 +999,10 @@ async fn cmd_alert(
         (
             "devices going offline",
             yes_no(settings.rules.device_offline).to_string(),
+        ),
+        (
+            "port changes",
+            yes_no(settings.rules.port_change).to_string(),
         ),
         (
             "health score drops",
@@ -2230,6 +2251,13 @@ async fn cmd_watch(
 
                         if critical_rule.should_trigger(&changes, None) {
                             println!("\n🔴 ALERT: Critical vulnerability detected!");
+                        }
+                        // A port that was not open before is how a new
+                        // service — or a compromised machine — first appears,
+                        // and it is worth a line of its own rather than being
+                        // one bullet in a list.
+                        if AlertRule::service_changed().should_trigger(&changes, None) {
+                            println!("\n🟡 ALERT: A device opened or closed a port");
                         }
                         if let Some(drop) = health_drop {
                             if health_drop_rule.should_trigger(&changes, Some(drop)) {

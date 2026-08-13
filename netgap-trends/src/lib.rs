@@ -277,6 +277,12 @@ pub enum AlertCondition {
     MultipleNewServices {
         count: usize,
     },
+    /// A device's set of open ports changed, in either direction.
+    ///
+    /// Closing matters as much as opening: a port that used to answer and
+    /// stopped is how a service going down, a machine being taken over, or a
+    /// firewall rule being applied first shows up.
+    ServiceChanged,
 }
 
 impl AlertRule {
@@ -298,6 +304,10 @@ impl AlertRule {
             AlertCondition::MultipleNewServices { .. } => {
                 matches!(change, NetworkChange::NewService { .. })
             }
+            AlertCondition::ServiceChanged => matches!(
+                change,
+                NetworkChange::NewService { .. } | NetworkChange::ServiceClosed { .. }
+            ),
             // A health drop is not about one change; it is about the score.
             AlertCondition::HealthScoreDrop { .. } => false,
         }
@@ -339,6 +349,14 @@ impl AlertRule {
         AlertRule {
             name: "New Device Detected".to_string(),
             condition: AlertCondition::NewDevice,
+        }
+    }
+
+    /// Create a rule for a device whose open ports changed either way.
+    pub fn service_changed() -> Self {
+        AlertRule {
+            name: "A device's open ports changed".to_string(),
+            condition: AlertCondition::ServiceChanged,
         }
     }
 }
@@ -567,5 +585,29 @@ mod tests {
         let rule = AlertRule::health_drop(10);
         assert!(rule.should_trigger(&[], Some(15)));
         assert!(!rule.should_trigger(&[], Some(5)));
+    }
+
+    /// Both directions are the same event to anyone watching a network: the
+    /// set of services a device offers is not what it was.
+    #[test]
+    fn test_service_change_rule_matches_opening_and_closing() {
+        let rule = AlertRule::service_changed();
+        let opened = vec![NetworkChange::NewService {
+            ip: "192.168.1.20".to_string(),
+            port: 3389,
+        }];
+        let closed = vec![NetworkChange::ServiceClosed {
+            ip: "192.168.1.20".to_string(),
+            port: 445,
+        }];
+
+        assert!(rule.should_trigger(&opened, None));
+        assert!(rule.should_trigger(&closed, None));
+        assert!(!rule.should_trigger(
+            &[NetworkChange::DeviceGone {
+                ip: "192.168.1.30".to_string(),
+            }],
+            None
+        ));
     }
 }
