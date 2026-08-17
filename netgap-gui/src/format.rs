@@ -166,6 +166,26 @@ pub fn port_service(port: u16) -> Option<&'static str> {
     })
 }
 
+/// The ports a device gained and lost between two sightings.
+///
+/// Returned as two lists rather than one count because the direction is the
+/// interesting part: a port that appeared is a new way in.
+pub fn port_delta(newer: &[u16], older: &[u16]) -> (Vec<u16>, Vec<u16>) {
+    let mut added: Vec<u16> = newer
+        .iter()
+        .copied()
+        .filter(|port| !older.contains(port))
+        .collect();
+    let mut removed: Vec<u16> = older
+        .iter()
+        .copied()
+        .filter(|port| !newer.contains(port))
+        .collect();
+    added.sort_unstable();
+    removed.sort_unstable();
+    (added, removed)
+}
+
 /// Truncate with an ellipsis, counting characters rather than bytes.
 pub fn truncate(text: &str, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
@@ -304,6 +324,16 @@ mod tests {
         assert_eq!(port_service(445), Some("SMB"));
         assert_eq!(port_service(22), Some("SSH"));
         assert_eq!(port_service(12345), None);
+    }
+
+    #[test]
+    fn port_deltas_keep_the_direction() {
+        let (added, removed) = port_delta(&[22, 445, 3389], &[22, 80]);
+        assert_eq!(added, vec![445, 3389]);
+        assert_eq!(removed, vec![80]);
+
+        let (added, removed) = port_delta(&[22], &[22]);
+        assert!(added.is_empty() && removed.is_empty());
     }
 
     #[test]

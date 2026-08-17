@@ -130,6 +130,25 @@ pub struct Toast {
     pub text: String,
     pub created: Instant,
 }
+/// How many scans back the device timeline reads.
+///
+/// Enough to show a pattern, few enough that a device in a nightly scan for
+/// a year still opens instantly.
+const TIMELINE_SCANS: usize = 12;
+
+/// Every recorded appearance of the device the detail pane is showing.
+///
+/// Held on the app rather than fetched while drawing: the pane is redrawn
+/// every frame, and this reads the database.
+#[derive(Debug, Clone)]
+pub struct DeviceTimeline {
+    /// What the entries are for: the MAC, or the address when none is known.
+    /// A different key means the cached entries belong to another device.
+    key: String,
+    /// Newest first.
+    pub entries: Vec<netgap_storage::DeviceAppearance>,
+    pub error: Option<String>,
+}
 
 impl Toast {
     pub fn new(text: impl Into<String>) -> Self {
@@ -181,6 +200,8 @@ pub struct NetgapApp {
     pub device_search: String,
     pub severity_filter: Option<Severity>,
     pub selected_device: Option<usize>,
+    /// The history of the selected device, read once per selection.
+    pub timeline: Option<DeviceTimeline>,
 
     pub toast: Option<Toast>,
 }
@@ -237,6 +258,7 @@ impl NetgapApp {
             device_search: String::new(),
             severity_filter: None,
             selected_device: None,
+            timeline: None,
             toast: None,
         };
 
@@ -284,6 +306,7 @@ impl NetgapApp {
                 // The device view picks the worst device in the list; keep
                 // the selection empty so that happens when it is opened.
                 self.selected_device = None;
+                self.timeline = None;
                 self.latest = Some(loaded.clone());
                 self.selected_scan = Some(loaded);
             }
@@ -363,6 +386,7 @@ impl NetgapApp {
                 // The device view picks the worst device in the list; keep
                 // the selection empty so that happens when it is opened.
                 self.selected_device = None;
+                self.timeline = None;
                 self.selected_scan = Some(LoadedScan {
                     id: Some(id.to_string()),
                     result,
@@ -379,6 +403,46 @@ impl NetgapApp {
     /// The scan the Devices screen is about.
     pub fn current(&self) -> Option<&LoadedScan> {
         self.selected_scan.as_ref().or(self.latest.as_ref())
+    }
+
+    /// What the history has recorded about one device, newest first.
+    ///
+    /// Read from the database the first time a device is shown and reused
+    /// after that: the detail pane is redrawn every frame, and a query per
+    /// frame is a query per frame for as long as the window is open.
+    pub fn timeline_for(&mut self, mac: Option<&str>, ip: &str) -> DeviceTimeline {
+        let key = mac
+            .map(|mac| mac.to_ascii_lowercase())
+            .unwrap_or_else(|| ip.to_string());
+
+        if let Some(cached) = &self.timeline {
+            if cached.key == key {
+                return cached.clone();
+            }
+        }
+
+        let timeline = match self.store.as_ref() {
+            Some(store) => match store.device_timeline(mac, ip, TIMELINE_SCANS) {
+                Ok(entries) => DeviceTimeline {
+                    key,
+                    entries,
+                    error: None,
+                },
+                Err(error) => DeviceTimeline {
+                    key,
+                    entries: Vec::new(),
+                    error: Some(format!("Could not read the history: {error}")),
+                },
+            },
+            None => DeviceTimeline {
+                key,
+                entries: Vec::new(),
+                error: Some("Scan history is unavailable.".to_string()),
+            },
+        };
+
+        self.timeline = Some(timeline.clone());
+        timeline
     }
 
     pub fn current_devices(&self) -> usize {
@@ -522,6 +586,7 @@ impl NetgapApp {
                     self.events = None;
                     self.scan_stage = "Finished".to_string();
                     self.selected_device = None;
+                    self.timeline = None;
                     self.device_search.clear();
                     self.severity_filter = None;
 

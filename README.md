@@ -4,7 +4,7 @@ A production-ready network security scanner written in Rust. Discover devices on
 
 [![CI](https://github.com/fuunshi/netgap/actions/workflows/ci.yml/badge.svg)](https://github.com/fuunshi/netgap/actions/workflows/ci.yml)
 
-**Current Status:** ✅ 367 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
+**Current Status:** ✅ 371 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
 
 ## Quick Features
 
@@ -64,9 +64,11 @@ This produces two binaries, and they are separate programs on purpose:
 A dashboard of the network's health, the devices that were found, and every
 scan already in the database. Pick an interface, press **Start scan**, and
 watch it run — no flags to remember. **Scan network** is one click from the
-dashboard, **Devices** searches by address, name or vendor, and **History**
-charts the findings recorded over time. Light and dark modes are both built in,
-and a scan started here is saved to the same history `netgap report` reads.
+dashboard, **Devices** searches by address, name or vendor and shows each
+device's own record — when it first appeared, and what it opened or closed
+since — and **History** charts the findings recorded over time. Light and dark
+modes are both built in, and a scan started here is saved to the same history
+`netgap report` reads.
 
 For the command line there is also an interactive terminal view:
 
@@ -176,7 +178,7 @@ cannot drift apart.
 
 ## Test Coverage
 
-**367 tests passing** across the workspace:
+**371 tests passing** across the workspace:
 
 | Crate | Purpose | Tests |
 |-------|---------|-------|
@@ -188,7 +190,7 @@ cannot drift apart.
 | netgap-fingerprint | Device fingerprinting | 24 |
 | netgap-assess | Vulnerability and gateway checks | 10 |
 | netgap-probes | Service, version and TLS probes | 22 |
-| netgap-storage | Result persistence and device history | 12 |
+| netgap-storage | Result persistence and device history | 15 |
 | netgap-services | Service/CVE database | 19 |
 | netgap-trends | History and change detection | 8 |
 | netgap-mdns | mDNS service discovery | 15 |
@@ -197,7 +199,7 @@ cannot drift apart.
 | netgap-webhooks | Alert delivery | 8 |
 | netgap-engine | Scan pipeline shared by the CLI, terminal UI and window | 0 |
 | netgap-cli | Commands, doctor, alerts, discovery and the interactive UI | 68 |
-| netgap-gui | Window application and its display formatting | 12 |
+| netgap-gui | Window application and its display formatting | 13 |
 
 ## Performance
 

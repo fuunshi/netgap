@@ -390,134 +390,239 @@ fn details(app: &mut NetgapApp, ui: &mut Ui, p: &Palette, index: usize) {
     let mut findings: Vec<netgap_core::Finding> = device.findings.clone();
     findings.sort_by_key(|finding| std::cmp::Reverse(finding.severity));
 
-    widgets::card(ui, p, |ui| {
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.label(RichText::new(name).font(theme::display(16.5)).color(p.text));
-                ui.label(RichText::new(subtitle).size(11.5).color(p.muted));
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if let Some(severity) = severity {
-                    widgets::severity_chip(ui, p, severity);
-                }
-            });
-        });
+    let timeline = app.timeline_for(mac.as_deref(), &ip);
 
-        ui.add_space(10.0);
+    // One scroll area for the whole pane. With the history in it the card is
+    // taller than the window, and a card that runs off the bottom hides the
+    // findings — the thing the pane is for.
+    egui::ScrollArea::vertical()
+        .id_salt("device-details")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            widgets::card(ui, p, |ui| {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(name).font(theme::display(16.5)).color(p.text));
+                        ui.label(RichText::new(subtitle).size(11.5).color(p.muted));
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if let Some(severity) = severity {
+                            widgets::severity_chip(ui, p, severity);
+                        }
+                    });
+                });
 
-        egui::Grid::new("device-facts")
-            .num_columns(2)
-            .spacing([14.0, 5.0])
-            .show(ui, |ui| {
-                fact(ui, p, "Address", &ip);
-                fact(ui, p, "MAC", mac.as_deref().unwrap_or("not known"));
-                fact(
-                    ui,
-                    p,
-                    "Vendor",
-                    vendor.as_deref().unwrap_or("not identified"),
+                ui.add_space(10.0);
+
+                egui::Grid::new("device-facts")
+                    .num_columns(2)
+                    .spacing([14.0, 5.0])
+                    .show(ui, |ui| {
+                        fact(ui, p, "Address", &ip);
+                        fact(ui, p, "MAC", mac.as_deref().unwrap_or("not known"));
+                        fact(
+                            ui,
+                            p,
+                            "Vendor",
+                            vendor.as_deref().unwrap_or("not identified"),
+                        );
+                        let os_text = if os_confidence > 0.0 {
+                            format!("{os} ({:.0}% confident)", os_confidence * 100.0)
+                        } else {
+                            os
+                        };
+                        fact(ui, p, "System", &os_text);
+                        fact(
+                            ui,
+                            p,
+                            "Type",
+                            device_type.as_deref().unwrap_or("not identified"),
+                        );
+                        fact(
+                            ui,
+                            p,
+                            "First seen",
+                            &first_seen
+                                .as_deref()
+                                .map(format::relative_time)
+                                .unwrap_or_else(|| "this scan".to_string()),
+                        );
+                        if !ipv6.is_empty() {
+                            fact(ui, p, "IPv6", &ipv6.join(", "));
+                        }
+                    });
+
+                ui.add_space(10.0);
+
+                ui.horizontal(|ui| {
+                    if widgets::secondary_button(ui, p, "Copy address") {
+                        ui.ctx().copy_text(ip.clone());
+                    }
+                    if widgets::secondary_button(ui, p, "Export HTML") {
+                        app.export_report("html");
+                    }
+                    if widgets::secondary_button(ui, p, "Export CSV") {
+                        app.export_report("csv");
+                    }
+                });
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                ui.label(
+                    RichText::new(theme::tracked("OPEN PORTS"))
+                        .font(theme::mono(9.5))
+                        .color(p.muted),
                 );
-                let os_text = if os_confidence > 0.0 {
-                    format!("{os} ({:.0}% confident)", os_confidence * 100.0)
+                ui.add_space(4.0);
+                if ports.is_empty() {
+                    widgets::muted(ui, p, "No open service ports were found.");
                 } else {
-                    os
-                };
-                fact(ui, p, "System", &os_text);
-                fact(
-                    ui,
-                    p,
-                    "Type",
-                    device_type.as_deref().unwrap_or("not identified"),
-                );
-                fact(
-                    ui,
-                    p,
-                    "First seen",
-                    &first_seen
-                        .as_deref()
-                        .map(format::relative_time)
-                        .unwrap_or_else(|| "this scan".to_string()),
-                );
-                if !ipv6.is_empty() {
-                    fact(ui, p, "IPv6", &ipv6.join(", "));
+                    ui.horizontal_wrapped(|ui| {
+                        for port in &ports {
+                            egui::Frame::new()
+                                .fill(p.field)
+                                .corner_radius(egui::CornerRadius::same(5))
+                                .stroke(Stroke::new(1.0_f32, p.border))
+                                .inner_margin(egui::Margin::symmetric(7, 2))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        RichText::new(port.to_string())
+                                            .size(11.5)
+                                            .monospace()
+                                            .color(p.text),
+                                    );
+                                });
+                        }
+                    });
                 }
-            });
 
-        ui.add_space(10.0);
+                ui.add_space(10.0);
+                ui.label(
+                    RichText::new(theme::tracked("HISTORY"))
+                        .font(theme::mono(9.5))
+                        .color(p.muted),
+                );
+                ui.add_space(6.0);
+                timeline_section(ui, p, &timeline, &ip);
 
-        ui.horizontal(|ui| {
-            if widgets::secondary_button(ui, p, "Copy address") {
-                ui.ctx().copy_text(ip.clone());
-            }
-            if widgets::secondary_button(ui, p, "Export HTML") {
-                app.export_report("html");
-            }
-            if widgets::secondary_button(ui, p, "Export CSV") {
-                app.export_report("csv");
-            }
-        });
+                ui.add_space(10.0);
+                ui.label(
+                    RichText::new(theme::tracked(&format!("FINDINGS ({})", findings.len())))
+                        .font(theme::mono(9.5))
+                        .color(p.muted),
+                );
+                ui.add_space(6.0);
 
-        ui.add_space(8.0);
-        ui.separator();
-        ui.add_space(8.0);
-
-        ui.label(
-            RichText::new(theme::tracked("OPEN PORTS"))
-                .font(theme::mono(9.5))
-                .color(p.muted),
-        );
-        ui.add_space(4.0);
-        if ports.is_empty() {
-            widgets::muted(ui, p, "No open service ports were found.");
-        } else {
-            ui.horizontal_wrapped(|ui| {
-                for port in &ports {
-                    egui::Frame::new()
-                        .fill(p.field)
-                        .corner_radius(egui::CornerRadius::same(5))
-                        .stroke(Stroke::new(1.0_f32, p.border))
-                        .inner_margin(egui::Margin::symmetric(7, 2))
-                        .show(ui, |ui| {
-                            ui.label(
-                                RichText::new(port.to_string())
-                                    .size(11.5)
-                                    .monospace()
-                                    .color(p.text),
-                            );
-                        });
+                if findings.is_empty() {
+                    ui.label(
+                        RichText::new("Nothing wrong was found on this device.")
+                            .size(12.5)
+                            .color(p.success),
+                    );
+                    return;
                 }
-            });
-        }
 
-        ui.add_space(10.0);
-        ui.label(
-            RichText::new(theme::tracked(&format!("FINDINGS ({})", findings.len())))
-                .font(theme::mono(9.5))
-                .color(p.muted),
-        );
-        ui.add_space(6.0);
-
-        if findings.is_empty() {
-            ui.label(
-                RichText::new("Nothing wrong was found on this device.")
-                    .size(12.5)
-                    .color(p.success),
-            );
-            return;
-        }
-
-        let height = (ui.available_height() - 8.0).clamp(180.0, 420.0);
-        egui::ScrollArea::vertical()
-            .id_salt("device-findings")
-            .max_height(height)
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
                 for finding in &findings {
                     finding_card(ui, p, finding);
                     ui.add_space(6.0);
                 }
             });
-    });
+        });
+}
+
+/// The scans this device has appeared in, newest first.
+///
+/// Deliberately not a chart: what a person wants from a device's history is
+/// "when did it show up, and what changed", which a row of dates with the
+/// ports that moved on each answers directly.
+fn timeline_section(
+    ui: &mut Ui,
+    p: &Palette,
+    timeline: &crate::app::DeviceTimeline,
+    current_ip: &str,
+) {
+    if let Some(error) = &timeline.error {
+        widgets::muted(ui, p, error);
+        return;
+    }
+
+    if timeline.entries.is_empty() {
+        widgets::muted(
+            ui,
+            p,
+            "This device has not been recorded in the history yet. Scans run with \
+             --no-save are not kept.",
+        );
+        return;
+    }
+
+    for (index, entry) in timeline.entries.iter().enumerate() {
+        let older = timeline.entries.get(index + 1);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("●").size(8.0).color(if index == 0 {
+                p.accent
+            } else {
+                p.border
+            }));
+            ui.label(
+                RichText::new(format::short_time(&entry.scanned_at))
+                    .font(theme::mono(10.0))
+                    .color(p.text),
+            );
+
+            // An address that moved is worth saying; so is one that has not.
+            if entry.ip != current_ip {
+                ui.label(
+                    RichText::new(&entry.ip)
+                        .font(theme::mono(10.0))
+                        .color(p.muted),
+                );
+            }
+
+            match older {
+                Some(older) => {
+                    let (added, removed) = format::port_delta(&entry.open_ports, &older.open_ports);
+                    if added.is_empty() && removed.is_empty() {
+                        ui.label(RichText::new("no port change").size(10.0).color(p.muted));
+                    }
+                    for port in &added {
+                        ui.label(
+                            RichText::new(format!("+{port}"))
+                                .font(theme::mono(10.0))
+                                .color(p.high),
+                        );
+                    }
+                    for port in &removed {
+                        ui.label(
+                            RichText::new(format!("−{port}"))
+                                .font(theme::mono(10.0))
+                                .color(p.info),
+                        );
+                    }
+                }
+                None => {
+                    ui.label(
+                        RichText::new("first recorded scan")
+                            .size(10.0)
+                            .color(p.muted),
+                    );
+                }
+            }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if entry.findings > 0 {
+                    ui.label(
+                        RichText::new(format::findings(entry.findings))
+                            .size(10.0)
+                            .color(p.medium),
+                    );
+                }
+            });
+        });
+        ui.add_space(2.0);
+    }
 }
 
 fn fact(ui: &mut Ui, p: &Palette, label: &str, value: &str) {

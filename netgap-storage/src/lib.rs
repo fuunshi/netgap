@@ -349,13 +349,7 @@ impl ScanStore {
                     .filter(|address| !address.is_empty())
                     .map(str::to_string)
                     .collect();
-                device.open_ports = open_ports
-                    .as_deref()
-                    .unwrap_or_default()
-                    .split(',')
-                    .filter_map(|port| port.trim().parse::<u16>().ok())
-                    .collect();
-                device.open_ports.sort_unstable();
+                device.open_ports = parse_ports(open_ports.as_deref());
 
                 if let Some(findings) = findings_by_device.remove(&device_id) {
                     for (mut finding, severity) in findings {
@@ -490,6 +484,49 @@ impl ScanStore {
         }
 
         Ok(history)
+    }
+
+    /// Every recorded appearance of one device, newest first.
+    ///
+    /// The device is matched by its MAC address, which is what survives an
+    /// address change, and by its IP when no MAC was ever recorded — the case
+    /// for a host that only answered a TCP probe.
+    ///
+    /// Each entry carries the ports the device had at that scan, so a caller
+    /// can show what changed between sightings by comparing neighbours. The
+    /// limit is on the number of scans read, not on how far back they go.
+    pub fn device_timeline(
+        &self,
+        mac: Option<&str>,
+        ip: &str,
+        limit: usize,
+    ) -> Result<Vec<DeviceAppearance>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT d.scan_id, s.started_at, d.ip, d.open_ports,
+                    (SELECT COUNT(*) FROM findings f WHERE f.device_id = d.id)
+             FROM devices d JOIN scans s ON s.id = d.scan_id
+             WHERE (?1 IS NOT NULL AND LOWER(d.mac) = LOWER(?1))
+                OR (?1 IS NULL AND d.ip = ?2)
+             ORDER BY s.started_at DESC
+             LIMIT ?3",
+        )?;
+
+        let rows = stmt.query_map(params![mac, ip, limit as i64], |row| {
+            Ok(DeviceAppearance {
+                scan_id: row.get(0)?,
+                scanned_at: row.get(1)?,
+                ip: row.get(2)?,
+                open_ports: parse_ports(row.get::<_, Option<String>>(3)?.as_deref()),
+                findings: row.get::<_, i64>(4)?.max(0) as usize,
+            })
+        })?;
+
+        let mut appearances = Vec::new();
+        for row in rows {
+            appearances.push(row?);
+        }
+
+        Ok(appearances)
     }
 
     /// Load scan metadata by ID
@@ -954,6 +991,29 @@ pub struct SeenRecord {
     pub last_hostname: Option<String>,
 }
 
+/// One appearance of a device in the stored history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceAppearance {
+    pub scan_id: String,
+    /// RFC 3339 timestamp of the scan that recorded it.
+    pub scanned_at: String,
+    /// The address it had at that scan. A device that keeps its MAC can move.
+    pub ip: String,
+    pub open_ports: Vec<u16>,
+    pub findings: usize,
+}
+
+/// The comma-separated port list a device row stores, back into numbers.
+fn parse_ports(text: Option<&str>) -> Vec<u16> {
+    let mut ports: Vec<u16> = text
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|port| port.trim().parse::<u16>().ok())
+        .collect();
+    ports.sort_unstable();
+    ports
+}
+
 /// Map a stored severity string back to the core enum.
 fn severity_from_str(severity: &str) -> Severity {
     match severity.to_ascii_uppercase().as_str() {
@@ -1086,6 +1146,76 @@ mod tests {
         let record = history.get("AA:BB:CC:DD:EE:FF").expect("recorded");
         assert_eq!(record.times_seen, 2, "both scans count as sightings");
         assert!(record.last_seen >= record.first_seen);
+    }
+
+    /// The point of the timeline: a device that keeps its MAC but changes
+    /// address is still one device, and the ports it had are comparable.
+    #[test]
+    fn test_the_timeline_follows_a_mac_across_addresses() {
+        let mut store = ScanStore::open(Path::new(":memory:")).expect("open store");
+
+        let mut first = sample_result();
+        first.started_at = "2026-10-01T10:00:00+00:00".to_string();
+        first.devices[0].open_ports = vec![22];
+        store.save_scan(&first).expect("first save");
+
+        let mut second = sample_result();
+        second.started_at = "2026-10-02T10:00:00+00:00".to_string();
+        second.devices[0].ip = "192.168.1.44".parse().expect("valid address");
+        second.devices[0].open_ports = vec![22, 445];
+        store.save_scan(&second).expect("second save");
+
+        let timeline = store
+            .device_timeline(Some("AA:BB:CC:DD:EE:FF"), "192.168.1.10", 10)
+            .expect("timeline");
+
+        assert_eq!(timeline.len(), 2);
+        // Newest first.
+        assert_eq!(timeline[0].ip, "192.168.1.44");
+        assert_eq!(timeline[0].open_ports, vec![22, 445]);
+        assert_eq!(timeline[0].findings, 1);
+        assert_eq!(timeline[1].ip, "192.168.1.10");
+        assert_eq!(timeline[1].open_ports, vec![22]);
+    }
+
+    #[test]
+    fn test_the_timeline_matches_by_address_when_no_mac_is_known() {
+        let mut store = ScanStore::open(Path::new(":memory:")).expect("open store");
+
+        let mut without_mac = sample_result();
+        without_mac.devices[0].mac = None;
+        store.save_scan(&without_mac).expect("save");
+
+        let by_ip = store
+            .device_timeline(None, "192.168.1.10", 10)
+            .expect("timeline");
+        assert_eq!(by_ip.len(), 1);
+
+        // A different device at a different address is not this one.
+        let other = store
+            .device_timeline(None, "192.168.1.11", 10)
+            .expect("timeline");
+        assert!(other.is_empty());
+    }
+
+    #[test]
+    fn test_the_timeline_returns_the_most_recent_sightings_first() {
+        let mut store = ScanStore::open(Path::new(":memory:")).expect("open store");
+
+        for day in 1..=3 {
+            let mut result = sample_result();
+            result.started_at = format!("2026-10-0{day}T10:00:00+00:00");
+            result.devices[0].open_ports = vec![22, day as u16];
+            store.save_scan(&result).expect("save");
+        }
+
+        let timeline = store
+            .device_timeline(Some("AA:BB:CC:DD:EE:FF"), "192.168.1.10", 2)
+            .expect("timeline");
+
+        assert_eq!(timeline.len(), 2, "the limit caps the number of scans read");
+        assert!(timeline[0].scanned_at.starts_with("2026-10-03"));
+        assert!(timeline[1].scanned_at.starts_with("2026-10-02"));
     }
 
     #[test]
