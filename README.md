@@ -4,7 +4,7 @@ A production-ready network security scanner written in Rust. Discover devices on
 
 [![CI](https://github.com/fuunshi/netgap/actions/workflows/ci.yml/badge.svg)](https://github.com/fuunshi/netgap/actions/workflows/ci.yml)
 
-**Current Status:** ✅ 371 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
+**Current Status:** ✅ 378 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
 
 ## Quick Features
 
@@ -121,6 +121,8 @@ re-run under sudo.
 
 ### Compare Scans
 ```bash
+./target/release/netgap diff              # what changed since the previous scan
+./target/release/netgap diff <from> <to>  # or between any two
 ./target/release/netgap report --history
 ./target/release/netgap report --scan-id scan-1 --compare scan-2
 ```
@@ -178,7 +180,7 @@ cannot drift apart.
 
 ## Test Coverage
 
-**371 tests passing** across the workspace:
+**378 tests passing** across the workspace:
 
 | Crate | Purpose | Tests |
 |-------|---------|-------|
@@ -198,7 +200,7 @@ cannot drift apart.
 | netgap-threat-intel | NVD client and CVE cache | 17 |
 | netgap-webhooks | Alert delivery | 8 |
 | netgap-engine | Scan pipeline shared by the CLI, terminal UI and window | 0 |
-| netgap-cli | Commands, doctor, alerts, discovery and the interactive UI | 68 |
+| netgap-cli | Commands, doctor, diff, alerts, discovery and the interactive UI | 75 |
 | netgap-gui | Window application and its display formatting | 13 |
 
 ## Performance
@@ -262,6 +264,12 @@ netgap report                    # Latest scan, terminal table
 netgap report --history          # All scans
 netgap report --format json      # json, summary, markdown, html, csv
 netgap report --scan-id <id1> --compare <id2>  # Compare
+
+# What changed between two scans (exits 1 when anything did)
+netgap diff                      # the previous scan against the latest
+netgap diff <id>                 # since that scan, up to the latest
+netgap diff <from> <to>          # between any two (ids, or "previous")
+netgap diff --json               # machine-readable, for a script or CI step
 ```
 
 ## Window Application

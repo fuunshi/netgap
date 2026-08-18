@@ -17,6 +17,7 @@ use std::net::IpAddr;
 use std::time::Duration;
 
 mod alerts;
+mod diff;
 mod discovery;
 mod doctor;
 mod interactive;
@@ -225,6 +226,20 @@ enum Commands {
         history: bool,
     },
 
+    /// What changed between two scans (exits 1 when anything did)
+    Diff {
+        /// The scan to compare from: an id, a prefix of one, or "previous"
+        /// (defaults to the scan before the newest)
+        from: Option<String>,
+
+        /// The scan to compare to: an id or a prefix (defaults to the newest)
+        to: Option<String>,
+
+        /// Print the changes as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Continuous monitoring mode (watch for network changes)
     Watch {
         #[command(flatten)]
@@ -403,6 +418,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             history,
         } => {
             cmd_report(scan_id, compare, &format, history)?;
+        }
+        Commands::Diff { from, to, json } => {
+            diff::run(from, to, json)?;
         }
         Commands::Watch {
             discovery,
