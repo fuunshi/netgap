@@ -154,6 +154,15 @@ impl TrustList {
         entries
     }
 
+    /// Build a list from entries that are already trusted.
+    ///
+    /// Used by an import, which has a complete list in hand and should not have
+    /// to replay `trust` calls — those deliberately refuse to clear a label,
+    /// while an imported file says what each entry is.
+    pub fn from_entries(entries: Vec<TrustedDevice>) -> Self {
+        TrustList { devices: entries }
+    }
+
     /// Whether the list is empty.
     pub fn is_empty(&self) -> bool {
         self.devices.is_empty()

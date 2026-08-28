@@ -4,7 +4,7 @@ A production-ready network security scanner written in Rust. Discover devices on
 
 [![CI](https://github.com/fuunshi/netgap/actions/workflows/ci.yml/badge.svg)](https://github.com/fuunshi/netgap/actions/workflows/ci.yml)
 
-**Current Status:** ✅ 378 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
+**Current Status:** ✅ 386 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
 
 ## Quick Features
 
@@ -180,7 +180,7 @@ cannot drift apart.
 
 ## Test Coverage
 
-**378 tests passing** across the workspace:
+**386 tests passing** across the workspace:
 
 | Crate | Purpose | Tests |
 |-------|---------|-------|
@@ -200,7 +200,7 @@ cannot drift apart.
 | netgap-threat-intel | NVD client and CVE cache | 17 |
 | netgap-webhooks | Alert delivery | 8 |
 | netgap-engine | Scan pipeline shared by the CLI, terminal UI and window | 0 |
-| netgap-cli | Commands, doctor, diff, alerts, discovery and the interactive UI | 75 |
+| netgap-cli | Commands, doctor, diff, inventory, alerts, discovery and the interactive UI | 83 |
 | netgap-gui | Window application and its display formatting | 13 |
 
 ## Performance
@@ -250,6 +250,12 @@ netgap scan --threat-intel     # match findings against it, offline
 netgap trusted                    # list
 netgap trust <mac> "label"        # add (an IP works if it is already known)
 netgap untrust <mac>              # remove
+
+# Carry that list to another machine, or keep a copy of it
+netgap inventory export                   # JSON on standard output
+netgap inventory export ~/netgap.json     # to a file, readable only by you
+netgap inventory import ~/netgap.json     # add these devices; labels refresh
+netgap inventory import ~/netgap.json --replace  # the file is the whole list
 
 # Run scan
 netgap scan -i eth0 -t 192.168.1.0/24

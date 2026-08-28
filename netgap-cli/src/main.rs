@@ -21,6 +21,7 @@ mod diff;
 mod discovery;
 mod doctor;
 mod interactive;
+mod inventory;
 mod trust;
 mod ui;
 
@@ -154,6 +155,12 @@ enum Commands {
 
     /// List trusted devices
     Trusted,
+
+    /// Save the trusted-device list to a file, or load one
+    Inventory {
+        #[command(subcommand)]
+        action: InventoryAction,
+    },
 
     /// Manage the local NVD vulnerability database
     ThreatIntel {
@@ -335,6 +342,26 @@ enum ThreatIntelAction {
     Clear,
 }
 
+/// Carrying the trusted-device list between machines.
+#[derive(Subcommand)]
+enum InventoryAction {
+    /// Write the trusted list, with its labels, as JSON
+    Export {
+        /// Where to write it (default: standard output)
+        path: Option<String>,
+    },
+
+    /// Add the devices in a file to the trusted list
+    Import {
+        /// The inventory to read; "-" reads standard input
+        path: String,
+
+        /// Make the file the whole list, dropping devices it does not mention
+        #[arg(long)]
+        replace: bool,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -380,6 +407,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Trusted => {
             cmd_trusted()?;
         }
+        Commands::Inventory { action } => match action {
+            InventoryAction::Export { path } => inventory::export(path)?,
+            InventoryAction::Import { path, replace } => inventory::import(&path, replace)?,
+        },
         Commands::ThreatIntel { action } => {
             cmd_threat_intel(action).await?;
         }
