@@ -4,7 +4,7 @@ A production-ready network security scanner written in Rust. Discover devices on
 
 [![CI](https://github.com/fuunshi/netgap/actions/workflows/ci.yml/badge.svg)](https://github.com/fuunshi/netgap/actions/workflows/ci.yml)
 
-**Current Status:** ✅ 386 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
+**Current Status:** ✅ 403 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
 
 ## Quick Features
 
@@ -19,7 +19,7 @@ A production-ready network security scanner written in Rust. Discover devices on
 - 📡 **mDNS Discovery** - Asks devices to name themselves (printers, TVs, speakers)
 - 🔒 **TLS Inspection** - Certificates, expiry, self-signed, legacy protocol support
 - 🆕 **Device History** - Reports what has appeared on the network since last time
-- 🛡️ **Gateway Checks** - Admin interface exposure and UPnP on the router itself
+- 🛡️ **Gateway Checks** - Admin interface exposure, and the ports UPnP has actually published to the internet
 - 🚨 **Address Conflicts** - Alerts when an address, especially the gateway's, changes hands
 - 🕵️ **Rogue DHCP** - Asks the network who hands out addresses, and says if it is not the router
 - 🖥️ **Interactive View** - A plain full-screen UI for picking an interface, scanning and browsing results
@@ -180,7 +180,7 @@ cannot drift apart.
 
 ## Test Coverage
 
-**386 tests passing** across the workspace:
+**403 tests passing** across the workspace:
 
 | Crate | Purpose | Tests |
 |-------|---------|-------|
@@ -190,8 +190,8 @@ cannot drift apart.
 | netgap-scan | Port scanning and risk classification | 6 |
 | netgap-report | Terminal, summary and HTML formatting | 30 |
 | netgap-fingerprint | Device fingerprinting | 24 |
-| netgap-assess | Vulnerability and gateway checks | 10 |
-| netgap-probes | Service, version and TLS probes | 22 |
+| netgap-assess | Vulnerability and gateway checks | 14 |
+| netgap-probes | Service, version and TLS probes | 33 |
 | netgap-storage | Result persistence and device history | 15 |
 | netgap-services | Service/CVE database | 19 |
 | netgap-trends | History and change detection | 8 |
@@ -200,7 +200,7 @@ cannot drift apart.
 | netgap-threat-intel | NVD client and CVE cache | 17 |
 | netgap-webhooks | Alert delivery | 8 |
 | netgap-engine | Scan pipeline shared by the CLI, terminal UI and window | 0 |
-| netgap-cli | Commands, doctor, diff, inventory, alerts, discovery and the interactive UI | 83 |
+| netgap-cli | Commands, doctor, upnp, diff, inventory, alerts, discovery and the interactive UI | 85 |
 | netgap-gui | Window application and its display formatting | 13 |
 
 ## Performance
@@ -240,6 +240,11 @@ netgap discover --format json     # full metadata, machine-readable
 netgap discover --identify        # probe ports to sharpen device types
 netgap discover --mdns            # ask devices to name themselves over mDNS
 netgap discover --no-save         # report without recording it in the history
+
+# What the router has published through UPnP, if it answers
+netgap upnp                       # the ports UPnP opened to the internet
+netgap upnp --json                # machine-readable (exits 1 if anything is published)
+netgap upnp --gateway 10.0.0.2    # a second router, or one off the default route
 
 # Live CVE data (optional; scanning works without it)
 netgap threat-intel update     # download CVE data for known products

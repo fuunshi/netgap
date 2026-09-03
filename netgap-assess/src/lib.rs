@@ -4,6 +4,7 @@
 //! discovered devices and services to identify security issues.
 
 use netgap_core::{Device, Finding, Severity};
+use std::net::IpAddr;
 
 /// Trait for implementing vulnerability checks.
 pub trait VulnerabilityCheck: Send + Sync {
@@ -139,6 +140,103 @@ pub fn check_gateway(device: &Device) -> Vec<Finding> {
             remediation:
                 "Disable UPnP in the router settings unless something on the network depends on it, and forward ports explicitly instead.".to_string(),
             confidence: 0.85,
+        });
+    }
+
+    findings
+}
+
+/// An inbound port a UPnP gateway has published, reduced to what a finding
+/// needs. The network side lives in `netgap-probes`; these rules do not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpnpMapping {
+    pub external_port: u16,
+    pub protocol: String,
+    pub internal_client: String,
+    pub internal_port: u16,
+    pub description: String,
+}
+
+/// What the UPnP check found on the gateway.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UpnpExposure {
+    /// What the router calls itself, when it said.
+    pub name: Option<String>,
+    /// The mappings it has published, enabled ones only.
+    pub mappings: Vec<UpnpMapping>,
+}
+
+/// Findings for what the gateway's UPnP interface has published.
+///
+/// The port check in `check_gateway` can only say "UPnP answers here". This
+/// says what it *did*: a mapping is a hole through the router's firewall that
+/// any device on the network could have asked for, and which the router's own
+/// page may not show.
+///
+/// A gateway that answers UPnP with nothing published is still worth a note —
+/// the mechanism is armed, not used — but at a lower severity than an open
+/// port, because nothing is reachable from outside until something asks.
+pub fn upnp_findings(ip: IpAddr, exposure: &UpnpExposure) -> Vec<Finding> {
+    if exposure.mappings.is_empty() {
+        let name = exposure
+            .name
+            .as_deref()
+            .map(|name| format!("{name} "))
+            .unwrap_or_default();
+        return vec![Finding {
+            id: "gateway_upnp_answering".to_string(),
+            title: "The gateway answers UPnP".to_string(),
+            description: format!(
+                "The {name}router accepts UPnP requests. Nothing is published to the internet right now, but any device on this network can ask it to open a port, with no password and no approval from you, and the result may not appear in the router's own settings page."
+            ),
+            severity: Severity::Medium,
+            ip,
+            port: Some(1900),
+            service: Some("UPnP".to_string()),
+            remediation:
+                "Turn UPnP off in the router settings unless something on the network depends on it, and forward ports explicitly instead.".to_string(),
+            confidence: 0.9,
+        }];
+    }
+
+    let mut findings = Vec::new();
+    for mapping in exposure.mappings.iter().take(10) {
+        // Forwarding to the router itself is the worst case: it is the device
+        // that holds the password to everything else.
+        let to_router = mapping.internal_client == ip.to_string();
+        let description = if mapping.description.is_empty() {
+            String::new()
+        } else {
+            format!(" (\"{}\")", mapping.description)
+        };
+        findings.push(Finding {
+            id: "gateway_upnp_port_mapping".to_string(),
+            title: format!(
+                "UPnP has published {} port {} to the internet",
+                mapping.protocol.to_uppercase(),
+                mapping.external_port
+            ),
+            description: format!(
+                "The router forwards {} port {} from the internet to {}{}. Any device on this network could have asked for this: UPnP needs no password, and the router usually keeps no record of who made the request.",
+                mapping.protocol.to_uppercase(),
+                mapping.external_port,
+                match to_router {
+                    true => "the router itself".to_string(),
+                    false => format!("{}:{}", mapping.internal_client, mapping.internal_port),
+                },
+                description,
+            ),
+            severity: if to_router {
+                Severity::Critical
+            } else {
+                Severity::High
+            },
+            ip,
+            port: Some(mapping.external_port),
+            service: Some(mapping.protocol.to_uppercase()),
+            remediation:
+                "Remove this mapping in the router's settings, and turn UPnP off if nothing on the network needs it. If the service should be reachable, forward the port explicitly so it is visible and deliberate.".to_string(),
+            confidence: 1.0,
         });
     }
 
@@ -319,7 +417,7 @@ impl VulnerabilityCheck for UnencryptedHTTPCheck {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::IpAddr;
+    use std::net::{IpAddr, Ipv4Addr};
 
     fn create_test_device(ports: Vec<u16>) -> Device {
         let ip: IpAddr = "192.168.1.100".parse().unwrap();
@@ -450,5 +548,82 @@ mod tests {
         assert!(
             devices[1].findings.is_empty() || devices[1].findings.len() < devices[0].findings.len()
         );
+    }
+
+    fn mapping(port: u16, client: &str, description: &str) -> UpnpMapping {
+        UpnpMapping {
+            external_port: port,
+            protocol: "TCP".into(),
+            internal_client: client.into(),
+            internal_port: 80,
+            description: description.into(),
+        }
+    }
+
+    #[test]
+    fn test_a_published_upnp_mapping_is_high() {
+        let exposure = UpnpExposure {
+            name: Some("Archer AX10".into()),
+            mappings: vec![mapping(8080, "192.168.1.50", "camera web")],
+        };
+
+        let findings = upnp_findings(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), &exposure);
+        assert_eq!(findings.len(), 1);
+
+        let finding = &findings[0];
+        assert_eq!(finding.id, "gateway_upnp_port_mapping");
+        assert_eq!(finding.severity, Severity::High);
+        assert_eq!(finding.port, Some(8080));
+        assert!(finding.title.contains("8080"), "{}", finding.title);
+        assert!(finding.description.contains("192.168.1.50:80"));
+        assert!(finding.description.contains("camera web"));
+    }
+
+    #[test]
+    fn test_a_mapping_to_the_router_itself_is_critical() {
+        let exposure = UpnpExposure {
+            name: None,
+            mappings: vec![mapping(8443, "192.168.1.1", "")],
+        };
+
+        let findings = upnp_findings(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), &exposure);
+        assert_eq!(findings[0].severity, Severity::Critical);
+        assert!(
+            findings[0].description.contains("the router itself"),
+            "{}",
+            findings[0].description
+        );
+    }
+
+    #[test]
+    fn test_a_gateway_with_nothing_published_is_only_a_note() {
+        let exposure = UpnpExposure {
+            name: Some("Archer AX10".into()),
+            mappings: Vec::new(),
+        };
+
+        let findings = upnp_findings(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), &exposure);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].id, "gateway_upnp_answering");
+        assert_eq!(findings[0].severity, Severity::Medium);
+        assert!(
+            findings[0].description.contains("Archer AX10"),
+            "{}",
+            findings[0].description
+        );
+    }
+
+    #[test]
+    fn test_upnp_findings_stop_at_ten_mappings() {
+        let mappings = (1..=15)
+            .map(|port| mapping(port, "192.168.1.50", ""))
+            .collect();
+        let exposure = UpnpExposure {
+            name: None,
+            mappings,
+        };
+
+        let findings = upnp_findings(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), &exposure);
+        assert_eq!(findings.len(), 10);
     }
 }

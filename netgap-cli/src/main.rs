@@ -24,6 +24,7 @@ mod interactive;
 mod inventory;
 mod trust;
 mod ui;
+mod upnp;
 
 use discovery::DiscoveryPlan;
 
@@ -107,6 +108,18 @@ enum Commands {
         /// Only inspect the settings: send no packets, and skip the live probe
         #[arg(long)]
         no_probe: bool,
+    },
+
+    /// Ask the gateway what UPnP has published to the internet
+    Upnp {
+        /// Print the result as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Ask this address instead of the default gateway, for a second
+        /// router or one that is not on the default route
+        #[arg(long)]
+        gateway: Option<String>,
     },
 
     /// Open the full-screen interactive view (interfaces, scans and findings)
@@ -376,6 +389,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             no_probe,
         } => {
             doctor::run(interface, target, no_probe).await?;
+        }
+        Commands::Upnp { json, gateway } => {
+            upnp::run(json, gateway).await?;
         }
         Commands::Ui => {
             ui::run().await?;
@@ -1616,6 +1632,26 @@ async fn check_gateway_exposure(devices: &mut [Device], probes: &mut Vec<Service
     for finding in findings {
         eprintln!("  [{}] {}", finding.severity, finding.title);
         device.add_finding(finding);
+    }
+
+    // What UPnP has actually published. The port check above can only see the
+    // control interface; this asks the router, which is the difference between
+    // "UPnP answers" and "this port is open to the internet right now".
+    let upnp_findings = upnp::gateway_findings(device).await;
+    if !upnp_findings.is_empty() {
+        let already_reported = device
+            .findings
+            .iter()
+            .any(|finding| finding.id == "gateway_upnp_exposed");
+        for finding in upnp_findings {
+            // "UPnP answers" and "the control port is open" are the same fact;
+            // report the more precise one only once.
+            if finding.id == "gateway_upnp_answering" && already_reported {
+                continue;
+            }
+            eprintln!("  [{}] {}", finding.severity, finding.title);
+            device.add_finding(finding);
+        }
     }
 
     if device.findings.is_empty() {

@@ -6,6 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+quick-xml = "0.41"
 chrono.workspace = true
 base64 = "0.21"
 netgap-core = { path = "../netgap-core" }

@@ -2476,6 +2476,7 @@ dependencies = [
  "base64 0.21.7",
  "chrono",
  "netgap-core",
+ "quick-xml",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

@@ -12,6 +12,7 @@
 //! without a network.
 
 pub mod tls;
+pub mod upnp;
 
 use anyhow::Result;
 use std::net::{IpAddr, SocketAddr};
@@ -181,7 +182,7 @@ async fn read_banner(stream: &mut TcpStream, limit: usize) -> String {
 ///
 /// Used where the interesting part may arrive after the first segment: an HTTP
 /// body, or a banner split across reads.
-async fn read_until_close(stream: &mut TcpStream, limit: usize) -> String {
+pub(crate) async fn read_until_close(stream: &mut TcpStream, limit: usize) -> String {
     let mut buffer = vec![0u8; limit];
     let mut filled = 0;
     let deadline = tokio::time::Instant::now() + READ_TIMEOUT;
