@@ -243,6 +243,105 @@ pub fn upnp_findings(ip: IpAddr, exposure: &UpnpExposure) -> Vec<Finding> {
     findings
 }
 
+/// Whether an SMB server insists on message signing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmbSigning {
+    /// Unsigned sessions are refused.
+    Required,
+    /// Signing is supported but a client may decline it.
+    Optional,
+    /// The server said it does not sign.
+    Disabled,
+    /// An SMBv1-only server does not say until a session is set up.
+    Unknown,
+}
+
+/// What a file server said about itself before anyone logged in. The wire side
+/// lives in `netgap-probes`; these rules do not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SmbServer {
+    /// The server still accepts the SMBv1 dialect.
+    pub smb1: bool,
+    /// The server answered SMB2/3 negotiation.
+    pub smb2: bool,
+    /// The dialect it chose, when it said, e.g. "3.1.1".
+    pub dialect: Option<String>,
+    pub signing: SmbSigning,
+}
+
+/// Findings for what a file server negotiated without any credentials.
+///
+/// Both facts are stated by the server itself, so the confidence is exact.
+///
+/// The signing finding is graded by how far the server goes: a server that
+/// signs but does not require it can be relayed against, and a server that has
+/// signing off entirely cannot even be talked into it. Neither demands that a
+/// victim is tricked into authenticating to the attacker first, which is why
+/// this is not rated as high as an open cleartext service.
+pub fn smb_findings(ip: IpAddr, port: u16, server: &SmbServer) -> Vec<Finding> {
+    let mut findings = Vec::new();
+
+    if server.smb1 {
+        findings.push(Finding {
+            id: "smb_v1_enabled".to_string(),
+            title: "This file server still speaks SMBv1".to_string(),
+            description: format!(
+                "The server at {ip}:{port} accepted an SMBv1 negotiation. SMBv1 is the protocol the WannaCry and NotPetya worms spread through: they needed nothing but a reachable SMBv1 service on an unpatched machine. A network where no server negotiates SMBv1 cannot carry that class of worm."
+            ),
+            severity: Severity::High,
+            ip,
+            port: Some(port),
+            service: Some("SMB".to_string()),
+            remediation:
+                "Turn SMBv1 off. Windows, Samba and macOS have shipped it disabled for years; it is usually still on only because an old copier or appliance needs it. Isolate that device behind its own rules instead."
+                    .to_string(),
+            confidence: 1.0,
+        });
+    }
+
+    match server.signing {
+        SmbSigning::Optional | SmbSigning::Disabled => {
+            let (title, consequence) = match server.signing {
+                SmbSigning::Disabled => (
+                    "SMB signing is disabled on this file server",
+                    "The server does not sign at all, so a client cannot ask for it even when it wants to.",
+                ),
+                _ => (
+                    "This file server accepts unsigned SMB sessions",
+                    "The server can sign but does not insist, so a client that declines is still let in.",
+                ),
+            };
+            let dialect = server
+                .dialect
+                .as_deref()
+                .map(|dialect| format!(" It negotiated SMB {dialect}."))
+                .unwrap_or_default();
+
+            findings.push(Finding {
+                id: "smb_signing_not_required".to_string(),
+                title: title.to_string(),
+                description: format!(
+                    "{consequence}{dialect} An attacker on this network can relay someone else's authentication to this server and act as them, without knowing or cracking their password — the technique behind most NTLM relay attacks. This matters most on a domain controller, where the relayed identity can be used to take over the domain."
+                ),
+                severity: match server.signing {
+                    SmbSigning::Disabled => Severity::High,
+                    _ => Severity::Medium,
+                },
+                ip,
+                port: Some(port),
+                service: Some("SMB".to_string()),
+                remediation:
+                    "Require signing on the server: on Windows, set RequireSecuritySignature for the SMB server; in Samba, `server signing = mandatory`. Clients that cannot sign will need fixing rather than being allowed to skip it."
+                        .to_string(),
+                confidence: 1.0,
+            });
+        }
+        SmbSigning::Required | SmbSigning::Unknown => {}
+    }
+
+    findings
+}
+
 /// Check for exposed Telnet (port 23) - CRITICAL
 struct TelnetExposedCheck;
 
@@ -625,5 +724,68 @@ mod tests {
 
         let findings = upnp_findings(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), &exposure);
         assert_eq!(findings.len(), 10);
+    }
+
+    fn server(smb1: bool, signing: SmbSigning) -> SmbServer {
+        SmbServer {
+            smb1,
+            smb2: true,
+            dialect: Some("3.1.1".into()),
+            signing,
+        }
+    }
+
+    fn file_server() -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(192, 168, 1, 36))
+    }
+
+    #[test]
+    fn test_smbv1_enabled_is_reported_whatever_the_signing() {
+        let findings = smb_findings(file_server(), 445, &server(true, SmbSigning::Required));
+        assert_eq!(findings.len(), 1);
+
+        let finding = &findings[0];
+        assert_eq!(finding.id, "smb_v1_enabled");
+        assert_eq!(finding.severity, Severity::High);
+        assert_eq!(finding.port, Some(445));
+        assert!(finding.description.contains("192.168.1.36:445"));
+    }
+
+    #[test]
+    fn test_optional_signing_is_a_medium_relay_risk() {
+        let findings = smb_findings(file_server(), 445, &server(false, SmbSigning::Optional));
+        assert_eq!(findings.len(), 1);
+
+        let finding = &findings[0];
+        assert_eq!(finding.id, "smb_signing_not_required");
+        assert_eq!(finding.severity, Severity::Medium);
+        assert!(finding.title.contains("unsigned"), "{}", finding.title);
+        // The dialect the server chose is worth stating: it dates the server.
+        assert!(finding.description.contains("SMB 3.1.1"));
+    }
+
+    #[test]
+    fn test_disabled_signing_is_worse_than_optional() {
+        let findings = smb_findings(file_server(), 445, &server(false, SmbSigning::Disabled));
+        assert_eq!(findings[0].severity, Severity::High);
+        assert!(findings[0].title.contains("disabled"));
+    }
+
+    #[test]
+    fn test_a_fully_current_file_server_produces_nothing() {
+        let findings = smb_findings(file_server(), 445, &server(false, SmbSigning::Required));
+        assert!(findings.is_empty());
+
+        // An SMBv1-only server never states its signing mode; that alone must
+        // not be turned into a finding about signing.
+        let v1_only = SmbServer {
+            smb1: true,
+            smb2: false,
+            dialect: None,
+            signing: SmbSigning::Unknown,
+        };
+        let findings = smb_findings(file_server(), 445, &v1_only);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].id, "smb_v1_enabled");
     }
 }

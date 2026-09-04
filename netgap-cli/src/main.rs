@@ -22,6 +22,7 @@ mod discovery;
 mod doctor;
 mod interactive;
 mod inventory;
+mod smb;
 mod trust;
 mod ui;
 mod upnp;
@@ -678,6 +679,11 @@ async fn cmd_scan(
         // make sense for the device holding the network together.
         if assess {
             check_gateway_exposure(&mut devices, &mut probes).await;
+
+            // File servers are the other concentration of risk: what they
+            // negotiate decides whether the network can pass SMBv1 worms or
+            // relay credentials.
+            smb::check(&mut devices).await;
         }
 
         // Vulnerability assessment (if assess flag enabled)

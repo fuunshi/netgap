@@ -11,6 +11,7 @@
 //! Parsing is kept in free functions over captured strings so it can be tested
 //! without a network.
 
+pub mod smb;
 pub mod tls;
 pub mod upnp;
 

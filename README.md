@@ -4,7 +4,7 @@ A production-ready network security scanner written in Rust. Discover devices on
 
 [![CI](https://github.com/fuunshi/netgap/actions/workflows/ci.yml/badge.svg)](https://github.com/fuunshi/netgap/actions/workflows/ci.yml)
 
-**Current Status:** ✅ 403 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
+**Current Status:** ✅ 417 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
 
 ## Quick Features
 
@@ -20,6 +20,7 @@ A production-ready network security scanner written in Rust. Discover devices on
 - 🔒 **TLS Inspection** - Certificates, expiry, self-signed, legacy protocol support
 - 🆕 **Device History** - Reports what has appeared on the network since last time
 - 🛡️ **Gateway Checks** - Admin interface exposure, and the ports UPnP has actually published to the internet
+- 🗄️ **File Server Checks** - Whether a server still accepts SMBv1, and whether it requires signing, asked before anyone logs in
 - 🚨 **Address Conflicts** - Alerts when an address, especially the gateway's, changes hands
 - 🕵️ **Rogue DHCP** - Asks the network who hands out addresses, and says if it is not the router
 - 🖥️ **Interactive View** - A plain full-screen UI for picking an interface, scanning and browsing results
@@ -180,7 +181,7 @@ cannot drift apart.
 
 ## Test Coverage
 
-**403 tests passing** across the workspace:
+**417 tests passing** across the workspace:
 
 | Crate | Purpose | Tests |
 |-------|---------|-------|
@@ -190,8 +191,8 @@ cannot drift apart.
 | netgap-scan | Port scanning and risk classification | 6 |
 | netgap-report | Terminal, summary and HTML formatting | 30 |
 | netgap-fingerprint | Device fingerprinting | 24 |
-| netgap-assess | Vulnerability and gateway checks | 14 |
-| netgap-probes | Service, version and TLS probes | 33 |
+| netgap-assess | Vulnerability, gateway and file-server checks | 18 |
+| netgap-probes | Service, version, TLS, UPnP and SMB probes | 41 |
 | netgap-storage | Result persistence and device history | 15 |
 | netgap-services | Service/CVE database | 19 |
 | netgap-trends | History and change detection | 8 |
@@ -200,7 +201,7 @@ cannot drift apart.
 | netgap-threat-intel | NVD client and CVE cache | 17 |
 | netgap-webhooks | Alert delivery | 8 |
 | netgap-engine | Scan pipeline shared by the CLI, terminal UI and window | 0 |
-| netgap-cli | Commands, doctor, upnp, diff, inventory, alerts, discovery and the interactive UI | 85 |
+| netgap-cli | Commands, doctor, upnp, diff, inventory, alerts, discovery and the interactive UI | 87 |
 | netgap-gui | Window application and its display formatting | 13 |
 
 ## Performance
@@ -436,7 +437,9 @@ IP            Device                OS        Findings
 Known gaps:
 - `netgap-raw-sockets` is a framework stub, not yet wired into the CLI
 - TTL-based OS fingerprinting is not implemented
-- UPnP exposure scanning
+- Credential-less configuration probes beyond SMB: anonymous FTP, unauthenticated Redis and MongoDB, SNMP with the `public` community
+- IPv6 port scanning and IPv6 gateway checks
+- Rogue AP / evil-twin detection (needs monitor mode and a different permission model)
 - Passive WiFi scanning
 - Mobile app bridges (uniffi-rs)
 - Web UI dashboard (the desktop window is `netgap-gui`; a browser interface is still open)
