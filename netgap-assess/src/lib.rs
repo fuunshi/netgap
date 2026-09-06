@@ -342,6 +342,90 @@ pub fn smb_findings(ip: IpAddr, port: u16, server: &SmbServer) -> Vec<Finding> {
     findings
 }
 
+/// What an FTP server said when an anonymous login was attempted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FtpServer {
+    /// The greeting the server sent, which often names the software.
+    pub banner: Option<String>,
+    /// The anonymous login was accepted.
+    pub anonymous: bool,
+}
+
+/// Findings for an FTP server that lets anyone in.
+///
+/// Anonymous access is a deliberate setting, but the scan cannot know it was
+/// deliberate on *this* network, and the difference between "FTP is open" and
+/// "FTP will serve files to anyone" is the one that decides whether to act.
+pub fn ftp_findings(ip: IpAddr, port: u16, server: &FtpServer) -> Vec<Finding> {
+    if !server.anonymous {
+        return Vec::new();
+    }
+
+    let software = server
+        .banner
+        .as_deref()
+        .map(|banner| format!(" ({})", banner.trim()))
+        .unwrap_or_default();
+
+    vec![Finding {
+        id: "ftp_anonymous_login".to_string(),
+        title: "Anyone can log in to this FTP server".to_string(),
+        description: format!(
+            "The FTP server at {ip}:{port}{software} accepted the anonymous login, so everything it offers over FTP is available to anyone on this network without an account. FTP is also unencrypted, which means a real user's password crosses the network in the clear whenever they log in. Whether the anonymous share is writable was not tested."
+        ),
+        severity: Severity::High,
+        ip,
+        port: Some(port),
+        service: Some("FTP".to_string()),
+        remediation:
+            "Turn anonymous access off (vsftpd: `anonymous_enable=NO`; ProFTPD: remove the `<Anonymous>` block), and replace FTP with SFTP where the software allows it, so passwords are not sent in the clear."
+                .to_string(),
+        confidence: 1.0,
+    }]
+}
+
+/// What a Redis server allowed without a password.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RedisServer {
+    /// The server answered `PING` without credentials.
+    pub open: bool,
+    /// The version, when `INFO` was answered too.
+    pub version: Option<String>,
+}
+
+/// Findings for a Redis server with no access control.
+///
+/// This is rated critical because of what an open Redis can do rather than
+/// what it stores: its own configuration commands write arbitrary files, which
+/// is a short path from reachable to running code on the host.
+pub fn redis_findings(ip: IpAddr, port: u16, server: &RedisServer) -> Vec<Finding> {
+    if !server.open {
+        return Vec::new();
+    }
+
+    let version = server
+        .version
+        .as_deref()
+        .map(|version| format!(" (Redis {version})"))
+        .unwrap_or_default();
+
+    vec![Finding {
+        id: "redis_unauthenticated".to_string(),
+        title: "This Redis server has no password".to_string(),
+        description: format!(
+            "The Redis server at {ip}:{port}{version} answered a `PING` without credentials, so anyone on this network can read, change and delete every key it holds. Worse, Redis administration commands can write files to the host, so an open server is usually a way in to the machine itself, not just to the data."
+        ),
+        severity: Severity::Critical,
+        ip,
+        port: Some(port),
+        service: Some("Redis".to_string()),
+        remediation:
+            "Bind Redis to a private interface (`bind 127.0.0.1`) and require a password (`requirepass`, or an ACL user on Redis 6+). If other machines genuinely need it, restrict the port to them with a firewall rather than leaving it open to the whole network."
+                .to_string(),
+        confidence: 1.0,
+    }]
+}
+
 /// Check for exposed Telnet (port 23) - CRITICAL
 struct TelnetExposedCheck;
 
@@ -787,5 +871,59 @@ mod tests {
         let findings = smb_findings(file_server(), 445, &v1_only);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].id, "smb_v1_enabled");
+    }
+
+    #[test]
+    fn test_anonymous_ftp_is_high_and_names_the_software() {
+        let server = FtpServer {
+            banner: Some("220 (vsFTPd 3.0.5)".into()),
+            anonymous: true,
+        };
+
+        let findings = ftp_findings(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)), 21, &server);
+        assert_eq!(findings.len(), 1);
+
+        let finding = &findings[0];
+        assert_eq!(finding.id, "ftp_anonymous_login");
+        assert_eq!(finding.severity, Severity::High);
+        assert_eq!(finding.port, Some(21));
+        assert!(finding.description.contains("vsFTPd 3.0.5"));
+    }
+
+    #[test]
+    fn test_a_passworded_ftp_server_produces_nothing() {
+        let server = FtpServer {
+            banner: Some("220 (vsFTPd 3.0.5)".into()),
+            anonymous: false,
+        };
+        assert!(ftp_findings(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)), 21, &server).is_empty());
+    }
+
+    #[test]
+    fn test_an_open_redis_server_is_critical() {
+        let server = RedisServer {
+            open: true,
+            version: Some("7.2.4".into()),
+        };
+
+        let findings = redis_findings(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 30)), 6379, &server);
+        assert_eq!(findings.len(), 1);
+
+        let finding = &findings[0];
+        assert_eq!(finding.id, "redis_unauthenticated");
+        assert_eq!(finding.severity, Severity::Critical);
+        assert_eq!(finding.port, Some(6379));
+        assert!(finding.description.contains("Redis 7.2.4"));
+    }
+
+    #[test]
+    fn test_a_passworded_redis_server_produces_nothing() {
+        let server = RedisServer {
+            open: false,
+            version: None,
+        };
+        assert!(
+            redis_findings(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 30)), 6379, &server).is_empty()
+        );
     }
 }

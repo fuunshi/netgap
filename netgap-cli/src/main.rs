@@ -17,6 +17,7 @@ use std::net::IpAddr;
 use std::time::Duration;
 
 mod alerts;
+mod credentialless;
 mod diff;
 mod discovery;
 mod doctor;
@@ -684,6 +685,9 @@ async fn cmd_scan(
             // negotiate decides whether the network can pass SMBv1 worms or
             // relay credentials.
             smb::check(&mut devices).await;
+
+            // And the services that will do the work for anyone who asks.
+            credentialless::check(&mut devices).await;
         }
 
         // Vulnerability assessment (if assess flag enabled)

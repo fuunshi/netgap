@@ -22,28 +22,30 @@ pub struct PortScanEvent {
     pub finished: bool,
 }
 
-/// Top 20 most dangerous ports to scan by default.
+/// Top 22 most dangerous ports to scan by default.
 pub const TOP_DANGEROUS_PORTS: &[u16] = &[
-    20,   // FTP Data
-    21,   // FTP
-    22,   // SSH
-    23,   // Telnet (CRITICAL)
-    25,   // SMTP
-    53,   // DNS
-    69,   // TFTP
-    80,   // HTTP
-    110,  // POP3
-    139,  // NetBIOS
-    143,  // IMAP
-    161,  // SNMP
-    389,  // LDAP
-    443,  // HTTPS
-    445,  // SMB (CRITICAL)
-    3306, // MySQL
-    3389, // RDP
-    5432, // PostgreSQL
-    8080, // Alt HTTP
-    8443, // Alt HTTPS
+    20,    // FTP Data
+    21,    // FTP
+    22,    // SSH
+    23,    // Telnet (CRITICAL)
+    25,    // SMTP
+    53,    // DNS
+    69,    // TFTP
+    80,    // HTTP
+    110,   // POP3
+    139,   // NetBIOS
+    143,   // IMAP
+    161,   // SNMP
+    389,   // LDAP
+    443,   // HTTPS
+    445,   // SMB (CRITICAL)
+    3306,  // MySQL
+    3389,  // RDP
+    5432,  // PostgreSQL
+    6379,  // Redis (often has no password)
+    27017, // MongoDB (often has no password)
+    8080,  // Alt HTTP
+    8443,  // Alt HTTPS
 ];
 
 /// Configuration for port scanning.
@@ -92,7 +94,7 @@ impl PortScanner {
         }
     }
 
-    /// Create with default configuration (top 20 ports, 2s timeout, 32 concurrent).
+    /// Create with default configuration (top 22 ports, 2s timeout, 32 concurrent).
     pub fn with_default_config() -> Self {
         PortScanner::new(ScanConfig::default())
     }
@@ -396,6 +398,18 @@ mod tests {
         }
     }
 
+    /// A port that a probe can draw a conclusion from is worth scanning: the
+    /// database ports are what the credential-less checks act on.
+    #[test]
+    fn test_the_credentialless_ports_are_scanned_by_default() {
+        for port in [21, 445, 6379, 27017] {
+            assert!(
+                TOP_DANGEROUS_PORTS.contains(&port),
+                "port {port} has a check but is not in the default scan"
+            );
+        }
+    }
+
     #[test]
     fn test_get_service_name() {
         assert_eq!(get_service_name(23), "Telnet");
@@ -409,12 +423,12 @@ mod tests {
         let config = ScanConfig::default();
         assert_eq!(config.timeout_ms, 2000);
         assert_eq!(config.concurrency, 32);
-        assert_eq!(config.ports.len(), 20);
+        assert_eq!(config.ports.len(), 22);
     }
 
     #[tokio::test]
     async fn test_scanner_creation() {
         let scanner = PortScanner::default();
-        assert_eq!(scanner.config.ports.len(), 20);
+        assert_eq!(scanner.config.ports.len(), 22);
     }
 }
