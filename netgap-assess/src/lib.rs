@@ -426,6 +426,40 @@ pub fn redis_findings(ip: IpAddr, port: u16, server: &RedisServer) -> Vec<Findin
     }]
 }
 
+/// What a MongoDB server allowed without a password.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MongoServer {
+    /// `listDatabases` was answered, which only an unauthenticated server does.
+    pub open: bool,
+}
+
+/// Findings for a MongoDB server with authentication switched off.
+///
+/// The test is a listing, not a read of documents: the server either refuses
+/// the administrative command until the client logs in, or it answers. When it
+/// answers, everything else is open too.
+pub fn mongo_findings(ip: IpAddr, port: u16, server: &MongoServer) -> Vec<Finding> {
+    if !server.open {
+        return Vec::new();
+    }
+
+    vec![Finding {
+        id: "mongo_unauthenticated".to_string(),
+        title: "This MongoDB server has no password".to_string(),
+        description: format!(
+            "The MongoDB server at {ip}:{port} listed its databases to a client that never logged in, which means authentication is switched off entirely. Anyone on this network can read, change and delete every database it holds, and the administration commands that drop them too."
+        ),
+        severity: Severity::Critical,
+        ip,
+        port: Some(port),
+        service: Some("MongoDB".to_string()),
+        remediation:
+            "Turn authentication on (`security.authorization: enabled`), create an administrator user, then a user per application with only the roles it needs. Bind MongoDB to a private interface and restrict the port with a firewall so the whole network cannot reach it."
+                .to_string(),
+        confidence: 1.0,
+    }]
+}
+
 /// Check for exposed Telnet (port 23) - CRITICAL
 struct TelnetExposedCheck;
 
@@ -925,5 +959,28 @@ mod tests {
         assert!(
             redis_findings(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 30)), 6379, &server).is_empty()
         );
+    }
+
+    #[test]
+    fn test_an_unauthenticated_mongo_server_is_critical() {
+        let findings = mongo_findings(
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 40)),
+            27017,
+            &MongoServer { open: true },
+        );
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].id, "mongo_unauthenticated");
+        assert_eq!(findings[0].severity, Severity::Critical);
+        assert_eq!(findings[0].port, Some(27017));
+    }
+
+    #[test]
+    fn test_a_passworded_mongo_server_produces_nothing() {
+        assert!(mongo_findings(
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 40)),
+            27017,
+            &MongoServer { open: false }
+        )
+        .is_empty());
     }
 }

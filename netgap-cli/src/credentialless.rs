@@ -10,9 +10,10 @@
 //! service's own protocol. None of them guesses a password or tries more than
 //! the default door.
 
-use netgap_assess::{FtpServer, RedisServer};
+use netgap_assess::{FtpServer, MongoServer, RedisServer};
 use netgap_core::Device;
 use netgap_probes::ftp;
+use netgap_probes::mongo;
 use netgap_probes::redis::{self, Access};
 use std::net::IpAddr;
 use tokio::task::JoinSet;
@@ -20,6 +21,7 @@ use tokio::task::JoinSet;
 /// The port each service is checked on.
 const FTP_PORT: u16 = 21;
 const REDIS_PORT: u16 = 6379;
+const MONGO_PORT: u16 = 27017;
 
 /// How many services to question at once.
 const CONCURRENCY: usize = 8;
@@ -28,6 +30,7 @@ const CONCURRENCY: usize = 8;
 enum Answer {
     Ftp(ftp::FtpLogin),
     Redis(Access),
+    Mongo(mongo::Access),
 }
 
 /// Ask every FTP and Redis server the scan found.
@@ -37,7 +40,7 @@ pub async fn check(devices: &mut [Device]) {
         .enumerate()
         .flat_map(|(index, device)| {
             let ip = device.ip;
-            [FTP_PORT, REDIS_PORT]
+            [FTP_PORT, REDIS_PORT, MONGO_PORT]
                 .into_iter()
                 .filter(|port| device.open_ports.contains(port))
                 .map(move |port| (index, ip, port))
@@ -60,6 +63,7 @@ pub async fn check(devices: &mut [Device]) {
             set.spawn(async move {
                 let answer = match port {
                     FTP_PORT => ftp::inspect(ip, port).await.ok().map(Answer::Ftp),
+                    MONGO_PORT => mongo::inspect(ip, port).await.ok().map(Answer::Mongo),
                     _ => redis::inspect(ip, port).await.ok().map(Answer::Redis),
                 };
                 (index, port, answer)
@@ -90,6 +94,15 @@ pub async fn check(devices: &mut [Device]) {
                 (
                     netgap_assess::ftp_findings(device.ip, port, &server),
                     "no anonymous access",
+                )
+            }
+            Answer::Mongo(access) => {
+                let server = MongoServer {
+                    open: access == mongo::Access::Open,
+                };
+                (
+                    netgap_assess::mongo_findings(device.ip, port, &server),
+                    "a login is required",
                 )
             }
             Answer::Redis(access) => {
@@ -129,5 +142,6 @@ mod tests {
     fn test_the_services_are_asked_on_their_default_ports() {
         assert_eq!(FTP_PORT, 21);
         assert_eq!(REDIS_PORT, 6379);
+        assert_eq!(MONGO_PORT, 27017);
     }
 }
