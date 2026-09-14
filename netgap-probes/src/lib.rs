@@ -15,6 +15,7 @@ pub mod ftp;
 pub mod mongo;
 pub mod redis;
 pub mod smb;
+pub mod snmp;
 pub mod tls;
 pub mod upnp;
 

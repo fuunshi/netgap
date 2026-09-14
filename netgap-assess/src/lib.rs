@@ -460,6 +460,57 @@ pub fn mongo_findings(ip: IpAddr, port: u16, server: &MongoServer) -> Vec<Findin
     }]
 }
 
+/// What a device said to the `public` community.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnmpServer {
+    /// The device answered a `GET` sent with the community `public`.
+    pub public_community: bool,
+    /// What it calls itself, when it said.
+    pub description: Option<String>,
+}
+
+/// Findings for a device that answers SNMP with the factory community.
+///
+/// An SNMP agent that accepts `public` will usually also list its interfaces,
+/// its ARP table and its routes — the reconnaissance an attacker does first.
+/// The finding quotes the device's own description, because that is what makes
+/// it recognisable to the person reading the report.
+pub fn snmp_findings(ip: IpAddr, port: u16, server: &SnmpServer) -> Vec<Finding> {
+    if !server.public_community {
+        return Vec::new();
+    }
+
+    let description = server
+        .description
+        .as_deref()
+        .map(|text| format!(" It describes itself as \"{}\".", truncate(text, 120)))
+        .unwrap_or_default();
+
+    vec![Finding {
+        id: "snmp_public_community".to_string(),
+        title: "This device answers SNMP with the default community".to_string(),
+        description: format!(
+            "The device at {ip} answered an SNMP request sent with the community string `public`, the factory default.{description} Anyone on this network can read its description, interface list and often its routing and ARP tables, and SNMP v1 and v2c send that community as plain text."
+        ),
+        severity: Severity::High,
+        ip,
+        port: Some(port),
+        service: Some("SNMP".to_string()),
+        remediation:
+            "Change the community from `public` to a long random string, or move to SNMPv3 with authentication and encryption. If nothing manages the device over SNMP, turn SNMP off, and otherwise restrict UDP 161 to the management host."
+                .to_string(),
+        confidence: 1.0,
+    }]
+}
+
+/// A string cut at a character boundary, for quoting in a finding.
+fn truncate(text: &str, limit: usize) -> String {
+    match text.char_indices().nth(limit) {
+        Some((index, _)) => format!("{}…", &text[..index]),
+        None => text.to_string(),
+    }
+}
+
 /// Check for exposed Telnet (port 23) - CRITICAL
 struct TelnetExposedCheck;
 
@@ -972,6 +1023,42 @@ mod tests {
         assert_eq!(findings[0].id, "mongo_unauthenticated");
         assert_eq!(findings[0].severity, Severity::Critical);
         assert_eq!(findings[0].port, Some(27017));
+    }
+
+    #[test]
+    fn test_the_public_community_is_reported_with_the_device_description() {
+        let server = SnmpServer {
+            public_community: true,
+            description: Some("Linux router 5.10.0".into()),
+        };
+
+        let findings = snmp_findings(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 161, &server);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].id, "snmp_public_community");
+        assert_eq!(findings[0].severity, Severity::High);
+        assert_eq!(findings[0].port, Some(161));
+        assert!(findings[0].description.contains("Linux router 5.10.0"));
+    }
+
+    #[test]
+    fn test_a_long_device_description_is_cut_for_the_finding() {
+        let server = SnmpServer {
+            public_community: true,
+            description: Some("x".repeat(200)),
+        };
+        let findings = snmp_findings(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 161, &server);
+        assert!(findings[0]
+            .description
+            .contains(&format!("{}…", "x".repeat(120))));
+    }
+
+    #[test]
+    fn test_silence_to_the_public_community_is_not_a_finding() {
+        let server = SnmpServer {
+            public_community: false,
+            description: None,
+        };
+        assert!(snmp_findings(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 161, &server).is_empty());
     }
 
     #[test]

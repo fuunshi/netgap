@@ -10,11 +10,12 @@
 //! service's own protocol. None of them guesses a password or tries more than
 //! the default door.
 
-use netgap_assess::{FtpServer, MongoServer, RedisServer};
+use netgap_assess::{FtpServer, MongoServer, RedisServer, SnmpServer};
 use netgap_core::Device;
 use netgap_probes::ftp;
 use netgap_probes::mongo;
 use netgap_probes::redis::{self, Access};
+use netgap_probes::snmp;
 use std::net::IpAddr;
 use tokio::task::JoinSet;
 
@@ -23,19 +24,24 @@ const FTP_PORT: u16 = 21;
 const REDIS_PORT: u16 = 6379;
 const MONGO_PORT: u16 = 27017;
 
+/// SNMP is asked over UDP, so the port scanner never reports it open: every
+/// device is offered the question instead.
+const SNMP_PORT: u16 = 161;
+
 /// How many services to question at once.
-const CONCURRENCY: usize = 8;
+const CONCURRENCY: usize = 16;
 
 /// What one device answered.
 enum Answer {
     Ftp(ftp::FtpLogin),
     Redis(Access),
     Mongo(mongo::Access),
+    Snmp(snmp::Access),
 }
 
-/// Ask every FTP and Redis server the scan found.
+/// Ask the services the scan found, and every device for SNMP.
 pub async fn check(devices: &mut [Device]) {
-    let targets: Vec<(usize, IpAddr, u16)> = devices
+    let mut targets: Vec<(usize, IpAddr, u16)> = devices
         .iter()
         .enumerate()
         .flat_map(|(index, device)| {
@@ -46,6 +52,15 @@ pub async fn check(devices: &mut [Device]) {
                 .map(move |port| (index, ip, port))
         })
         .collect();
+
+    // SNMP listens on UDP, which the port scan does not cover, so its
+    // presence is decided by asking rather than by looking.
+    targets.extend(
+        devices
+            .iter()
+            .enumerate()
+            .map(|(index, device)| (index, device.ip, SNMP_PORT)),
+    );
 
     if targets.is_empty() {
         return;
@@ -64,6 +79,7 @@ pub async fn check(devices: &mut [Device]) {
                 let answer = match port {
                     FTP_PORT => ftp::inspect(ip, port).await.ok().map(Answer::Ftp),
                     MONGO_PORT => mongo::inspect(ip, port).await.ok().map(Answer::Mongo),
+                    SNMP_PORT => snmp::inspect(ip, port).await.ok().map(Answer::Snmp),
                     _ => redis::inspect(ip, port).await.ok().map(Answer::Redis),
                 };
                 (index, port, answer)
@@ -105,6 +121,19 @@ pub async fn check(devices: &mut [Device]) {
                     "a login is required",
                 )
             }
+            Answer::Snmp(access) => {
+                let server = SnmpServer {
+                    public_community: matches!(access, snmp::Access::Open { .. }),
+                    description: match access {
+                        snmp::Access::Open { description } => description,
+                        snmp::Access::Silent => None,
+                    },
+                };
+                (
+                    netgap_assess::snmp_findings(device.ip, port, &server),
+                    "did not answer the public community",
+                )
+            }
             Answer::Redis(access) => {
                 let server = RedisServer {
                     open: matches!(access, Access::Open { .. }),
@@ -143,5 +172,6 @@ mod tests {
         assert_eq!(FTP_PORT, 21);
         assert_eq!(REDIS_PORT, 6379);
         assert_eq!(MONGO_PORT, 27017);
+        assert_eq!(SNMP_PORT, 161);
     }
 }

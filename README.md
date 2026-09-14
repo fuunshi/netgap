@@ -4,7 +4,7 @@ A production-ready network security scanner written in Rust. Discover devices on
 
 [![CI](https://github.com/fuunshi/netgap/actions/workflows/ci.yml/badge.svg)](https://github.com/fuunshi/netgap/actions/workflows/ci.yml)
 
-**Current Status:** ✅ 441 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
+**Current Status:** ✅ 452 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
 
 ## Quick Features
 
@@ -21,7 +21,7 @@ A production-ready network security scanner written in Rust. Discover devices on
 - 🆕 **Device History** - Reports what has appeared on the network since last time
 - 🛡️ **Gateway Checks** - Admin interface exposure, and the ports UPnP has actually published to the internet
 - 🗄️ **File Server Checks** - Whether a server still accepts SMBv1, and whether it requires signing, asked before anyone logs in
-- 🔓 **Open Services** - Whether FTP lets anyone in, or a Redis or MongoDB server has no password
+- 🔓 **Open Services** - Whether FTP lets anyone in, a Redis or MongoDB server has no password, or a device answers SNMP with the factory `public` community
 - 🚨 **Address Conflicts** - Alerts when an address, especially the gateway's, changes hands
 - 🕵️ **Rogue DHCP** - Asks the network who hands out addresses, and says if it is not the router
 - 🖥️ **Interactive View** - A plain full-screen UI for picking an interface, scanning and browsing results
@@ -182,7 +182,7 @@ cannot drift apart.
 
 ## Test Coverage
 
-**441 tests passing** across the workspace:
+**452 tests passing** across the workspace:
 
 | Crate | Purpose | Tests |
 |-------|---------|-------|
@@ -192,8 +192,8 @@ cannot drift apart.
 | netgap-scan | Port scanning and risk classification | 7 |
 | netgap-report | Terminal, summary and HTML formatting | 30 |
 | netgap-fingerprint | Device fingerprinting | 24 |
-| netgap-assess | Vulnerability, gateway, file-server and open-service checks | 24 |
-| netgap-probes | Service, version, TLS, UPnP, SMB, FTP, Redis and MongoDB probes | 57 |
+| netgap-assess | Vulnerability, gateway, file-server and open-service checks | 27 |
+| netgap-probes | Service, version, TLS, UPnP, SMB, FTP, Redis, MongoDB and SNMP probes | 65 |
 | netgap-storage | Result persistence and device history | 15 |
 | netgap-services | Service/CVE database | 19 |
 | netgap-trends | History and change detection | 8 |
@@ -438,7 +438,6 @@ IP            Device                OS        Findings
 Known gaps:
 - `netgap-raw-sockets` is a framework stub, not yet wired into the CLI
 - TTL-based OS fingerprinting is not implemented
-- Credential-less configuration probes beyond FTP/Redis/SMB/MongoDB: SNMP with the `public` community
 - IPv6 port scanning and IPv6 gateway checks
 - Rogue AP / evil-twin detection (needs monitor mode and a different permission model)
 - Passive WiFi scanning
