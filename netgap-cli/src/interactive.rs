@@ -78,6 +78,8 @@ pub async fn run(plan: &DiscoveryPlan, quick: bool) -> Result<Vec<Device>> {
         concurrency: 32,
     };
     let total_ports = port_config.ports.len();
+    // Link-local IPv6 hosts are reachable only through the scanned interface.
+    let scope_id = netgap_interfaces::interface_index(&iface_name);
 
     println!("\nInteractive host dashboard");
     println!("Use number keys to switch between hosts while scans are running.");
@@ -110,7 +112,7 @@ pub async fn run(plan: &DiscoveryPlan, quick: bool) -> Result<Vec<Device>> {
         let progress = progress_tx.clone();
         let scan_config = port_config.clone();
         handles.push(tokio::spawn(async move {
-            let scanner = PortScanner::new(scan_config);
+            let scanner = PortScanner::new(scan_config).zone(scope_id);
             let mut single = vec![device];
             scanner
                 .scan_devices_with_progress(&mut single, Some(progress))

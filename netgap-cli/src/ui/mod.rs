@@ -621,7 +621,8 @@ async fn scan_job(
             timeout_ms: 2000,
             concurrency: 32,
         })
-        .quiet(true);
+        .quiet(true)
+        .zone(netgap_interfaces::interface_index(&plan.interface.name));
         scanner.scan_devices(&mut devices).await?;
     }
 

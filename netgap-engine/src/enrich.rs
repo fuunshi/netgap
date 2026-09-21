@@ -18,40 +18,80 @@ use crate::discovery::DiscoveryPlan;
 pub fn run_ipv6(devices: &mut Vec<Device>, plan: &DiscoveryPlan) {
     let interface = plan.interface.name.as_str();
 
-    let neighbours = match netgap_discover::ipv6::discover(interface) {
-        Ok(neighbours) => neighbours,
+    // The neighbour table covers the whole link, whatever range was asked for.
+    // A device it reveals is only worth adding when the scan was the whole
+    // link to begin with; on a narrowed scan the addresses annotate the
+    // devices found and nothing else is reported.
+    let allow_new = is_whole_link(plan);
+
+    match netgap_discover::ipv6::discover(interface) {
+        Ok(neighbours) if neighbours.is_empty() => {
+            if !plan.quiet {
+                eprintln!("   IPv6: no neighbours answered (normal on an IPv4-only network)");
+            }
+        }
+        Ok(neighbours) => {
+            let summary = netgap_discover::ipv6::merge(devices, &neighbours, allow_new);
+            let only_ipv6 = if summary.added > 0 {
+                format!(", {} that IPv4 discovery could not see", summary.added)
+            } else {
+                String::new()
+            };
+
+            if !plan.quiet {
+                eprintln!("   IPv6: {} neighbour(s){}", neighbours.len(), only_ipv6);
+            }
+        }
         Err(error) => {
             // An IPv4-only network is the common case, so this is a note, not
             // a warning: nothing is wrong.
             if !plan.quiet {
                 eprintln!("   IPv6: skipped ({error})");
             }
-            return;
         }
-    };
-
-    if neighbours.is_empty() {
-        if !plan.quiet {
-            eprintln!("   IPv6: no neighbours answered (normal on an IPv4-only network)");
-        }
-        return;
     }
 
-    // The neighbour table covers the whole link, whatever range was asked for.
-    // A device it reveals is only worth adding when the scan was the whole
-    // link to begin with; on a narrowed scan the addresses annotate the
-    // devices found and nothing else is reported.
-    let allow_new = is_whole_link(plan);
-    let summary = netgap_discover::ipv6::merge(devices, &neighbours, allow_new);
-    let only_ipv6 = if summary.added > 0 {
-        format!(", {} that IPv4 discovery could not see", summary.added)
-    } else {
-        String::new()
-    };
-
-    if !plan.quiet {
-        eprintln!("   IPv6: {} neighbour(s){}", neighbours.len(), only_ipv6);
+    // The router holding the default route is a device on this link whether or
+    // not the neighbour table has met it — the route table knows its address.
+    if add_ipv6_gateway(devices, allow_new) && !plan.quiet {
+        eprintln!("   IPv6: added the default gateway");
     }
+}
+
+/// Fold the IPv6 default gateway into the device list.
+///
+/// A router typically answers IPv6 at a link-local address, and the neighbour
+/// table only learns that address once traffic has crossed it. Without this,
+/// the one device known to route the network could be missing from a scan that
+/// reports having found everything.
+///
+/// Returns whether a device was added.
+#[cfg(unix)]
+fn add_ipv6_gateway(devices: &mut Vec<Device>, allow_new: bool) -> bool {
+    let Some(gateway) = netgap_interfaces::default_gateway_ipv6() else {
+        return false;
+    };
+    let address = std::net::IpAddr::V6(gateway);
+    let text = gateway.to_string();
+
+    if let Some(device) = devices
+        .iter_mut()
+        .find(|device| device.ip == address || device.ipv6_addresses.contains(&text))
+    {
+        if !device.ipv6_addresses.contains(&text) {
+            device.ipv6_addresses.push(text);
+        }
+        return false;
+    }
+
+    if !allow_new {
+        return false;
+    }
+
+    let mut device = Device::new(address);
+    device.ipv6_addresses.push(text);
+    devices.push(device);
+    true
 }
 
 /// IPv6 neighbour discovery is a Unix feature; elsewhere this is a no-op.

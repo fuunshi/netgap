@@ -25,3 +25,4 @@ thiserror.workspace = true
 [target.'cfg(unix)'.dependencies]
 pnet.workspace = true
 pnet_datalink.workspace = true
+libc.workspace = true

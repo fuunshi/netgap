@@ -12,7 +12,7 @@ use anyhow::{anyhow, Result};
 use ipnetwork::Ipv4Network;
 use netgap_core::paths;
 use std::io::{self, Write};
-use std::net::{IpAddr, Ipv4Addr, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, UdpSocket};
 use std::path::{Path, PathBuf};
 
 /// Interface name prefixes that never carry the LAN we want to scan.
@@ -379,6 +379,96 @@ pub fn default_gateway_ipv4() -> Option<Ipv4Addr> {
     {
         None
     }
+}
+
+/// The kernel's index for an interface, which IPv6 uses as its zone.
+///
+/// A link-local address (`fe80::/10`) names a host, not where that host is
+/// reachable: the same address exists on every link. The interface has to be
+/// attached to say which one — `fe80::1%wlan0` — and the kernel wants that
+/// interface by number.
+pub fn interface_index(name: &str) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        let name = std::ffi::CString::new(name).ok()?;
+        // Safety: the pointer comes from a NUL-terminated CString that outlives
+        // the call.
+        let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
+        (index != 0).then_some(index)
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = name;
+        None
+    }
+}
+
+/// The IPv6 default gateway, read from the kernel routing table.
+///
+/// Routers commonly answer IPv6 at a link-local address, so this is the one
+/// address on the link known to belong to the router. `None` means no IPv6
+/// default route is configured, not that the network has no IPv6.
+pub fn default_gateway_ipv6() -> Option<Ipv6Addr> {
+    #[cfg(target_os = "linux")]
+    {
+        let routes = std::fs::read_to_string("/proc/net/ipv6_route").ok()?;
+        parse_ipv6_default_route(&routes)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+/// Pick the default route's next hop out of a `/proc/net/ipv6_route` table.
+///
+/// Each line is destination, destination prefix, source, source prefix,
+/// next hop, metric, reference count, use count, flags and interface. The
+/// default route is the all-zeros destination at prefix 0 that also carries
+/// the gateway flag — the kernel keeps an entry with the same destination on
+/// `lo` for rejected traffic, which is why flags are checked.
+fn parse_ipv6_default_route(table: &str) -> Option<Ipv6Addr> {
+    /// `RTF_GATEWAY`: the next hop is a router, not the destination itself.
+    const RTF_GATEWAY: u32 = 0x0002;
+
+    const ZEROS: &str = "00000000000000000000000000000000";
+
+    for line in table.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 10 {
+            continue;
+        }
+
+        let (destination, destination_prefix) = (fields[0], fields[1]);
+        let (source, source_prefix) = (fields[2], fields[3]);
+        let gateway = fields[4];
+        let Some(flags) = u32::from_str_radix(fields[8], 16).ok() else {
+            continue;
+        };
+
+        if destination != ZEROS
+            || destination_prefix != "00"
+            || source != ZEROS
+            || source_prefix != "00"
+            || flags & RTF_GATEWAY == 0
+        {
+            continue;
+        }
+
+        // An on-link default route names no router, which is not a gateway.
+        if gateway == ZEROS {
+            continue;
+        }
+
+        let Ok(address) = u128::from_str_radix(gateway, 16) else {
+            continue;
+        };
+        return Some(Ipv6Addr::from(address));
+    }
+
+    None
 }
 
 /// Store selected interface in the config file.
@@ -884,6 +974,64 @@ mod tests {
         if let Some(gateway) = default_gateway_ipv4() {
             assert!(is_usable_ipv4(gateway));
         }
+    }
+
+    /// The default route is the all-zeros destination at prefix 0 that names a
+    /// router. The kernel also keeps an all-zeros destination on `lo` for
+    /// rejected traffic, and that one must not be mistaken for a gateway.
+    #[test]
+    fn test_ipv6_default_route_is_the_one_with_a_router() {
+        let table = "\
+00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 ffffffff 00000001 00000000 00200200       lo
+fe800000000000000000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000001 00000000 00000001 wlan0
+00000000000000000000000000000000 00 00000000000000000000000000000000 00 fe800000000000000000000000000001 00000400 00000001 00000000 00000003 wlan0
+";
+        assert_eq!(
+            parse_ipv6_default_route(table),
+            Some("fe80::1".parse().expect("valid address"))
+        );
+    }
+
+    #[test]
+    fn test_a_network_without_a_default_route_has_no_ipv6_gateway() {
+        // The loopback reject entry and a link prefix, but no router.
+        let table = "\
+00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 ffffffff 00000001 00000000 00200200       lo
+fe800000000000000000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000001 00000000 00000001 wlan0
+";
+        assert_eq!(parse_ipv6_default_route(table), None);
+        assert_eq!(parse_ipv6_default_route(""), None);
+    }
+
+    /// A default route that names no next hop is on-link; there is no router
+    /// address in it to check.
+    #[test]
+    fn test_an_on_link_default_route_names_no_gateway() {
+        let table = "\
+00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 00000400 00000001 00000000 00000003 wlan0
+";
+        assert_eq!(parse_ipv6_default_route(table), None);
+    }
+
+    /// A malformed line must not hide a good one after it.
+    #[test]
+    fn test_a_malformed_route_line_is_skipped() {
+        let table = "\
+00000000000000000000000000000000 00 00000000000000000000000000000000 00 zzzz 00000400 00000001 00000000 00000003 wlan0
+00000000000000000000000000000000 00 00000000000000000000000000000000 00 20010db8000000000000000000000001 00000400 00000001 00000000 00000003 wlan0
+";
+        assert_eq!(
+            parse_ipv6_default_route(table),
+            Some("2001:db8::1".parse().expect("valid address"))
+        );
+    }
+
+    /// A link-local address is only reachable with a zone, and the zone is the
+    /// interface index.
+    #[test]
+    fn test_interfaces_have_a_kernel_index() {
+        assert!(interface_index("lo").is_some());
+        assert!(interface_index("netgap-no-such-interface").is_none());
     }
 
     /// Whichever provider is in use, enumeration has to find this machine's

@@ -13,7 +13,7 @@ use netgap_services::{ServiceInfo, VulnerabilityCheck, VulnerabilityFinding};
 use netgap_threat_intel::{CvssSeverity, LocalCacheManager, NvdClient, NvdDatabase};
 use netgap_trends::{AlertRule, ChangeDetection, HealthScore, ScanHistory};
 use std::collections::HashSet;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 use std::time::Duration;
 
 mod alerts;
@@ -679,7 +679,8 @@ async fn cmd_scan(
         // The gateway routes everything else, so it gets the checks that only
         // make sense for the device holding the network together.
         if assess {
-            check_gateway_exposure(&mut devices, &mut probes).await;
+            let scope_id = netgap_interfaces::interface_index(&plan.interface.name);
+            check_gateway_exposure(&mut devices, &mut probes, scope_id).await;
 
             // File servers are the other concentration of risk: what they
             // negotiate decides whether the network can pass SMBv1 worms or
@@ -1258,7 +1259,10 @@ async fn run_discovery_and_port_scan(
             concurrency: 32,
         };
 
-        let scanner = PortScanner::new(port_config);
+        // Link-local IPv6 devices are reachable only through the interface
+        // they were found on, so the scan carries that interface's zone.
+        let scanner = PortScanner::new(port_config)
+            .zone(netgap_interfaces::interface_index(&plan.interface.name));
         scanner.scan_devices(&mut devices).await?;
 
         println!();
@@ -1581,24 +1585,40 @@ fn cpe_product_for(product: &str) -> &str {
 /// control interface.
 const GATEWAY_PORTS: &[u16] = &[80, 443, 8080, 8443, 5000, 2869, 23];
 
-/// Probe the gateway's administration and UPnP ports, and report what it exposes.
+/// Probe the gateways' administration and UPnP ports, and report what they
+/// expose.
 ///
-/// A focused pass against a single host: the gateway is identified exactly (it
-/// owns the default route), so this costs one short probe rather than widening
-/// the scan for everyone.
-async fn check_gateway_exposure(devices: &mut [Device], probes: &mut Vec<ServiceProbe>) {
-    let Some(gateway) = netgap_interfaces::default_gateway_ipv4() else {
-        return;
-    };
-    let gateway_ip = IpAddr::V4(gateway);
+/// A focused pass against one or two hosts: a gateway is identified exactly
+/// (it owns the default route), so this costs a short probe each rather than
+/// widening the scan for everyone. IPv4 and IPv6 can have different routers,
+/// and both route the network, so both are checked.
+async fn check_gateway_exposure(
+    devices: &mut [Device],
+    probes: &mut Vec<ServiceProbe>,
+    scope_id: Option<u32>,
+) {
+    if let Some(gateway) = netgap_interfaces::default_gateway_ipv4() {
+        check_gateway_ipv4(devices, probes, IpAddr::V4(gateway)).await;
+    }
 
+    if let Some(gateway) = netgap_interfaces::default_gateway_ipv6() {
+        check_gateway_ipv6(devices, gateway, scope_id).await;
+    }
+}
+
+async fn check_gateway_ipv4(
+    devices: &mut [Device],
+    probes: &mut Vec<ServiceProbe>,
+    gateway_ip: IpAddr,
+) {
+    let heading = format!("Gateway checks ({gateway_ip})");
     let Some(device) = devices.iter_mut().find(|device| device.ip == gateway_ip) else {
         return;
     };
 
     eprintln!();
-    eprintln!("Gateway checks ({})", gateway);
-    eprintln!("──────────────────────────────");
+    eprintln!("{heading}");
+    eprintln!("{}", "─".repeat(heading.chars().count()));
 
     // Skip anything the fingerprinting phase already probed; probe the rest,
     // including ports already known to be open, because the probe is also what
@@ -1638,10 +1658,76 @@ async fn check_gateway_exposure(devices: &mut [Device], probes: &mut Vec<Service
         }
     }
 
+    assess_gateway(device, true).await;
+
+    if device.findings.is_empty() {
+        eprintln!("  ✓ No gateway-specific exposure found");
+    }
+}
+
+/// Check the IPv6 default gateway.
+///
+/// Routers usually answer IPv6 at a link-local address, and that address is
+/// reachable only through the interface it lives on — the same zone the port
+/// scan already carries. What is left is the router-specific ports the
+/// standard scan does not cover, then the same assessment as IPv4.
+async fn check_gateway_ipv6(devices: &mut [Device], gateway: Ipv6Addr, scope_id: Option<u32>) {
+    let gateway_ip = IpAddr::V6(gateway);
+    let heading = format!("IPv6 gateway checks ({gateway})");
+    let Some(device) = devices.iter_mut().find(|device| device.ip == gateway_ip) else {
+        return;
+    };
+
+    eprintln!();
+    eprintln!("{heading}");
+    eprintln!("{}", "─".repeat(heading.chars().count()));
+
+    // The protocol probes cannot carry a zone, so these ports are looked at
+    // with the same zone-aware scanner as the rest of the scan. A port that
+    // answers is enough: what matters here is whether the administration
+    // interface is reachable at all.
+    let to_scan: Vec<u16> = GATEWAY_PORTS
+        .iter()
+        .copied()
+        .filter(|port| !device.open_ports.contains(port))
+        .collect();
+
+    if !to_scan.is_empty() {
+        let scanner = PortScanner::new(PortScanConfig {
+            ports: to_scan,
+            timeout_ms: 1500,
+            concurrency: 8,
+        })
+        .quiet(true)
+        .zone(scope_id);
+
+        if let Ok(open_ports) = scanner.scan_ip(gateway_ip).await {
+            for port in open_ports {
+                device.add_open_port(port);
+            }
+        }
+    }
+
+    // UPnP discovery answers on a multicast group, which cannot be addressed
+    // through a link-local address without the interface. A gateway reached
+    // only there is left out rather than reported as having nothing.
+    assess_gateway(device, !netgap_scan::needs_zone(&gateway)).await;
+
+    if device.findings.is_empty() {
+        eprintln!("  ✓ No IPv6 gateway-specific exposure found");
+    }
+}
+
+/// The checks every gateway gets, whichever address family found it.
+async fn assess_gateway(device: &mut Device, upnp_possible: bool) {
     let findings = netgap_assess::check_gateway(device);
     for finding in findings {
         eprintln!("  [{}] {}", finding.severity, finding.title);
         device.add_finding(finding);
+    }
+
+    if !upnp_possible {
+        return;
     }
 
     // What UPnP has actually published. The port check above can only see the
@@ -1662,10 +1748,6 @@ async fn check_gateway_exposure(devices: &mut [Device], probes: &mut Vec<Service
             eprintln!("  [{}] {}", finding.severity, finding.title);
             device.add_finding(finding);
         }
-    }
-
-    if device.findings.is_empty() {
-        eprintln!("  ✓ No gateway-specific exposure found");
     }
 }
 
@@ -2289,7 +2371,8 @@ async fn cmd_watch(
                     timeout_ms: 1500,
                     concurrency: 32,
                 };
-                let scanner = PortScanner::new(port_config);
+                let scanner = PortScanner::new(port_config)
+                    .zone(netgap_interfaces::interface_index(&plan.interface.name));
                 if let Err(e) = scanner.scan_devices(&mut devices).await {
                     println!("⚠️  Port scanning error: {}", e);
                 }

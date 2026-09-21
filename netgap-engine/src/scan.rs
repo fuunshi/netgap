@@ -88,7 +88,10 @@ where
             timeout_ms: 2000,
             concurrency: 32,
         })
-        .quiet(true);
+        .quiet(true)
+        .zone(netgap_interfaces::interface_index(
+            &request.plan.interface.name,
+        ));
 
         scanner.scan_devices(&mut devices).await?;
     }

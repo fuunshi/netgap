@@ -2448,6 +2448,7 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "ipnetwork",
+ "libc",
  "netgap-core",
  "network-interface",
  "pnet",

@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 use netgap_core::{Device, Finding, Severity};
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::UnboundedSender;
@@ -77,6 +77,12 @@ pub struct PortScanner {
     /// Set by the full-screen UI, which draws its own progress and would
     /// otherwise have stderr written over the frame.
     quiet: bool,
+    /// The interface index that link-local IPv6 targets are reached through.
+    ///
+    /// `fe80::/10` addresses name a host but not the link it is on; the same
+    /// address exists on every interface. Without a zone the kernel cannot
+    /// send the connection anywhere.
+    scope_id: Option<u32>,
 }
 
 impl Default for PortScanner {
@@ -91,6 +97,7 @@ impl PortScanner {
         PortScanner {
             config,
             quiet: false,
+            scope_id: None,
         }
     }
 
@@ -103,6 +110,30 @@ impl PortScanner {
     pub fn quiet(mut self, quiet: bool) -> Self {
         self.quiet = quiet;
         self
+    }
+
+    /// Reach link-local IPv6 targets through the given interface index.
+    ///
+    /// The index is the zone: `fe80::1` alone is ambiguous, `fe80::1%3` is
+    /// not. A caller that knows which interface it scanned passes that
+    /// interface's index, and the scanner stops skipping link-local devices.
+    pub fn zone(mut self, scope_id: Option<u32>) -> Self {
+        self.scope_id = scope_id;
+        self
+    }
+
+    /// Why a device cannot be scanned at all, or `None` when it can.
+    ///
+    /// Skipping is not the same as finding nothing, which is why the caller
+    /// says so out loud instead of recording a clean result.
+    fn skip_reason(&self, ip: IpAddr) -> Option<&'static str> {
+        match ip {
+            IpAddr::V6(address) if needs_zone(&address) && self.scope_id.is_none() => Some(
+                "a link-local IPv6 address is only reachable through the interface it lives on, \
+                 and no interface was given",
+            ),
+            _ => None,
+        }
     }
 
     /// Scan a single IP address for open ports.
@@ -127,9 +158,10 @@ impl PortScanner {
             let sem = semaphore.clone();
             let timeout_duration = Duration::from_millis(self.config.timeout_ms);
 
+            let scope_id = self.scope_id;
             tasks.spawn(async move {
                 let _permit = sem.acquire().await;
-                Self::check_port(ip, port, timeout_duration).await
+                Self::check_port(ip, port, timeout_duration, scope_id).await
             });
         }
 
@@ -174,21 +206,13 @@ impl PortScanner {
         progress: Option<UnboundedSender<PortScanEvent>>,
     ) -> Result<()> {
         for device in devices.iter_mut() {
-            // A link-local address (`fe80::/10`) is only reachable with a zone
-            // — the interface — attached to it, and a device here does not
-            // carry one. Connecting without it fails for every port, which
-            // would read as "no open ports" rather than "not scanned".
-            if let IpAddr::V6(address) = device.ip {
-                if (address.segments()[0] & 0xffc0) == 0xfe80 {
-                    if !self.quiet {
-                        eprintln!(
-                            "  · Not port-scanning {}: link-local IPv6 needs an interface to be \
-                             reached, which this device does not record",
-                            device.ip
-                        );
-                    }
-                    continue;
+            // A link-local address without a zone would fail on every port,
+            // which reads as "no open ports" rather than "not scanned".
+            if let Some(reason) = self.skip_reason(device.ip) {
+                if !self.quiet {
+                    eprintln!("  · Not port-scanning {}: {reason}", device.ip);
                 }
+                continue;
             }
 
             if !self.quiet {
@@ -238,12 +262,41 @@ impl PortScanner {
     }
 
     /// Check a single port for connectivity.
-    async fn check_port(ip: IpAddr, port: u16, timeout_duration: Duration) -> Option<u16> {
-        let socket_addr = SocketAddr::new(ip, port);
+    async fn check_port(
+        ip: IpAddr,
+        port: u16,
+        timeout_duration: Duration,
+        scope_id: Option<u32>,
+    ) -> Option<u16> {
+        let socket_addr = socket_address(ip, port, scope_id);
 
         match timeout(timeout_duration, TcpStream::connect(socket_addr)).await {
             Ok(Ok(_)) => Some(port), // Port is open
             _ => None,               // Timeout or connection refused
+        }
+    }
+}
+
+/// Whether an IPv6 address names a host on the local link rather than one
+/// reachable from anywhere, and so needs an interface (a zone) beside it.
+pub fn needs_zone(address: &Ipv6Addr) -> bool {
+    // `fe80::/10`: the first ten bits are 1111 1110 10.
+    (address.segments()[0] & 0xffc0) == 0xfe80
+}
+
+/// The socket address to connect to, with the zone attached where one is
+/// needed and known.
+fn socket_address(ip: IpAddr, port: u16, scope_id: Option<u32>) -> SocketAddr {
+    match ip {
+        IpAddr::V4(address) => SocketAddr::V4(SocketAddrV4::new(address, port)),
+        IpAddr::V6(address) => {
+            let scope = match (needs_zone(&address), scope_id) {
+                (true, Some(scope)) => scope,
+                // A global address belongs to no interface, so a zone would be
+                // meaningless on it.
+                _ => 0,
+            };
+            SocketAddr::V6(SocketAddrV6::new(address, port, 0, scope))
         }
     }
 }
@@ -365,6 +418,76 @@ mod tests {
 
         assert!(devices[0].open_ports.is_empty());
         assert!(devices[0].findings.is_empty());
+    }
+
+    /// A link-local address is per-link: the same `fe80::1` exists on every
+    /// interface. With a zone the connection can be sent; without one it is
+    /// skipped rather than reported as having no open ports.
+    #[tokio::test]
+    async fn test_a_zoned_scan_attempts_link_local_devices() {
+        let address: Ipv6Addr = "fe80::c6b2:5bff:fe0a:326".parse().expect("valid address");
+        let mut devices = [Device::new(IpAddr::V6(address))];
+
+        let scanner = PortScanner::new(ScanConfig {
+            ports: vec![22],
+            timeout_ms: 50,
+            concurrency: 1,
+        })
+        .zone(Some(1));
+
+        assert!(scanner.skip_reason(devices[0].ip).is_none());
+        // Nothing answers on the fake address; the point is that it was tried.
+        scanner.scan_devices(&mut devices).await.expect("scanning");
+        assert!(devices[0].open_ports.is_empty());
+    }
+
+    #[test]
+    fn test_only_link_local_addresses_need_a_zone() {
+        let link_local: Ipv6Addr = "fe80::1".parse().unwrap();
+        let global: Ipv6Addr = "2001:db8::1".parse().unwrap();
+        let unique_local: Ipv6Addr = "fd00::1".parse().unwrap();
+
+        assert!(needs_zone(&link_local));
+        assert!(!needs_zone(&global));
+        assert!(!needs_zone(&unique_local));
+
+        let scanner = PortScanner::with_default_config();
+        assert!(scanner.skip_reason(IpAddr::V6(link_local)).is_some());
+        assert!(scanner.skip_reason(IpAddr::V6(global)).is_none());
+        assert!(PortScanner::with_default_config()
+            .zone(Some(2))
+            .skip_reason(IpAddr::V6(link_local))
+            .is_none());
+    }
+
+    #[test]
+    fn test_the_zone_reaches_the_socket_only_where_it_is_needed() {
+        let link_local: Ipv6Addr = "fe80::c6b2:5bff:fe0a:326".parse().unwrap();
+
+        match socket_address(IpAddr::V6(link_local), 22, Some(3)) {
+            SocketAddr::V6(address) => {
+                assert_eq!(address.scope_id(), 3);
+                assert_eq!(address.port(), 22);
+            }
+            SocketAddr::V4(_) => panic!("an IPv6 address became IPv4"),
+        }
+
+        match socket_address(IpAddr::V6(link_local), 22, None) {
+            SocketAddr::V6(address) => assert_eq!(address.scope_id(), 0),
+            SocketAddr::V4(_) => panic!("an IPv6 address became IPv4"),
+        }
+
+        // A global address belongs to no interface; the zone does not apply.
+        let global: Ipv6Addr = "2001:db8::1".parse().unwrap();
+        match socket_address(IpAddr::V6(global), 443, Some(3)) {
+            SocketAddr::V6(address) => assert_eq!(address.scope_id(), 0),
+            SocketAddr::V4(_) => panic!("an IPv6 address became IPv4"),
+        }
+
+        match socket_address("192.168.1.1".parse().unwrap(), 80, Some(3)) {
+            SocketAddr::V4(address) => assert_eq!(address.port(), 80),
+            SocketAddr::V6(_) => panic!("an IPv4 address became IPv6"),
+        }
     }
 
     #[test]

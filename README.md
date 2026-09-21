@@ -4,7 +4,7 @@ A production-ready network security scanner written in Rust. Discover devices on
 
 [![CI](https://github.com/fuunshi/netgap/actions/workflows/ci.yml/badge.svg)](https://github.com/fuunshi/netgap/actions/workflows/ci.yml)
 
-**Current Status:** ✅ 452 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
+**Current Status:** ✅ 460 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
 
 ## Quick Features
 
@@ -20,6 +20,7 @@ A production-ready network security scanner written in Rust. Discover devices on
 - 🔒 **TLS Inspection** - Certificates, expiry, self-signed, legacy protocol support
 - 🆕 **Device History** - Reports what has appeared on the network since last time
 - 🛡️ **Gateway Checks** - Admin interface exposure, and the ports UPnP has actually published to the internet
+- 🌐 **IPv6 Coverage** - Link-local devices and the IPv6 default gateway are scanned through the interface they live on, then checked like anything else
 - 🗄️ **File Server Checks** - Whether a server still accepts SMBv1, and whether it requires signing, asked before anyone logs in
 - 🔓 **Open Services** - Whether FTP lets anyone in, a Redis or MongoDB server has no password, or a device answers SNMP with the factory `public` community
 - 🚨 **Address Conflicts** - Alerts when an address, especially the gateway's, changes hands
@@ -182,14 +183,14 @@ cannot drift apart.
 
 ## Test Coverage
 
-**452 tests passing** across the workspace:
+**460 tests passing** across the workspace:
 
 | Crate | Purpose | Tests |
 |-------|---------|-------|
 | netgap-core | Shared types, health scoring, HTML escaping | 18 |
-| netgap-interfaces | NIC enumeration, LAN-aware selection | 18 |
+| netgap-interfaces | NIC enumeration, LAN-aware selection and the IPv6 gateway | 23 |
 | netgap-discover | ARP sweep, TCP fallback, IPv6 neighbours, conflicts | 73 |
-| netgap-scan | Port scanning and risk classification | 7 |
+| netgap-scan | Port scanning, zone-aware IPv6 and risk classification | 10 |
 | netgap-report | Terminal, summary and HTML formatting | 30 |
 | netgap-fingerprint | Device fingerprinting | 24 |
 | netgap-assess | Vulnerability, gateway, file-server and open-service checks | 27 |
@@ -438,7 +439,6 @@ IP            Device                OS        Findings
 Known gaps:
 - `netgap-raw-sockets` is a framework stub, not yet wired into the CLI
 - TTL-based OS fingerprinting is not implemented
-- IPv6 port scanning and IPv6 gateway checks
 - Rogue AP / evil-twin detection (needs monitor mode and a different permission model)
 - Passive WiFi scanning
 - Mobile app bridges (uniffi-rs)
