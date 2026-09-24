@@ -325,7 +325,7 @@ sudo firewall-cmd --zone=trusted --change-interface=netgap-test
 The no-answer message now says a firewall may be hiding a server rather than
 suggesting only that the network uses static addressing.
 
-### 7. IPv6 — ✅ discovery done, port scanning not
+### 7. IPv6 — ✅ done
 
 `Ipv4Addr` was used throughout discovery, so on a dual-stack network every
 IPv6-only device was invisible and any device count was quietly wrong.
@@ -361,15 +361,33 @@ entry for every multicast group the machine has joined — `ff02::1`, `ff02::fb`
 and so on — each with a synthetic `33:33:` MAC. Merging those would have
 invented six devices on every scan.
 
-**What is still IPv4-only:**
+**Port scanning a link-local address: done.** A `fe80::` address names a host
+on every link at once, so it is only reachable with a zone — the interface —
+attached. `netgap-interfaces` now asks the kernel for an interface's index
+(the zone number) and the scanner takes it from the plan, building a
+`SocketAddrV6` with the scope set. A device is skipped only when no zone is
+known, and the skip is still said out loud: "no open ports" and "not scanned"
+are different claims.
 
-- **Port scanning a link-local IPv6 device.** A `fe80::` address is only
-  reachable with a zone (the interface) attached, which a `Device` does not
-  record, so such devices are skipped with a note rather than probed. Reporting
-  them as "no open ports" would be a different claim from "not scanned".
-- Everything IPv4-specific downstream: gateway checks, DHCP, ARP conflict
-  detection. IPv6 devices are discovered and reported; they are not yet
-  assessed.
+Verified on the live network: five IPv6-only neighbours that used to be skipped
+were scanned, and one of them had an open port — a result that cannot happen
+without the zone attached.
+
+**Gateway checks: done.** The IPv6 default gateway is read from
+`/proc/net/ipv6_route` — the all-zeros destination at prefix 0 that carries the
+gateway flag, which is not the same as the kernel's reject entry on `lo`.
+Routers usually answer IPv6 at a link-local address, and the neighbour table
+only learns that address once traffic has crossed it, so the gateway is added
+to the device list from the route table when it is not already there (whole-link
+scans only, for the same reason neighbours are). The gateway then gets the same
+assessment as the IPv4 one: the router-specific ports looked at through the
+zone-aware scanner, then the admin, UPnP and gateway findings. UPnP discovery
+is skipped for a link-local gateway because its multicast search cannot be
+addressed without a zone, and silence there is not evidence of absence.
+
+Still IPv4-only: DHCP checks and ARP conflict detection. IPv6 devices are
+discovered, port-scanned and gateway-assessed; their DHCPv6 and neighbour
+conflicts are not looked at.
 
 ### 8. Continuous integration and `cargo audit` — ✅ done
 
@@ -423,6 +441,66 @@ rather than commit SHAs, so a compromised or retagged action would run. That is
 the usual trade against having to hand-update SHAs, but for a tool whose whole
 purpose is supply-chain visibility it is the weaker choice, and pinning is a
 contained change if wanted.
+
+### Configuration checks a device answers without credentials — ✅ done
+
+An open port says a service is listening; it does not say whether the service
+does the work for anyone who connects. That difference is usually the whole
+question, and it is invisible from a port list. These checks ask each service
+the smallest question its own protocol allows, and nothing here guesses a
+password or tries more than the factory default:
+
+- **SMB.** Whether the server still negotiates SMBv1, and whether it requires
+  signing. Both are decided during dialect negotiation, before anyone logs in.
+  Signing off is reported higher when the server disables it than when it makes
+  it optional.
+- **FTP.** Whether `anonymous` logs in. The probe sends the greeting, then
+  `USER anonymous` / `PASS`, and only tries once.
+- **Redis and MongoDB.** Whether a command runs without authentication. Redis
+  answers `PING` (then `INFO`, for the version to report); MongoDB answers
+  `hello` then `listDatabases`. An
+  authorisation refusal is the protected answer and is reported as a clean
+  result, not a finding. MongoDB's protocol (`OP_MSG`) covers 3.6 and newer; an
+  older server is reported as unknown.
+- **SNMP.** Whether the factory `public` community is accepted, by asking for
+  `sysDescr.0` and seeing if anything comes back. Silence is not reported as
+  protection, because a firewall and a changed community look the same.
+- **UPnP.** Whether the gateway answers discovery, and what it has actually
+  published to the internet, rather than merely whether a control port is open.
+
+Each probe lives in `netgap-probes` and returns its own types; the rules that
+decide what is a finding live in `netgap-assess`. The port scanner's default
+list gained 6379 and 27017 for the same reason: a check that can never run
+because its port is not swept is not a check. SMB, Redis, MongoDB and SNMP were
+each checked against a real server — a real Redis, a temporary `mongod` with
+and without `--auth`, a real SMB server, and an SNMP answer cross-checked
+against an independent ASN.1 encoder — as well as loopback fakes and byte-level
+unit tests. FTP was exercised against in-process servers speaking the protocol:
+binding a listener on port 21 needs privileges the development machine did not
+have, so a real FTP daemon was not used.
+
+### Rogue access points / evil twins — scoped, not built
+
+An evil twin is an access point impersonating the network's own, so devices
+associate with it and hand over traffic. Detecting one means looking at frames
+the operating system does not deliver to a normal socket: beacon and probe
+frames, which carry the SSID and BSSID but not IP traffic.
+
+**What it would take.** Monitor mode on the wireless card, which is a different
+permission model from every other check here — it stops the interface being
+usable for normal networking while it runs, and it is not the same capability
+the ARP sweep uses. A credible check would then need the network's real BSSIDs
+(learned from beacons over time), a rule for matching an SSID broadcast by an
+unfamiliar BSSID, and a way to tell a neighbour's network with the same name
+from an impersonation. The last one is the hard part: on an apartment block,
+two networks called `NETGEAR` are ordinary.
+
+**Decision: not built.** It would be the first check that needs the machine's
+wireless interface put into a mode that stops it working as a network client,
+and its verdict cannot be stated with the confidence the rest of the tool keeps
+("this MAC is not in your trusted list" is not the same claim as "this access
+point is hostile"). Scoping it properly is a separate piece of work, and
+promising it as a checkbox would be worse than leaving it out.
 
 ---
 
