@@ -851,6 +851,116 @@ is no scheduling, no webhook configuration and no report comparison in the GUI
 — those remain command-line features. It is a desktop application, not a web
 dashboard, and no server is started.
 
+## Tier 3 — product and distribution
+
+Tiers 1 and 2 are in: `doctor`, port-change alerts, the per-device timeline,
+`diff` and inventory export/import; UPnP, the credential-less configuration
+checks, IPv6 port scanning and gateway checks. What is left in tier 3 does not
+change what a scan finds — it decides whether someone can install the tool,
+configure it once, and believe the download is the one that was built.
+
+None of the four has been started. What each needs is below, so the work can
+be picked up without re-deciding it.
+
+### 1. Configuration file and scan profiles
+
+Every setting is a flag. A realistic command today is
+
+```
+netgap scan --deep --threat-intel --threat-intel-update --mdns
+```
+
+and it has to be retyped every time. The value is not saving keystrokes; it is
+that `netgap scan --profile audit` is something a non-technical user can be
+told to run.
+
+Needs:
+
+- **A profile is a named set of the existing flags** — `quick` (discovery
+  only), `home` (discovery, ports, plain-language summary), `audit` (assess,
+  fingerprint, threat intel, mDNS). Profiles map onto flags, not onto new
+  behaviour, so there is one code path.
+- **Precedence**: explicit flag > profile > config file > built-in default.
+  Anything else is a source of "why did it do that" reports.
+- **One file**, documented, beside `scans.db` and `alerts.toml`
+  (`~/.config/netgap/`), with `netgap config` to show where it is and the
+  effective settings after every layer.
+- **The dependency already exists and is unused**: `config` 0.13 is declared in
+  the workspace and referenced by no crate. It would work, but `serde` + `toml`
+  directly is smaller and the schema here is flat; dropping the unused
+  dependency is part of the task either way.
+
+### 2. Tray / menu-bar mode
+
+The window application is a normal window: closing it ends the monitoring.
+The natural resting state for a LAN scanner is a tray icon that scans on a
+schedule and raises a notification when a new device appears — the `watch`
+loop and the alert rules already exist, so this is mostly front end.
+
+Needs:
+
+- **A tray icon**: `tray-icon` on Windows, GTK/AppIndicator on Linux. The Linux
+  side is the awkward one — it is a desktop-environment feature, and on a
+  headless machine there is nothing to attach it to, so the fallback has to be
+  "no tray, keep running" rather than a failure.
+- **A background scan loop in the GUI** that owns `watch`'s state rather than a
+  second implementation of it.
+- **A decision on notifications**: the existing webhooks, a desktop
+  notification through `notify-rust` (also declared, also unused), or both
+  behind one setting.
+- **Close-to-tray instead of exit**, which needs an explicit quit item or
+  people will think the app did not close.
+
+### 3. Packaging
+
+Releases publish four archives — CLI and window app, Linux x86_64 (musl) and
+Windows x86_64 — with `SHA256SUMS`, and the GUI tarball carries `install.sh`,
+a `.desktop` file and an icon. That covers "download and run". It does not
+cover "install", and it does not cover macOS at all.
+
+Still to do, in rough order of payoff:
+
+- **Windows: a winget manifest** for `netgap-gui`, so `winget install` works
+  and the app appears in a search. The archive name and installer behaviour are
+  already stable.
+- **Linux: `.deb` and `.rpm`** for the CLI, and a package for the GUI that
+  installs the `.desktop` file and icon into the right places — `cargo-deb` and
+  `cargo-generate-rpm` read the existing metadata.
+- **A Nix flake** and an **AUR PKGBUILD**; both are thin wrappers over
+  `cargo build --release` and the same install layout.
+- **macOS: Homebrew, but only after an arm64 build exists.** Releases are
+  x86_64 only today; a formula that installs an Intel binary on an M-series
+  machine is a bad first impression. The `portable-interfaces` feature already
+  covers enumeration there, so this is CI work more than code.
+- **Decide between winget, Chocolatey and Scoop** rather than shipping all
+  three; winget is the one people find.
+
+The archives and checksums are generated per release and their names are
+already deterministic, so every one of these can point at the same artifacts.
+
+### 4. Signed releases
+
+`SHA256SUMS` catches a corrupt download; it does not catch a tampered one.
+Whoever can replace an archive on the release can replace the checksum beside
+it, so the checksum proves the file arrived intact, not that it came from this
+project. For a security tool that is a credibility gap, not paperwork.
+
+Two credible paths:
+
+- **SLSA provenance through GitHub Actions OIDC**
+  (`actions/attest-build-provenance`): the artifact is tied to the workflow run
+  that produced it, with no key to manage and nothing to rotate. Ties identity
+  to GitHub.
+- **Signing `SHA256SUMS` and the archives** with a maintainer key (minisign or
+  GPG): a stable identity independent of the platform, at the cost of key
+  custody and a documented rotation story.
+
+Either is a contained change to `release.yml`; the part people skip is
+**documenting how to verify**, in the README next to the download table. A
+signature nobody knows how to check protects nothing.
+
+---
+
 ## Engineering health
 
 - `netgap-raw-sockets` is a framework stub (`scan_ip` returns `Ok(None)`) with

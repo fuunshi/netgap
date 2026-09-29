@@ -441,6 +441,8 @@ Known gaps:
 - TTL-based OS fingerprinting is not implemented
 - Rogue AP / evil-twin detection (needs monitor mode and a different permission model)
 - Passive WiFi scanning
+- A config file and named scan profiles (see tier 3 in `docs/ROADMAP.md`)
+- Desktop packaging (winget, Homebrew, `.deb`/`.rpm`, Nix), signed releases, and a tray mode
 - Mobile app bridges (uniffi-rs)
 - Web UI dashboard (the desktop window is `netgap-gui`; a browser interface is still open)
 
