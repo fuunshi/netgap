@@ -17,6 +17,7 @@ use std::net::{IpAddr, Ipv6Addr};
 use std::time::Duration;
 
 mod alerts;
+mod config;
 mod credentialless;
 mod diff;
 mod discovery;
@@ -52,20 +53,20 @@ struct DiscoveryArgs {
     target: Option<String>,
 
     /// Discovery method: auto, arp, or tcp
-    #[arg(long, default_value = "auto")]
-    discovery: String,
+    #[arg(long)]
+    discovery: Option<String>,
 
     /// Continue without prompting when root is unavailable (use the TCP fallback)
     #[arg(short = 'y', long)]
     yes: bool,
 
     /// Refuse to scan more hosts than this in one sweep
-    #[arg(long, default_value_t = netgap_discover::DEFAULT_MAX_HOSTS)]
-    max_hosts: usize,
+    #[arg(long)]
+    max_hosts: Option<usize>,
 
     /// Also ask devices to name themselves over mDNS (printers, TVs, speakers)
-    #[arg(long)]
-    mdns: bool,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    mdns: Option<bool>,
 }
 
 impl DiscoveryArgs {
@@ -74,10 +75,11 @@ impl DiscoveryArgs {
     /// `non_interactive` keeps machine-readable output clean by suppressing the
     /// privilege prompt.
     fn resolve(&self, non_interactive: bool) -> Result<DiscoveryPlan, Box<dyn std::error::Error>> {
-        let requested = if self.discovery.eq_ignore_ascii_case("auto") {
+        let discovery = self.discovery.as_deref().unwrap_or("auto");
+        let requested = if discovery.eq_ignore_ascii_case("auto") {
             None
         } else {
-            Some(discovery::parse_method(&self.discovery)?)
+            Some(discovery::parse_method(discovery)?)
         };
 
         Ok(discovery::resolve_plan(
@@ -86,8 +88,8 @@ impl DiscoveryArgs {
             requested,
             self.yes,
             non_interactive,
-            self.max_hosts,
-            self.mdns,
+            self.max_hosts.unwrap_or(netgap_discover::DEFAULT_MAX_HOSTS),
+            self.mdns.unwrap_or(false),
         )?)
     }
 }
@@ -188,45 +190,60 @@ enum Commands {
         #[command(flatten)]
         discovery: DiscoveryArgs,
 
-        /// Quick scan mode: discovery only, no port scanning (fastest)
+        /// Use a named profile: quick, home, audit, or one from config.toml
         #[arg(long)]
-        quick: bool,
+        profile: Option<String>,
+
+        /// Quick scan mode: discovery only, no port scanning (fastest)
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+        quick: Option<bool>,
 
         /// Deep scan mode: implies --fingerprint and --assess
-        #[arg(long)]
-        deep: bool,
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+        deep: Option<bool>,
 
         /// Perform banner grabbing for service identification
-        #[arg(long)]
-        fingerprint: bool,
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+        fingerprint: Option<bool>,
 
         /// Include vulnerability assessment
-        #[arg(long)]
-        assess: bool,
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+        assess: Option<bool>,
 
         /// Show an interactive dashboard with per-host scan progress
-        #[arg(long)]
-        interactive: bool,
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+        interactive: Option<bool>,
 
         /// Match findings against the local NVD database (see 'netgap threat-intel update')
-        #[arg(long)]
-        threat_intel: bool,
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+        threat_intel: Option<bool>,
 
         /// With --threat-intel: fetch data for the services found, then cache it
-        #[arg(long)]
-        threat_intel_update: bool,
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+        threat_intel_update: Option<bool>,
 
         /// Do not write the result to the scan history database
-        #[arg(long)]
-        no_save: bool,
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+        no_save: Option<bool>,
 
         /// Output format: table, json, summary
-        #[arg(short, long, default_value = "table")]
-        format: String,
+        #[arg(short, long)]
+        format: Option<String>,
 
         /// Do not send alerts, even if a webhook is configured
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+        no_alert: Option<bool>,
+    },
+
+    /// Show the config file and the settings a scan would use
+    Config {
+        /// Show the settings this profile would produce
         #[arg(long)]
-        no_alert: bool,
+        profile: Option<String>,
+
+        /// Print only the path of the config file
+        #[arg(long)]
+        path: bool,
     },
 
     /// Display results from the last scan or export reports
@@ -434,6 +451,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Scan {
             discovery,
+            profile,
             quick,
             deep,
             fingerprint,
@@ -445,8 +463,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             format,
             no_alert,
         } => {
-            cmd_scan(
-                discovery,
+            let flags = ScanFlags {
                 quick,
                 deep,
                 fingerprint,
@@ -455,10 +472,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 threat_intel,
                 threat_intel_update,
                 no_save,
-                &format,
+                format,
                 no_alert,
-            )
-            .await?;
+            };
+            cmd_scan(discovery, flags, profile).await?;
+        }
+        Commands::Config { profile, path } => {
+            config::show(profile.as_deref(), path)?;
         }
         Commands::Report {
             scan_id,
@@ -580,27 +600,76 @@ fn cmd_interfaces() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The scan switches exactly as given, before the config file and any profile
+/// supply the ones that were not typed.
+struct ScanFlags {
+    quick: Option<bool>,
+    deep: Option<bool>,
+    fingerprint: Option<bool>,
+    assess: Option<bool>,
+    interactive: Option<bool>,
+    threat_intel: Option<bool>,
+    threat_intel_update: Option<bool>,
+    no_save: Option<bool>,
+    format: Option<String>,
+    no_alert: Option<bool>,
+}
+
 async fn cmd_scan(
     discovery_args: DiscoveryArgs,
-    quick: bool,
-    deep: bool,
-    mut fingerprint: bool,
-    mut assess: bool,
-    interactive: bool,
-    threat_intel: bool,
-    threat_intel_update: bool,
-    no_save: bool,
-    format: &str,
-    no_alert: bool,
+    flags: ScanFlags,
+    profile: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mdns = discovery_args.mdns;
-
-    // --deep is a shorthand for turning on everything.
-    if deep {
-        fingerprint = true;
-        assess = true;
+    // What was typed is one layer; config.toml and the profile are the others.
+    // The precedence lives in one place so `netgap config` can explain it.
+    let file = config::load()?;
+    let typed = config::Settings {
+        interface: discovery_args.interface.clone(),
+        target: discovery_args.target.clone(),
+        discovery: discovery_args.discovery.clone(),
+        max_hosts: discovery_args.max_hosts,
+        mdns: discovery_args.mdns,
+        quick: flags.quick,
+        deep: flags.deep,
+        fingerprint: flags.fingerprint,
+        assess: flags.assess,
+        interactive: flags.interactive,
+        threat_intel: flags.threat_intel,
+        threat_intel_update: flags.threat_intel_update,
+        no_save: flags.no_save,
+        format: flags.format,
+        no_alert: flags.no_alert,
+    };
+    let resolved = config::resolve(
+        profile.as_deref(),
+        file.as_ref().map(|(_, file)| file),
+        &typed,
+    )?;
+    if let Some(choice) = &resolved.profile {
+        eprintln!(
+            "🎚️  Profile: {} (from {})",
+            choice.name,
+            choice.source.label()
+        );
     }
+
+    let config::ScanSettings {
+        interface,
+        target,
+        discovery,
+        max_hosts,
+        mdns,
+        quick,
+        deep,
+        fingerprint,
+        assess,
+        interactive,
+        threat_intel,
+        threat_intel_update,
+        no_save,
+        format,
+        no_alert,
+    } = resolved.settings;
 
     let mode = if quick {
         "quick"
@@ -624,7 +693,15 @@ async fn cmd_scan(
     }
     eprintln!();
 
-    let plan = discovery_args.resolve(format == "json")?;
+    let plan = DiscoveryArgs {
+        interface,
+        target,
+        discovery: Some(discovery),
+        yes: discovery_args.yes,
+        max_hosts: Some(max_hosts),
+        mdns: Some(mdns),
+    }
+    .resolve(format == "json")?;
 
     eprintln!("📍 Interface: {}", plan.interface.name);
     if let Some(cidr) = &plan.interface.cidr {
@@ -753,7 +830,7 @@ async fn cmd_scan(
     eprintln!("SCAN RESULTS");
     eprintln!("{}\n", "─".repeat(70));
 
-    let output = match format {
+    let output = match format.as_str() {
         "json" => ReportFormatter::format_json(&result)?,
         "summary" => ReportFormatter::format_summary(&result)?,
         _ => ReportFormatter::format_terminal(&result)?,
@@ -862,7 +939,7 @@ async fn cmd_discover(
 
     enrich_devices(&plan, &mut devices, identify).await;
 
-    if discovery_args.mdns {
+    if discovery_args.mdns.unwrap_or(false) {
         eprintln!("   Asking devices to identify themselves over mDNS...");
         run_mdns(&mut devices).await;
     }

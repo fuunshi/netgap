@@ -33,7 +33,6 @@ anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 colored = "2"
-config = "0.13"
 dns-lookup = "2"
 futures = "0.3"
 libc = "0.2"

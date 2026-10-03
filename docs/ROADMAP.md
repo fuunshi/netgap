@@ -855,40 +855,37 @@ dashboard, and no server is started.
 
 Tiers 1 and 2 are in: `doctor`, port-change alerts, the per-device timeline,
 `diff` and inventory export/import; UPnP, the credential-less configuration
-checks, IPv6 port scanning and gateway checks. What is left in tier 3 does not
-change what a scan finds — it decides whether someone can install the tool,
-configure it once, and believe the download is the one that was built.
+checks, IPv6 port scanning and gateway checks. In tier 3, the config file and
+scan profiles are in; the tray, packaging and signed releases are not.
 
-None of the four has been started. What each needs is below, so the work can
-be picked up without re-deciding it.
+What is left in tier 3 does not change what a scan finds — it decides whether
+someone can install the tool, configure it once, and believe the download is
+the one that was built.
 
-### 1. Configuration file and scan profiles
+### 1. Configuration file and scan profiles — ✅ done
 
-Every setting is a flag. A realistic command today is
+`netgap scan --profile audit` now works, and `config.toml` in
+`~/.config/netgap/` supplies what a flag does not. `quick`, `home` and `audit`
+are built in; `[profiles.<name>]` in the file both adjusts a built-in of that
+name and defines new ones. Precedence is flag, then profile, then `[defaults]`,
+then the built-in default, and `netgap config` prints the result of all four
+layers with the source of each value.
 
-```
-netgap scan --deep --threat-intel --threat-intel-update --mdns
-```
+Two things this required:
 
-and it has to be retyped every time. The value is not saving keystrokes; it is
-that `netgap scan --profile audit` is something a non-technical user can be
-told to run.
+- **Tri-state flags.** "Not given" and "given as false" are different answers,
+  and a plain `bool` conflates them. Every scan switch now takes an optional
+  value (`--assess=false` works), and `DiscoveryArgs` moved from clap defaults
+  to `Option` so `resolve` can fill "auto" and `DEFAULT_MAX_HOSTS` itself.
+- **Dropping the unused `config` 0.13 dependency.** `serde` + `toml` already
+  give a flat schema with error messages that name the field, and they were
+  already dependencies of the CLI. The file is `deny_unknown_fields`, so a typo
+  is an error rather than a setting that silently does nothing.
 
-Needs:
-
-- **A profile is a named set of the existing flags** — `quick` (discovery
-  only), `home` (discovery, ports, plain-language summary), `audit` (assess,
-  fingerprint, threat intel, mDNS). Profiles map onto flags, not onto new
-  behaviour, so there is one code path.
-- **Precedence**: explicit flag > profile > config file > built-in default.
-  Anything else is a source of "why did it do that" reports.
-- **One file**, documented, beside `scans.db` and `alerts.toml`
-  (`~/.config/netgap/`), with `netgap config` to show where it is and the
-  effective settings after every layer.
-- **The dependency already exists and is unused**: `config` 0.13 is declared in
-  the workspace and referenced by no crate. It would work, but `serde` + `toml`
-  directly is smaller and the schema here is flat; dropping the unused
-  dependency is part of the task either way.
+The file feeds `netgap scan` only. `discover` and `watch` still read their
+flags, which is deliberate for now — extending the same precedence to them is
+the obvious next step, not something that should ride in under a packaging
+item.
 
 ### 2. Tray / menu-bar mode
 

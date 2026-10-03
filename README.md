@@ -4,7 +4,7 @@ A production-ready network security scanner written in Rust. Discover devices on
 
 [![CI](https://github.com/fuunshi/netgap/actions/workflows/ci.yml/badge.svg)](https://github.com/fuunshi/netgap/actions/workflows/ci.yml)
 
-**Current Status:** ✅ 460 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
+**Current Status:** ✅ 473 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
 
 ## Quick Features
 
@@ -183,7 +183,7 @@ cannot drift apart.
 
 ## Test Coverage
 
-**460 tests passing** across the workspace:
+**473 tests passing** across the workspace:
 
 | Crate | Purpose | Tests |
 |-------|---------|-------|
@@ -203,7 +203,7 @@ cannot drift apart.
 | netgap-threat-intel | NVD client and CVE cache | 17 |
 | netgap-webhooks | Alert delivery | 8 |
 | netgap-engine | Scan pipeline shared by the CLI, terminal UI and window | 0 |
-| netgap-cli | Commands, doctor, upnp, diff, inventory, alerts, discovery and the interactive UI | 88 |
+| netgap-cli | Commands, config and profiles, doctor, upnp, diff, inventory, alerts, discovery and the interactive UI | 101 |
 | netgap-gui | Window application and its display formatting | 13 |
 
 ## Performance
@@ -285,6 +285,55 @@ netgap diff <id>                 # since that scan, up to the latest
 netgap diff <from> <to>          # between any two (ids, or "previous")
 netgap diff --json               # machine-readable, for a script or CI step
 ```
+
+## Profiles and the Config File
+
+A scan that does the same thing every run should not need the same six flags
+every run. Three profiles ship built in:
+
+| Profile | What it does |
+|---------|--------------|
+| `quick` | Discovery only — who is on the network, no port scanning |
+| `home` | Discovery, mDNS names, and the checks that need no credentials |
+| `audit` | Everything: deep scan, fingerprinting, assessment, mDNS, NVD matching |
+
+```bash
+netgap scan --profile home       # the everyday scan
+netgap scan --profile audit -y   # the thorough one
+```
+
+Settings that are the same every time go in `~/.config/netgap/config.toml`,
+beside `scans.db` and `alerts.toml`:
+
+```toml
+profile = "home"        # used when --profile is not given
+
+[defaults]              # below the profile, above the built-in default
+interface = "wlx90610ca31294"
+max_hosts = 1024
+
+[profiles.home]         # adjust a built-in by name...
+assess = false
+
+[profiles.paranoid]     # ...or define one of your own
+deep = true
+threat_intel = true
+```
+
+Precedence is explicit flag, then profile, then `[defaults]`, then the
+built-in default. Anything typed on the command line wins outright, which is
+why the flags take an optional value: `netgap scan --profile audit
+--assess=false` is a deep scan without the assessment, and `--quick=false` is
+how a script overrides a profile that turns it on.
+
+```bash
+netgap config                    # the file, the active profile, every effective setting and where it came from
+netgap config --profile audit    # what that profile would produce here
+netgap config --path             # just the path
+```
+
+The file feeds `netgap scan`. `discover` and `watch` still take their settings
+from their flags alone, so a change here cannot silently alter a scheduled job.
 
 ## Window Application
 
@@ -441,7 +490,7 @@ Known gaps:
 - TTL-based OS fingerprinting is not implemented
 - Rogue AP / evil-twin detection (needs monitor mode and a different permission model)
 - Passive WiFi scanning
-- A config file and named scan profiles (see tier 3 in `docs/ROADMAP.md`)
+- The config file feeds `netgap scan`; `discover` and `watch` still read flags
 - Desktop packaging (winget, Homebrew, `.deb`/`.rpm`, Nix), signed releases, and a tray mode
 - Mobile app bridges (uniffi-rs)
 - Web UI dashboard (the desktop window is `netgap-gui`; a browser interface is still open)
