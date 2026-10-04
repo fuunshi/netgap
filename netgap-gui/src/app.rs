@@ -11,6 +11,7 @@ use netgap_interfaces::InterfaceInfo;
 use netgap_storage::{ScanMetadata, ScanStore};
 
 use crate::theme::{self, Palette, Theme};
+use crate::tray;
 use crate::views;
 use crate::widgets;
 use crate::worker::{self, WorkerEvent};
@@ -163,6 +164,17 @@ impl Toast {
     }
 }
 
+/// What to do about the tray on this run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrayMode {
+    /// Show an icon if the desktop has somewhere to put one.
+    Auto,
+    /// Show an icon and start hidden, so the app is already resting in it.
+    Hidden,
+    /// No icon: closing the window quits, as it always did.
+    Off,
+}
+
 pub struct NetgapApp {
     pub tab: Tab,
     pub theme: Theme,
@@ -204,10 +216,27 @@ pub struct NetgapApp {
     pub timeline: Option<DeviceTimeline>,
 
     pub toast: Option<Toast>,
+
+    /// The tray icon, when the desktop accepted one.
+    tray: Option<tray::Tray>,
+    tray_events: Option<Receiver<tray::Event>>,
+    /// The window is hidden: a click on the icon, or Quit, brings it back or
+    /// ends it, and closing the window must not quit any more.
+    tray_hidden: bool,
+    /// Set when Quit came from the tray, so the close request that follows is
+    /// allowed through.
+    quitting: bool,
+    /// `--tray`: hide on the first frame, once the window exists to hide.
+    start_hidden: bool,
 }
 
 impl NetgapApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, initial_tab: Tab, theme: Theme) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        initial_tab: Tab,
+        theme: Theme,
+        tray_mode: TrayMode,
+    ) -> Self {
         theme::apply(&cc.egui_ctx, theme);
 
         let (interfaces, interfaces_error) = match netgap_interfaces::get_interfaces() {
@@ -229,6 +258,20 @@ impl NetgapApp {
             Err(error) => (None, Some(format!("Scan history is unavailable: {error}"))),
         };
 
+        // The tray wakes the event loop after every click, since a hidden
+        // window has nothing else asking it to repaint.
+        let (tray, tray_events, tray_error) = match tray_mode {
+            TrayMode::Off => (None, None, None),
+            TrayMode::Auto | TrayMode::Hidden => {
+                let context = cc.egui_ctx.clone();
+                match tray::start(move || context.request_repaint()) {
+                    Ok((tray, events)) => (Some(tray), Some(events), None),
+                    Err(error) => (None, None, Some(error)),
+                }
+            }
+        };
+
+        let has_tray = tray.is_some();
         let mut app = Self {
             tab: initial_tab,
             theme,
@@ -260,10 +303,30 @@ impl NetgapApp {
             selected_device: None,
             timeline: None,
             toast: None,
+            tray,
+            tray_events,
+            tray_hidden: false,
+            quitting: false,
+            // Hiding on the first frame is deliberate: the window is created
+            // mapped, so it has to exist before it can go away.
+            start_hidden: tray_mode == TrayMode::Hidden && has_tray,
         };
 
         app.reload_history();
         app.load_latest();
+
+        // Asking to start hidden and getting no tray would leave the app with
+        // no window and no way to reach it. Say so instead of hiding.
+        if let Some(error) = tray_error {
+            if tray_mode == TrayMode::Hidden {
+                app.toast = Some(Toast::new(format!(
+                    "Could not start in the tray: {error}. The window stays open."
+                )));
+            } else {
+                app.scan_log.push(format!("Tray unavailable: {error}"));
+            }
+        }
+
         app
     }
 
@@ -560,6 +623,104 @@ impl NetgapApp {
         }
     }
 
+    /// Act on clicks on the icon and its menu.
+    ///
+    /// The tray calls `request_repaint` after each click, so this runs promptly
+    /// even while the window is hidden and nothing else asks for a frame.
+    fn poll_tray(&mut self, ctx: &egui::Context) {
+        let events: Vec<tray::Event> = self
+            .tray_events
+            .as_ref()
+            .map(|receiver| receiver.try_iter().collect())
+            .unwrap_or_default();
+
+        let handled = !events.is_empty();
+        for event in events {
+            match event {
+                tray::Event::Show => self.show_window(ctx),
+                tray::Event::ScanNow => {
+                    self.show_window(ctx);
+                    self.start_scan();
+                }
+                tray::Event::Quit => {
+                    self.quitting = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
+
+        if handled {
+            // A ViewportCommand takes effect at the end of the frame, and the
+            // Close it produces is only seen by the next one. A hidden window
+            // asks for no frames of its own, so the loop would otherwise wait
+            // forever on a close that is already decided.
+            ctx.request_repaint();
+        }
+    }
+
+    /// Ctrl+W and the window's close button hide to the tray rather than exit,
+    /// once there is a tray to hide into. The menu's Quit is the way out.
+    fn handle_close(&mut self, ctx: &egui::Context) {
+        if self.quitting || self.tray.is_none() {
+            return;
+        }
+        if !ctx.input(|input| input.viewport().close_requested()) {
+            return;
+        }
+
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+
+        if !self.tray_hidden {
+            self.tray_hidden = true;
+            if let Some(tray) = &self.tray {
+                // Without a word here, a hidden window with no taskbar entry
+                // reads as a crash.
+                tray.notify(
+                    "Netgap is still running",
+                    "Use the tray icon to scan again or to quit.",
+                );
+            }
+        }
+    }
+
+    fn show_window(&mut self, ctx: &egui::Context) {
+        self.tray_hidden = false;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
+
+    /// Put the result where the user meets it without opening the window.
+    fn update_tray_after_scan(&mut self, result: &ScanResult) {
+        let Some(tray) = &self.tray else {
+            return;
+        };
+
+        let critical = result
+            .devices
+            .iter()
+            .flat_map(|device| &device.findings)
+            .filter(|finding| finding.severity == Severity::Critical)
+            .count();
+        let body = match critical {
+            0 => format!(
+                "{} · no critical findings",
+                crate::format::devices(result.devices.len())
+            ),
+            count => format!(
+                "{} · {} critical",
+                crate::format::devices(result.devices.len()),
+                count
+            ),
+        };
+
+        tray.set_tooltip(&body);
+        if self.tray_hidden {
+            tray.notify("Scan finished", &body);
+        }
+    }
+
     fn poll_events(&mut self) {
         let events: Vec<WorkerEvent> = self
             .events
@@ -589,6 +750,8 @@ impl NetgapApp {
                     self.timeline = None;
                     self.device_search.clear();
                     self.severity_filter = None;
+
+                    self.update_tray_after_scan(&result);
 
                     let loaded = LoadedScan {
                         id: scan_id,
@@ -856,8 +1019,16 @@ impl eframe::App for NetgapApp {
         }
 
         self.shortcuts(ctx);
+        self.poll_tray(ctx);
         self.poll_events();
+        self.handle_close(ctx);
         self.ensure_selection();
+
+        if self.start_hidden {
+            self.start_hidden = false;
+            self.tray_hidden = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
 
         if self.scanning || self.toast.as_ref().is_some_and(Toast::visible) {
             ctx.request_repaint_after(Duration::from_millis(120));

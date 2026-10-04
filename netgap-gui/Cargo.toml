@@ -16,8 +16,15 @@ path = "src/main.rs"
 eframe = "0.33.3"
 chrono.workspace = true
 tokio.workspace = true
+serde.workspace = true
 netgap-core = { path = "../netgap-core" }
 netgap-engine = { path = "../netgap-engine" }
 netgap-interfaces = { path = "../netgap-interfaces" }
 netgap-report = { path = "../netgap-report" }
 netgap-storage = { path = "../netgap-storage" }
+
+# The tray icon and its menu are StatusNotifierItem objects served over D-Bus.
+# zbus is already in the tree for accessibility, and unlike tray-icon it does
+# not link GTK, so the build needs no desktop development headers.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = "5"

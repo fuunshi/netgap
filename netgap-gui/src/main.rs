@@ -15,23 +15,31 @@
 mod app;
 mod format;
 mod theme;
+mod tray;
 mod views;
 mod widgets;
 mod worker;
 
-use app::{NetgapApp, Tab};
+use app::{NetgapApp, Tab, TrayMode};
 use theme::Theme;
 
-const USAGE: &str = "usage: netgap-gui [dashboard|scan|devices|history] [--light|--dark]";
+const USAGE: &str =
+    "usage: netgap-gui [dashboard|scan|devices|history] [--light|--dark] [--tray|--no-tray]";
 
 fn main() -> eframe::Result {
     let mut initial_tab = Tab::Dashboard;
     let mut theme = Theme::Dark;
+    let mut tray = TrayMode::Auto;
 
     for argument in std::env::args().skip(1) {
         match argument.as_str() {
             "--light" => theme = Theme::Light,
             "--dark" => theme = Theme::Dark,
+            // Start in the tray: the window is there for when it is wanted,
+            // but a scanner that monitors the network belongs in the
+            // background.
+            "--tray" => tray = TrayMode::Hidden,
+            "--no-tray" => tray = TrayMode::Off,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(());
@@ -57,6 +65,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Netgap",
         options,
-        Box::new(move |cc| Ok(Box::new(NetgapApp::new(cc, initial_tab, theme)))),
+        Box::new(move |cc| Ok(Box::new(NetgapApp::new(cc, initial_tab, theme, tray)))),
     )
 }

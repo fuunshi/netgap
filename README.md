@@ -4,7 +4,7 @@ A production-ready network security scanner written in Rust. Discover devices on
 
 [![CI](https://github.com/fuunshi/netgap/actions/workflows/ci.yml/badge.svg)](https://github.com/fuunshi/netgap/actions/workflows/ci.yml)
 
-**Current Status:** ✅ 473 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
+**Current Status:** ✅ 478 tests passing | LAN scanning verified on Linux | tests, lints and dependency audit run in CI
 
 ## Quick Features
 
@@ -183,7 +183,7 @@ cannot drift apart.
 
 ## Test Coverage
 
-**473 tests passing** across the workspace:
+**478 tests passing** across the workspace:
 
 | Crate | Purpose | Tests |
 |-------|---------|-------|
@@ -204,7 +204,7 @@ cannot drift apart.
 | netgap-webhooks | Alert delivery | 8 |
 | netgap-engine | Scan pipeline shared by the CLI, terminal UI and window | 0 |
 | netgap-cli | Commands, config and profiles, doctor, upnp, diff, inventory, alerts, discovery and the interactive UI | 101 |
-| netgap-gui | Window application and its display formatting | 13 |
+| netgap-gui | Window application, tray icon and its display formatting | 18 |
 
 ## Performance
 
@@ -343,11 +343,32 @@ netgap-gui scan               # open on the scan screen
 netgap-gui devices            # open on the device list
 netgap-gui history            # open on the recorded scans
 netgap-gui --light            # light theme (dark is the default)
+netgap-gui --tray             # start hidden, resting in the tray
+netgap-gui --no-tray          # no icon; closing the window quits
 ```
 
 Settings, choices and results live in the window; the only thing it writes
 outside the database is an exported report, saved to `~/netgap-<id>.html` or
 `.csv` when you press **Export**.
+
+### The tray icon
+
+Where the desktop has a status-notifier area, the window can close into a tray
+icon instead of exiting. The menu has **Open Netgap**, **Scan now** and
+**Quit**; clicking the icon brings the window back, and the tooltip carries
+the last scan's result. The first time the window hides it says so in a
+desktop notification, because a window that vanishes with no taskbar entry
+otherwise reads as a crash.
+
+From the tray, **Scan now** runs the same scan as the button on the scan
+screen and saves it to the same history. Quit is the way out: with an icon,
+the close button only hides the window.
+
+The icon is a StatusNotifierItem served over D-Bus, so the build needs no GTK
+development headers. On a session with no status-notifier host — a bare
+Wayland session, a machine with no desktop — starting the icon fails and the
+window keeps its ordinary close behaviour rather than disappearing somewhere
+invisible. Native tray icons for Windows and macOS are not wired up yet.
 
 ## Alerts
 
@@ -491,7 +512,8 @@ Known gaps:
 - Rogue AP / evil-twin detection (needs monitor mode and a different permission model)
 - Passive WiFi scanning
 - The config file feeds `netgap scan`; `discover` and `watch` still read flags
-- Desktop packaging (winget, Homebrew, `.deb`/`.rpm`, Nix), signed releases, and a tray mode
+- Desktop packaging (winget, Homebrew, `.deb`/`.rpm`, Nix), signed releases, and native
+  tray icons on Windows and macOS
 - Mobile app bridges (uniffi-rs)
 - Web UI dashboard (the desktop window is `netgap-gui`; a browser interface is still open)
 

@@ -856,7 +856,8 @@ dashboard, and no server is started.
 Tiers 1 and 2 are in: `doctor`, port-change alerts, the per-device timeline,
 `diff` and inventory export/import; UPnP, the credential-less configuration
 checks, IPv6 port scanning and gateway checks. In tier 3, the config file and
-scan profiles are in; the tray, packaging and signed releases are not.
+scan profiles are in, and so is the tray icon on Linux; scheduled monitoring
+from the window, packaging and signed releases are not.
 
 What is left in tier 3 does not change what a scan finds — it decides whether
 someone can install the tool, configure it once, and believe the download is
@@ -887,26 +888,38 @@ flags, which is deliberate for now — extending the same precedence to them is
 the obvious next step, not something that should ride in under a packaging
 item.
 
-### 2. Tray / menu-bar mode
+### 2. Tray / menu-bar mode — Linux icon done, monitoring not yet
 
-The window application is a normal window: closing it ends the monitoring.
-The natural resting state for a LAN scanner is a tray icon that scans on a
-schedule and raises a notification when a new device appears — the `watch`
-loop and the alert rules already exist, so this is mostly front end.
+The window can now close into a tray icon. `netgap-gui --tray` starts
+hidden; the icon's menu offers Open, Scan now and Quit; the tooltip carries
+the last scan's result; and the first hide sends a desktop notification so a
+window with no taskbar entry does not read as a crash. Closing the window
+hides it, and only the menu's Quit exits.
 
-Needs:
+What that took:
 
-- **A tray icon**: `tray-icon` on Windows, GTK/AppIndicator on Linux. The Linux
-  side is the awkward one — it is a desktop-environment feature, and on a
-  headless machine there is nothing to attach it to, so the fallback has to be
-  "no tray, keep running" rather than a failure.
-- **A background scan loop in the GUI** that owns `watch`'s state rather than a
-  second implementation of it.
-- **A decision on notifications**: the existing webhooks, a desktop
-  notification through `notify-rust` (also declared, also unused), or both
-  behind one setting.
-- **Close-to-tray instead of exit**, which needs an explicit quit item or
-  people will think the app did not close.
+- **No GTK.** The obvious crate, `tray-icon`, links GTK at build time. The
+  icon and its menu are instead a StatusNotifierItem and a dbusmenu object
+  served with zbus, which eframe already pulls in for accessibility. A machine
+  with no status-notifier host gets an error from startup and keeps the
+  ordinary close button.
+- **Two frames for one close.** `ViewportCommand::Close` takes effect at the
+  end of a frame and produces a close request the next one; a hidden window
+  asks for no frames by itself. Tray clicks therefore end with
+  `request_repaint`, or Quit would be decided and never happen (found by
+  driving the real icon over the session bus).
+
+Still to do:
+
+- **A background scan loop in the GUI.** The tooltip and notifications know
+  how to report a scan; nothing schedules one yet. It has to own `watch`'s
+  state — previous result, change detection, quiet hours — rather than grow a
+  second implementation of the comparisons in `netgap-trends` and
+  `netgap-webhooks`.
+- **Native tray icons on Windows and macOS.** Both need a crate and a desktop
+  to verify against; neither is in CI, so neither is claimed.
+- **A decision on webhooks from the GUI.** Desktop notifications work; the
+  alert URL configured with `netgap alert` is not consulted by the window yet.
 
 ### 3. Packaging
 
