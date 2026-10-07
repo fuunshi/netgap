@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, RichText, Stroke, Vec2};
@@ -10,6 +11,7 @@ use netgap_engine::discovery::{self, DiscoveryMethod};
 use netgap_interfaces::InterfaceInfo;
 use netgap_storage::{ScanMetadata, ScanStore};
 
+use crate::monitor;
 use crate::theme::{self, Palette, Theme};
 use crate::tray;
 use crate::views;
@@ -169,8 +171,6 @@ impl Toast {
 pub enum TrayMode {
     /// Show an icon if the desktop has somewhere to put one.
     Auto,
-    /// Show an icon and start hidden, so the app is already resting in it.
-    Hidden,
     /// No icon: closing the window quits, as it always did.
     Off,
 }
@@ -217,17 +217,29 @@ pub struct NetgapApp {
 
     pub toast: Option<Toast>,
 
-    /// The tray icon, when the desktop accepted one.
-    tray: Option<tray::Tray>,
+    /// The tray icon, when the desktop accepted one. Shared with the monitor
+    /// thread, which updates the tooltip and sends notifications while the
+    /// window is not drawing.
+    tray: Option<Arc<tray::Tray>>,
     tray_events: Option<Receiver<tray::Event>>,
-    /// The window is hidden: a click on the icon, or Quit, brings it back or
-    /// ends it, and closing the window must not quit any more.
-    tray_hidden: bool,
-    /// Set when Quit came from the tray, so the close request that follows is
-    /// allowed through.
-    quitting: bool,
-    /// `--tray`: hide on the first frame, once the window exists to hide.
-    start_hidden: bool,
+
+    /// The schedule, and the scans it runs on its own thread.
+    pub monitor: monitor::Runner,
+    /// What the last scheduled scan found different, for the scan screen.
+    pub last_briefing: Option<monitor::Briefing>,
+    /// The scan-screen choices the monitor was last told about, so the plan is
+    /// rebuilt only when one of them changes.
+    monitor_choices: Option<MonitorChoices>,
+}
+
+/// The inputs a scheduled scan is built from, compared to decide when to hand
+/// the monitor thread a new plan.
+#[derive(Clone, PartialEq, Eq)]
+struct MonitorChoices {
+    interface: Option<usize>,
+    target: String,
+    method: MethodChoice,
+    full_scan: bool,
 }
 
 impl NetgapApp {
@@ -236,6 +248,7 @@ impl NetgapApp {
         initial_tab: Tab,
         theme: Theme,
         tray_mode: TrayMode,
+        monitor_minutes: Option<u64>,
     ) -> Self {
         theme::apply(&cc.egui_ctx, theme);
 
@@ -258,11 +271,11 @@ impl NetgapApp {
             Err(error) => (None, Some(format!("Scan history is unavailable: {error}"))),
         };
 
-        // The tray wakes the event loop after every click, since a hidden
-        // window has nothing else asking it to repaint.
+        // A tray click wakes the event loop, so a click is still seen while
+        // the window is sitting quietly.
         let (tray, tray_events, tray_error) = match tray_mode {
             TrayMode::Off => (None, None, None),
-            TrayMode::Auto | TrayMode::Hidden => {
+            TrayMode::Auto => {
                 let context = cc.egui_ctx.clone();
                 match tray::start(move || context.request_repaint()) {
                     Ok((tray, events)) => (Some(tray), Some(events), None),
@@ -271,7 +284,11 @@ impl NetgapApp {
             }
         };
 
-        let has_tray = tray.is_some();
+        let tray = tray.map(Arc::new);
+        let monitor = monitor::Runner::new(cc.egui_ctx.clone(), tray.clone());
+        if let Some(minutes) = monitor_minutes {
+            monitor.start(minutes, Instant::now());
+        }
         let mut app = Self {
             tab: initial_tab,
             theme,
@@ -305,26 +322,18 @@ impl NetgapApp {
             toast: None,
             tray,
             tray_events,
-            tray_hidden: false,
-            quitting: false,
-            // Hiding on the first frame is deliberate: the window is created
-            // mapped, so it has to exist before it can go away.
-            start_hidden: tray_mode == TrayMode::Hidden && has_tray,
+            monitor,
+            last_briefing: None,
+            monitor_choices: None,
         };
 
         app.reload_history();
         app.load_latest();
 
-        // Asking to start hidden and getting no tray would leave the app with
-        // no window and no way to reach it. Say so instead of hiding.
+        // The icon is on by default, so a desktop without a place for it is
+        // not an error the user asked for: say it where scan messages go.
         if let Some(error) = tray_error {
-            if tray_mode == TrayMode::Hidden {
-                app.toast = Some(Toast::new(format!(
-                    "Could not start in the tray: {error}. The window stays open."
-                )));
-            } else {
-                app.scan_log.push(format!("Tray unavailable: {error}"));
-            }
+            app.scan_log.push(format!("Tray unavailable: {error}"));
         }
 
         app
@@ -508,10 +517,6 @@ impl NetgapApp {
         timeline
     }
 
-    pub fn current_devices(&self) -> usize {
-        self.current().map_or(0, |scan| scan.result.devices.len())
-    }
-
     /// Indices into `interfaces` that the scan screen should list.
     pub fn visible_interfaces(&self) -> Vec<usize> {
         self.interfaces
@@ -572,39 +577,33 @@ impl NetgapApp {
     }
 
     pub fn start_scan(&mut self) {
+        self.begin_scan();
+    }
+
+    /// Turn scheduled scans on or off. Turning it on starts the countdown now
+    /// rather than scanning at once: the person is in the window, and the
+    /// Start button is right there.
+    pub fn set_monitoring(&mut self, enabled: bool) {
+        self.sync_monitor_choices();
+        self.monitor.set_enabled(enabled, Instant::now());
+    }
+
+    pub fn set_monitor_interval(&mut self, minutes: u64) {
+        self.monitor.set_interval(minutes, Instant::now());
+    }
+
+    /// The scan the Start button runs.
+    fn begin_scan(&mut self) {
         if self.scanning {
             return;
         }
 
-        let Some(interface) = self.selected_interface().cloned() else {
-            self.scan_error = Some("Choose a network interface first.".to_string());
-            return;
-        };
-
-        let target = self.target.trim().to_string();
-        if target.is_empty() {
-            self.scan_error = Some("Enter the network to scan, for example 192.168.1.0/24.".into());
-            return;
-        }
-
-        let plan = match discovery::build_plan(
-            interface,
-            target,
-            self.method.to_requested(),
-            discovery::DEFAULT_MAX_HOSTS,
-            false,
-            true,
-        ) {
-            Ok(plan) => plan,
+        let request = match self.current_request() {
+            Ok(request) => request,
             Err(error) => {
-                self.scan_error = Some(format!("{error:#}"));
+                self.scan_error = Some(error);
                 return;
             }
-        };
-
-        let request = netgap_engine::scan::ScanRequest {
-            plan,
-            ports: self.full_scan,
         };
 
         match worker::start(request) {
@@ -623,10 +622,23 @@ impl NetgapApp {
         }
     }
 
+    /// The plan the scan screen's choices describe, or the reason there is no
+    /// usable one.
+    fn current_request(&self) -> Result<netgap_engine::scan::ScanRequest, String> {
+        let interface = self
+            .selected_interface()
+            .cloned()
+            .ok_or_else(|| "Choose a network interface first.".to_string())?;
+
+        let target = self.target.trim().to_string();
+        if target.is_empty() {
+            return Err("Enter the network to scan, for example 192.168.1.0/24.".into());
+        }
+
+        request_for(interface, target, self.method, self.full_scan)
+    }
+
     /// Act on clicks on the icon and its menu.
-    ///
-    /// The tray calls `request_repaint` after each click, so this runs promptly
-    /// even while the window is hidden and nothing else asks for a frame.
     fn poll_tray(&mut self, ctx: &egui::Context) {
         let events: Vec<tray::Event> = self
             .tray_events
@@ -637,61 +649,100 @@ impl NetgapApp {
         let handled = !events.is_empty();
         for event in events {
             match event {
-                tray::Event::Show => self.show_window(ctx),
-                tray::Event::ScanNow => {
-                    self.show_window(ctx);
-                    self.start_scan();
-                }
-                tray::Event::Quit => {
-                    self.quitting = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
+                // The window is never hidden — see the note on `Runner` — so
+                // the icon can only ask the compositor to raise it.
+                tray::Event::Show => ctx.send_viewport_cmd(egui::ViewportCommand::Focus),
+                tray::Event::ScanNow => self.start_scan(),
+                tray::Event::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             }
         }
 
         if handled {
             // A ViewportCommand takes effect at the end of the frame, and the
-            // Close it produces is only seen by the next one. A hidden window
-            // asks for no frames of its own, so the loop would otherwise wait
-            // forever on a close that is already decided.
+            // Close it produces is only seen by the next one.
             ctx.request_repaint();
         }
     }
 
-    /// Ctrl+W and the window's close button hide to the tray rather than exit,
-    /// once there is a tray to hide into. The menu's Quit is the way out.
-    fn handle_close(&mut self, ctx: &egui::Context) {
-        if self.quitting || self.tray.is_none() {
-            return;
+    /// Whether the desktop accepted an icon, so the scan screen can be honest
+    /// about how a scheduled scan will be announced.
+    pub fn has_tray(&self) -> bool {
+        self.tray.is_some()
+    }
+
+    /// Keep the monitor thread pointed at the settings on the scan screen, and
+    /// pick up what it has finished.
+    ///
+    /// The plan is rebuilt only when an input changes: this runs on every
+    /// frame, and parsing the target each time would be work for no reason.
+    fn sync_monitor(&mut self, ctx: &egui::Context) {
+        self.sync_monitor_choices();
+        self.monitor
+            .set_attention(ctx.input(|input| input.viewport().focused).unwrap_or(false));
+
+        if let Some(error) = self.monitor.take_error() {
+            self.toast = Some(Toast::new(format!("Scheduled scan failed: {error}")));
         }
-        if !ctx.input(|input| input.viewport().close_requested()) {
+
+        let Some(finished) = self.monitor.take_finished() else {
+            return;
+        };
+        self.adopt_scheduled_scan(finished);
+    }
+
+    fn sync_monitor_choices(&mut self) {
+        let choices = MonitorChoices {
+            interface: self.selected_interface,
+            target: self.target.clone(),
+            method: self.method,
+            full_scan: self.full_scan,
+        };
+        if self.monitor_choices.as_ref() == Some(&choices) {
             return;
         }
 
-        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        self.monitor.set_request(self.current_request().ok());
+        self.monitor_choices = Some(choices);
+    }
 
-        if !self.tray_hidden {
-            self.tray_hidden = true;
-            if let Some(tray) = &self.tray {
-                // Without a word here, a hidden window with no taskbar entry
-                // reads as a crash.
-                tray.notify(
-                    "Netgap is still running",
-                    "Use the tray icon to scan again or to quit.",
-                );
-            }
+    /// Take in a scan the monitor thread ran.
+    ///
+    /// It updates the newest result the dashboard describes and the tooltip,
+    /// but it does not move the window: someone reading a device's history
+    /// should not have it replaced because a timer fired.
+    fn adopt_scheduled_scan(&mut self, finished: monitor::Finished) {
+        let devices = finished.result.devices.len();
+        self.last_briefing = finished.briefing.clone();
+
+        // The monitor saved the scan before handing it over, so the list on
+        // disk already includes it.
+        self.reload_history();
+        self.latest = Some(LoadedScan {
+            id: finished.scan_id,
+            result: finished.result,
+        });
+        self.refresh_changes();
+
+        // A quiet scheduled scan is not toasted: the monitor card says when
+        // the next one is, and a toast every interval for nothing is noise.
+        let message = match finished.warning {
+            Some(warning) => Some(warning),
+            None => match &finished.briefing {
+                Some(briefing) if briefing.worth_saying() => Some(format!(
+                    "Scheduled scan: {} · {}.",
+                    crate::format::devices(devices),
+                    briefing.headline()
+                )),
+                _ => None,
+            },
+        };
+        if let Some(message) = message {
+            self.toast = Some(Toast::new(message));
         }
     }
 
-    fn show_window(&mut self, ctx: &egui::Context) {
-        self.tray_hidden = false;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-    }
-
-    /// Put the result where the user meets it without opening the window.
+    /// The tooltip a scan someone asked for leaves behind. The monitor thread
+    /// handles its own, since it may finish while the window is not drawing.
     fn update_tray_after_scan(&mut self, result: &ScanResult) {
         let Some(tray) = &self.tray else {
             return;
@@ -703,22 +754,12 @@ impl NetgapApp {
             .flat_map(|device| &device.findings)
             .filter(|finding| finding.severity == Severity::Critical)
             .count();
-        let body = match critical {
-            0 => format!(
-                "{} · no critical findings",
-                crate::format::devices(result.devices.len())
-            ),
-            count => format!(
-                "{} · {} critical",
-                crate::format::devices(result.devices.len()),
-                count
-            ),
+        let headline = match critical {
+            0 => "no critical findings".to_string(),
+            count => format!("{count} critical"),
         };
-
-        tray.set_tooltip(&body);
-        if self.tray_hidden {
-            tray.notify("Scan finished", &body);
-        }
+        let devices = crate::format::devices(result.devices.len());
+        tray.set_tooltip(&format!("{devices} · {headline}"));
     }
 
     fn poll_events(&mut self) {
@@ -746,30 +787,38 @@ impl NetgapApp {
                     self.scan_started = None;
                     self.events = None;
                     self.scan_stage = "Finished".to_string();
+
                     self.selected_device = None;
                     self.timeline = None;
                     self.device_search.clear();
                     self.severity_filter = None;
 
+                    let devices = result.devices.len();
+
+                    // The worker saved the scan before sending this, so the
+                    // list on disk already includes it.
+                    self.reload_history();
                     self.update_tray_after_scan(&result);
 
                     let loaded = LoadedScan {
                         id: scan_id,
                         result,
                     };
-                    self.latest = Some(loaded.clone());
-                    self.selected_scan = Some(loaded);
-                    self.reload_history();
+                    self.selected_scan = Some(loaded.clone());
+                    self.latest = Some(loaded);
                     self.refresh_changes();
                     self.tab = Tab::Devices;
 
-                    self.toast = Some(Toast::new(match warning {
-                        Some(warning) => warning,
-                        None => format!(
+                    let message = match warning {
+                        Some(warning) => Some(warning),
+                        None => Some(format!(
                             "Scan finished: {}.",
-                            crate::format::devices(self.current_devices())
-                        ),
-                    }));
+                            crate::format::devices(devices)
+                        )),
+                    };
+                    if let Some(message) = message {
+                        self.toast = Some(Toast::new(message));
+                    }
                 }
                 WorkerEvent::Failed(message) => {
                     self.scanning = false;
@@ -1020,18 +1069,15 @@ impl eframe::App for NetgapApp {
 
         self.shortcuts(ctx);
         self.poll_tray(ctx);
+        self.sync_monitor(ctx);
         self.poll_events();
-        self.handle_close(ctx);
         self.ensure_selection();
-
-        if self.start_hidden {
-            self.start_hidden = false;
-            self.tray_hidden = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-        }
 
         if self.scanning || self.toast.as_ref().is_some_and(Toast::visible) {
             ctx.request_repaint_after(Duration::from_millis(120));
+        } else if self.tab == Tab::Scan && self.monitor.enabled() {
+            // The countdown is the one thing on screen that changes by itself.
+            ctx.request_repaint_after(Duration::from_secs(1));
         }
 
         self.sidebar(ctx);
@@ -1067,6 +1113,31 @@ impl eframe::App for NetgapApp {
 
         self.toast(ctx);
     }
+}
+
+/// Build the scan the scan screen's choices describe. Shared by the Start
+/// button and the monitor thread, so a scheduled scan is exactly the scan the
+/// button would have run.
+fn request_for(
+    interface: InterfaceInfo,
+    target: String,
+    method: MethodChoice,
+    full_scan: bool,
+) -> Result<netgap_engine::scan::ScanRequest, String> {
+    let plan = discovery::build_plan(
+        interface,
+        target,
+        method.to_requested(),
+        discovery::DEFAULT_MAX_HOSTS,
+        false,
+        true,
+    )
+    .map_err(|error| format!("{error:#}"))?;
+
+    Ok(netgap_engine::scan::ScanRequest {
+        plan,
+        ports: full_scan,
+    })
 }
 
 fn default_interface_index(interfaces: &[InterfaceInfo]) -> Option<usize> {

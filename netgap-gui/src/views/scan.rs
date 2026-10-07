@@ -1,10 +1,13 @@
 //! Choosing what to scan, and watching it happen.
 
+use std::time::Instant;
+
 use eframe::egui::{self, Align2, FontId, Pos2, RichText, Sense, Stroke, Ui, Vec2};
 use netgap_interfaces::InterfaceInfo;
 
 use crate::app::{MethodChoice, NetgapApp, Tab};
 use crate::format;
+use crate::monitor;
 use crate::theme::{self, Palette};
 use crate::widgets;
 
@@ -43,11 +46,108 @@ pub fn show(app: &mut NetgapApp, ui: &mut Ui) {
     });
 
     ui.add_space(14.0);
+    monitor_card(app, ui, &p);
+
+    ui.add_space(14.0);
 
     if app.scanning {
         log_card(app, ui, &p);
     } else if app.latest.is_some() {
         last_result_card(app, ui, &p);
+    }
+}
+
+fn monitor_card(app: &mut NetgapApp, ui: &mut Ui, p: &Palette) {
+    widgets::card(ui, p, |ui| {
+        widgets::section_heading(
+            ui,
+            p,
+            "Background monitoring",
+            Some("Scan again on a timer, and report only what changed since the last scan."),
+        );
+        ui.add_space(10.0);
+
+        ui.horizontal(|ui| {
+            let mut enabled = app.monitor.enabled();
+            if ui.checkbox(&mut enabled, "Scan on a schedule").changed() {
+                app.set_monitoring(enabled);
+            }
+
+            ui.add_space(16.0);
+
+            let interval = app.monitor.interval_minutes();
+            egui::ComboBox::from_id_salt("monitor-interval")
+                .width(160.0)
+                .selected_text(interval_label(interval))
+                .show_ui(ui, |ui| {
+                    for minutes in monitor::INTERVALS {
+                        if ui
+                            .selectable_label(interval == minutes, interval_label(minutes))
+                            .clicked()
+                        {
+                            app.set_monitor_interval(minutes);
+                        }
+                    }
+                });
+        });
+
+        ui.add_space(6.0);
+
+        if app.monitor.running() {
+            widgets::muted(
+                ui,
+                p,
+                "A scheduled scan is running. It is saved to the history like any other scan.",
+            );
+        } else {
+            match app.monitor.remaining(Instant::now()) {
+                Some(remaining) => widgets::muted(
+                    ui,
+                    p,
+                    format!(
+                        "Next scan in {}. The result is saved to the history like any other scan.",
+                        countdown(remaining.as_secs())
+                    ),
+                ),
+                None => widgets::muted(ui, p, "Off. The clock starts when this is ticked."),
+            }
+        }
+
+        if let Some(briefing) = &app.last_briefing {
+            ui.add_space(3.0);
+            ui.label(
+                RichText::new(format!("Last scheduled scan: {}", briefing.headline()))
+                    .size(11.5)
+                    .color(p.text),
+            );
+        }
+
+        if !app.has_tray() {
+            ui.add_space(3.0);
+            widgets::muted(
+                ui,
+                p,
+                "There is no tray icon on this desktop, so changes are shown in the window \
+                 rather than as notifications.",
+            );
+        }
+    });
+}
+
+fn interval_label(minutes: u64) -> String {
+    match minutes {
+        60 => "Every hour".to_string(),
+        180 => "Every 3 hours".to_string(),
+        minutes => format!("Every {minutes} minutes"),
+    }
+}
+
+fn countdown(seconds: u64) -> String {
+    let (hours, minutes, seconds) = (seconds / 3600, seconds % 3600 / 60, seconds % 60);
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes:02}:{seconds:02}")
     }
 }
 

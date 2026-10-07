@@ -128,7 +128,10 @@ impl ItemIface {
         true
     }
 
-    #[zbus(property)]
+    // The spec spells this one "ToolTip", not the "Tooltip" zbus would derive
+    // from the method name. A host reads the spec spelling, so without this
+    // the tooltip exists on the bus and is never shown.
+    #[zbus(property, name = "ToolTip")]
     fn tooltip(&self) -> Tooltip {
         let body = self
             .state
@@ -617,7 +620,38 @@ mod tests {
             other => panic!("Title came back as {other:?}"),
         }
 
+        // StatusNotifierItem spells this property "ToolTip"; a host reads the
+        // spec spelling, so the derived "Tooltip" would leave the tooltip
+        // exported and never shown.
         tray.set_tooltip("12 devices · 2 critical");
+        let reply = connection
+            .call_method(
+                Some(WELL_KNOWN_NAME),
+                ITEM_PATH,
+                Some("org.freedesktop.DBus.Properties"),
+                "Get",
+                &(ITEM_INTERFACE, "ToolTip"),
+            )
+            .expect("Get ToolTip");
+        // Properties.Get returns the property inside a variant, so read it as
+        // one and only then as the tuple.
+        let value: OwnedValue = reply.body().deserialize().expect("a variant");
+        let tooltip: Tooltip = value.try_into().expect("a tooltip");
+        assert_eq!(tooltip.3, "12 devices · 2 critical");
+
+        // Notifications go to the session's notification daemon, and a failed
+        // call is deliberately ignored, so only a daemon that answers proves
+        // the words and the signature are right.
+        let notifier = session.serve_notifier();
+        tray.notify("Netgap: something changed", "12 devices · 2 critical");
+        assert_eq!(
+            notifier.wait_for(),
+            (
+                "Netgap: something changed".to_string(),
+                "12 devices · 2 critical".to_string()
+            )
+        );
+
         drop(tray);
     }
 
@@ -664,6 +698,82 @@ mod tests {
                 .expect("a watcher connection");
 
             Watcher { connection }
+        }
+
+        /// Stand in for the notification daemon the tray addresses. The test
+        /// bus has none, and `notify` ignores a call that fails.
+        fn serve_notifier(&self) -> Notifier {
+            let received = Arc::new(Mutex::new(None));
+            let connection = connection::Builder::address(self.address.as_str())
+                .expect("a bus address")
+                .name("org.freedesktop.Notifications")
+                .expect("the daemon name")
+                .serve_at(
+                    NOTIFICATIONS_PATH,
+                    FakeNotifier {
+                        received: Arc::clone(&received),
+                    },
+                )
+                .expect("the notifications object")
+                .build()
+                .expect("a notifier connection");
+
+            Notifier {
+                _connection: connection,
+                received,
+            }
+        }
+    }
+
+    /// The tray addresses the daemon by its well-known name and path, so the
+    /// stand-in is exported under both, spelled as the spec spells them.
+    const NOTIFICATIONS_PATH: &str = "/org/freedesktop/Notifications";
+
+    struct Notifier {
+        _connection: Connection,
+        received: Arc<Mutex<Option<(String, String)>>>,
+    }
+
+    impl Notifier {
+        /// Poll rather than block: the call returns once the bus has the
+        /// message, which can be a moment before the daemon handles it.
+        fn wait_for(&self) -> (String, String) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                if let Ok(mut seen) = self.received.lock() {
+                    if let Some(call) = seen.take() {
+                        return call;
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            panic!("the notification daemon was never called");
+        }
+    }
+
+    struct FakeNotifier {
+        received: Arc<Mutex<Option<(String, String)>>>,
+    }
+
+    #[zbus::interface(name = "org.freedesktop.Notifications")]
+    impl FakeNotifier {
+        #[allow(clippy::too_many_arguments)]
+        fn notify(
+            &self,
+            _app_name: String,
+            _replaces_id: u32,
+            _app_icon: String,
+            summary: String,
+            body: String,
+            _actions: Vec<String>,
+            _hints: HashMap<String, OwnedValue>,
+            _expire_timeout: i32,
+        ) -> u32 {
+            if let Ok(mut seen) = self.received.lock() {
+                *seen = Some((summary, body));
+            }
+            // Any id will do; the tray does not read the reply.
+            1
         }
     }
 

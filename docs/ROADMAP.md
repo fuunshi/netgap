@@ -856,8 +856,8 @@ dashboard, and no server is started.
 Tiers 1 and 2 are in: `doctor`, port-change alerts, the per-device timeline,
 `diff` and inventory export/import; UPnP, the credential-less configuration
 checks, IPv6 port scanning and gateway checks. In tier 3, the config file and
-scan profiles are in, and so is the tray icon on Linux; scheduled monitoring
-from the window, packaging and signed releases are not.
+scan profiles are in, and so are the tray icon on Linux and scheduled scanning
+from the window; packaging and signed releases are not.
 
 What is left in tier 3 does not change what a scan finds — it decides whether
 someone can install the tool, configure it once, and believe the download is
@@ -888,38 +888,78 @@ flags, which is deliberate for now — extending the same precedence to them is
 the obvious next step, not something that should ride in under a packaging
 item.
 
-### 2. Tray / menu-bar mode — Linux icon done, monitoring not yet
+### 2. Tray / menu-bar mode — Linux icon and scheduled scans done
 
-The window can now close into a tray icon. `netgap-gui --tray` starts
-hidden; the icon's menu offers Open, Scan now and Quit; the tooltip carries
-the last scan's result; and the first hide sends a desktop notification so a
-window with no taskbar entry does not read as a crash. Closing the window
-hides it, and only the menu's Quit exits.
+Where the desktop has a status-notifier area the window puts an icon there. Its
+menu offers Open, Scan now and Quit; the tooltip carries the last scan's
+result. The icon is a StatusNotifierItem and a dbusmenu object served with
+zbus, which eframe already pulls in, so the build needs no GTK headers.
+
+There is no close-to-tray. That is what the platform allows, not a preference:
+on Wayland the compositor stops sending frame callbacks to a window it is not
+drawing — hidden, minimised, or covered — and winit then discards the redraw
+requests waiting for one, so egui's update loop stalls. A window that hid
+itself could not be brought back, even by the process that hid it; a tray click
+was queued and never answered. Closing the window quits, and the icon is a
+companion to the window rather than a place to rest it.
+
+The schedule is the checkbox on the scan screen or `--monitor=15`: the window
+scans again on that interval with the settings already chosen, saves each run
+to the history, and reports only what changed. The clock and the scan live on a
+thread of their own (`monitor::Runner`), not in the window's frame loop. A
+window that is not drawn gets no frames at all, so a schedule kept inside one
+would stop the moment the window was covered; on its own thread it keeps
+scanning and saving. Verified live with the window covered: two consecutive
+interval scans landed in the database.
+
+The comparison is `netgap-trends`' `ChangeDetection` — the one `netgap watch`
+prints and the command line's alerts are built from — against the last scan
+recorded on disk,
+not just the last one this window ran. Reported: a new critical finding, a
+port that opened or closed, and a health drop of five points or more. A new
+device is recorded but not reported; guests and randomising addresses make the
+alert useless. A scheduled scan updates the dashboard but leaves the Devices
+screen on whatever it was showing.
 
 What that took:
 
 - **No GTK.** The obvious crate, `tray-icon`, links GTK at build time. The
   icon and its menu are instead a StatusNotifierItem and a dbusmenu object
-  served with zbus, which eframe already pulls in for accessibility. A machine
-  with no status-notifier host gets an error from startup and keeps the
-  ordinary close button.
-- **Two frames for one close.** `ViewportCommand::Close` takes effect at the
-  end of a frame and produces a close request the next one; a hidden window
-  asks for no frames by itself. Tray clicks therefore end with
-  `request_repaint`, or Quit would be decided and never happen (found by
-  driving the real icon over the session bus).
+  served with zbus. A machine with no status-notifier host gets an error from
+  startup and keeps the ordinary close button.
+- **The spelling of ToolTip.** StatusNotifierItem calls the property
+  "ToolTip", and zbus derives "Tooltip" from the method name unless told
+  otherwise. Hosts read the spec spelling, so the tooltip was exported and
+  never shown. The private-bus test now asserts the spec spelling, and a fake
+  notification daemon on the same bus proves the `Notify` call arrives with
+  the words — `notify` deliberately ignores a failed call, so silence there
+  would otherwise be indistinguishable from success.
+- **The thread, not a repaint.** The first design made the due time a
+  `request_repaint_after` and ran the scan in `update()`. Both fail for the
+  same reason as close-to-tray: a covered or minimised window receives no
+  frames, so the due time produced at most one frame and the schedule
+  silenced. Moving the clock and scan to `monitor::Runner` removed the
+  window from the correctness path; it only adopts results when it draws.
 
 Still to do:
 
-- **A background scan loop in the GUI.** The tooltip and notifications know
-  how to report a scan; nothing schedules one yet. It has to own `watch`'s
-  state — previous result, change detection, quiet hours — rather than grow a
-  second implementation of the comparisons in `netgap-trends` and
-  `netgap-webhooks`.
+- **A true tray-only resting mode.** Closing the window still quits, because
+  the process needs a frame loop to be revived. Resting in the tray needs the
+  scanning to run independently of the window — a background service, or a
+  separate window process that a click starts — which is a larger change than
+  an icon.
 - **Native tray icons on Windows and macOS.** Both need a crate and a desktop
   to verify against; neither is in CI, so neither is claimed.
-- **A decision on webhooks from the GUI.** Desktop notifications work; the
-  alert URL configured with `netgap alert` is not consulted by the window yet.
+- **X11.** The frame-callback problem was found on GNOME/Wayland and the
+  behaviour is written for it. X11 may allow close-to-tray; nobody has tested
+  it here, so the app does not offer it there either.
+- **Remembering the schedule.** It lives in memory: restarting the window
+  starts it off. A small `[gui]` section in `config.toml` is the obvious home,
+  and the config file feeding the window is still a separate decision.
+- **Webhooks from the GUI.** Desktop notifications work; the alert URL
+  configured with `netgap alert` is not consulted by the window. The CLI sends
+  them, so nothing is lost today — but a window that rests in the tray is
+  exactly what a webhook is for.
 
 ### 3. Packaging
 

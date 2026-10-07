@@ -14,6 +14,7 @@
 
 mod app;
 mod format;
+mod monitor;
 mod theme;
 mod tray;
 mod views;
@@ -23,34 +24,49 @@ mod worker;
 use app::{NetgapApp, Tab, TrayMode};
 use theme::Theme;
 
-const USAGE: &str =
-    "usage: netgap-gui [dashboard|scan|devices|history] [--light|--dark] [--tray|--no-tray]";
+const USAGE: &str = "usage: netgap-gui [dashboard|scan|devices|history] [--light|--dark] \
+[--tray|--no-tray] [--monitor=MINUTES]";
 
 fn main() -> eframe::Result {
     let mut initial_tab = Tab::Dashboard;
     let mut theme = Theme::Dark;
     let mut tray = TrayMode::Auto;
+    let mut monitor = None;
 
     for argument in std::env::args().skip(1) {
         match argument.as_str() {
             "--light" => theme = Theme::Light,
             "--dark" => theme = Theme::Dark,
-            // Start in the tray: the window is there for when it is wanted,
-            // but a scanner that monitors the network belongs in the
-            // background.
-            "--tray" => tray = TrayMode::Hidden,
+            // The icon is already on by default; the flag stays for scripts
+            // that spell it out. It does not hide the window: on Wayland a
+            // hidden window can never be brought back, so the window stays
+            // where it is and scheduled scans run on their own thread.
+            "--tray" => tray = TrayMode::Auto,
             "--no-tray" => tray = TrayMode::Off,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(());
             }
-            value => match Tab::parse(value) {
-                Some(tab) => initial_tab = tab,
-                None => {
-                    eprintln!("netgap-gui: unknown argument {value:?}\n{USAGE}");
-                    std::process::exit(2);
+            value => {
+                if let Some(minutes) = value.strip_prefix("--monitor=") {
+                    match minutes.parse::<u64>() {
+                        Ok(minutes) if minutes > 0 => monitor = Some(minutes),
+                        _ => {
+                            eprintln!("netgap-gui: --monitor takes whole minutes\n{USAGE}");
+                            std::process::exit(2);
+                        }
+                    }
+                    continue;
                 }
-            },
+
+                match Tab::parse(value) {
+                    Some(tab) => initial_tab = tab,
+                    None => {
+                        eprintln!("netgap-gui: unknown argument {value:?}\n{USAGE}");
+                        std::process::exit(2);
+                    }
+                }
+            }
         }
     }
 
@@ -65,6 +81,14 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Netgap",
         options,
-        Box::new(move |cc| Ok(Box::new(NetgapApp::new(cc, initial_tab, theme, tray)))),
+        Box::new(move |cc| {
+            Ok(Box::new(NetgapApp::new(
+                cc,
+                initial_tab,
+                theme,
+                tray,
+                monitor,
+            )))
+        }),
     )
 }

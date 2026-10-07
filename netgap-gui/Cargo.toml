@@ -22,6 +22,10 @@ netgap-engine = { path = "../netgap-engine" }
 netgap-interfaces = { path = "../netgap-interfaces" }
 netgap-report = { path = "../netgap-report" }
 netgap-storage = { path = "../netgap-storage" }
+# Scheduled scans compare two results with the same change detection the
+# command line uses, so the window and `netgap watch` never disagree about
+# what changed.
+netgap-trends = { path = "../netgap-trends" }
 
 # The tray icon and its menu are StatusNotifierItem objects served over D-Bus.
 # zbus is already in the tree for accessibility, and unlike tray-icon it does

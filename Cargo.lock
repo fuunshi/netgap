@@ -2439,6 +2439,7 @@ dependencies = [
  "netgap-interfaces",
  "netgap-report",
  "netgap-storage",
+ "netgap-trends",
  "serde",
  "tokio",
  "zbus",
