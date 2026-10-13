@@ -32,12 +32,13 @@ A production-ready network security scanner written in Rust. Discover devices on
 ### Download
 
 Each release publishes two downloads per platform, because they are two ways
-to use the same scanner:
+to use the same scanner, and Debian packages of both for Linux:
 
 | Download | What it is | How to run it |
 | --- | --- | --- |
 | `netgap-<version>-linux-x86_64.tar.gz`<br>`netgap-<version>-windows-x86_64.zip` | The engine and command line: `netgap scan`, `netgap ui`, `netgap report`. One binary, nothing else to install. | `./netgap scan` |
 | `netgap-gui-<version>-linux-x86_64.tar.gz`<br>`netgap-gui-<version>-windows-x86_64.zip` | The window application. | Windows: unpack and double-click `netgap-gui.exe`. Linux: unpack and run `./install.sh` once, then open **Netgap** from your applications menu (or run `./netgap-gui` directly). |
+| `netgap_<version>_amd64.deb`<br>`netgap-gui_<version>_amd64.deb` | The same two programs as Debian/Ubuntu packages, for a system where the package manager should own the files. | `sudo apt install ./netgap-gui_<version>_amd64.deb`, then **Netgap** appears in the applications menu and `netgap` is on `PATH`. |
 
 Both read and write the same scan history (`~/.config/netgap/scans.db`), so a
 scan started in the window shows up in `netgap report`, and the other way
@@ -54,6 +55,15 @@ This produces two binaries, and they are separate programs on purpose:
 ```bash
 ./target/release/netgap       # the engine and command line (also `netgap ui`)
 ./target/release/netgap-gui   # the window application
+```
+
+The Debian packages the release carries are built from those binaries by a
+script, so they can be built here too:
+
+```bash
+packaging/deb/build.sh netgap 1.0.0 ./target/release/netgap ./dist
+packaging/deb/build.sh netgap-gui 1.0.0 ./target/release/netgap-gui ./dist
+sudo apt install ./dist/netgap-gui_1.0.0_amd64.deb
 ```
 
 ### Open the Window Application

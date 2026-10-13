@@ -965,17 +965,25 @@ Still to do:
 
 Releases publish four archives — CLI and window app, Linux x86_64 (musl) and
 Windows x86_64 — with `SHA256SUMS`, and the GUI tarball carries `install.sh`,
-a `.desktop` file and an icon. That covers "download and run". It does not
-cover "install", and it does not cover macOS at all.
+a `.desktop` file and an icon. That covers "download and run". Debian packages
+of both programs now cover "install it properly" on Debian and Ubuntu.
+
+- **Linux: `.deb` — done.** `packaging/deb/build.sh` turns either release
+  binary into a package: the command line is static and depends on nothing;
+  the window application installs `/usr/bin/netgap-gui`, the `.desktop` file
+  and the icon, and refreshes the caches from `postinst`/`postrm`. The release
+  workflow builds both from the same binaries the tarballs carry, and they
+  are listed in the release, the checksums and the notes. Verified locally by
+  building both packages and running the binaries out of the extracted
+  trees.
 
 Still to do, in rough order of payoff:
 
 - **Windows: a winget manifest** for `netgap-gui`, so `winget install` works
   and the app appears in a search. The archive name and installer behaviour are
   already stable.
-- **Linux: `.deb` and `.rpm`** for the CLI, and a package for the GUI that
-  installs the `.desktop` file and icon into the right places — `cargo-deb` and
-  `cargo-generate-rpm` read the existing metadata.
+- **Linux: `.rpm`.** The same layout as the `.deb`, written as a spec file
+  and built in the release workflow with `rpmbuild`.
 - **A Nix flake** and an **AUR PKGBUILD**; both are thin wrappers over
   `cargo build --release` and the same install layout.
 - **macOS: Homebrew, but only after an arm64 build exists.** Releases are

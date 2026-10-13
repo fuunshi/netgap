@@ -177,10 +177,27 @@ jobs:
           7z a "${{ matrix.archive }}" "./target/${{ matrix.target }}/release/netgap.exe" LICENSE-MIT LICENSE-APACHE
           echo "built ${{ matrix.archive }}"
 
+      # The Debian package is built from the same static binary the tarball
+      # carries, so it downloads the tools a Debian system already has.
+      - name: Package the .deb (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          packaging/deb/build.sh netgap "${{ needs.version.outputs.version }}" \
+            "target/${{ matrix.target }}/release/netgap" "$PWD"
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.archive }}
           path: ${{ matrix.archive }}
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux'
+        with:
+          name: netgap_${{ needs.version.outputs.version }}_amd64.deb
+          path: netgap_*.deb
           if-no-files-found: error
 
   # The window application cannot be static: it loads the desktop's graphics
@@ -249,10 +266,25 @@ jobs:
           echo "built $archive"
           tar -tzvf "$archive"
 
+      # The .deb installs the same binary, icon and menu entry into the system
+      # paths, for the machines where a package manager should own them.
+      - name: Package the .deb
+        shell: bash
+        run: |
+          set -euo pipefail
+          packaging/deb/build.sh netgap-gui "${{ needs.version.outputs.version }}" \
+            target/release/netgap-gui "$PWD"
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ needs.version.outputs.gui_linux }}
           path: ${{ needs.version.outputs.gui_linux }}
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: netgap-gui_${{ needs.version.outputs.version }}_amd64.deb
+          path: netgap-gui_*.deb
           if-no-files-found: error
 
   build-gui-windows:
@@ -328,7 +360,7 @@ jobs:
           ls -lh
           # For a tool people download and run, a checksum in the release is
           # the difference between verifying the download and hoping.
-          sha256sum ./*.tar.gz ./*.zip > SHA256SUMS
+          sha256sum ./*.tar.gz ./*.zip ./*.deb > SHA256SUMS
           cat SHA256SUMS
 
       - name: Create the release
@@ -362,6 +394,8 @@ jobs:
           The files in this release:
           - $CLI_LINUX (Linux) and $CLI_WINDOWS (Windows) — the command line
           - $GUI_LINUX (Linux) and $GUI_WINDOWS (Windows) — the window application
+          - netgap_*.deb and netgap-gui_*.deb (Debian, Ubuntu) — the same two,
+            installed to /usr/bin with the icon and menu entry
           "
 
           gh release create "$TAG" \
@@ -369,5 +403,5 @@ jobs:
             --title "$TAG" \
             --notes "$notes" \
             --generate-notes \
-            dist/*.tar.gz dist/*.zip dist/SHA256SUMS
+            dist/*.tar.gz dist/*.zip dist/*.deb dist/SHA256SUMS
           echo "Published $TAG"
