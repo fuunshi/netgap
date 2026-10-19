@@ -966,7 +966,8 @@ Still to do:
 Releases publish four archives — CLI and window app, Linux x86_64 (musl) and
 Windows x86_64 — with `SHA256SUMS`, and the GUI tarball carries `install.sh`,
 a `.desktop` file and an icon. That covers "download and run". Debian packages
-of both programs now cover "install it properly" on Debian and Ubuntu.
+and RPMs of both programs now cover "install it properly" on Debian, Ubuntu,
+Fedora and openSUSE.
 
 - **Linux: `.deb` — done.** `packaging/deb/build.sh` turns either release
   binary into a package: the command line is static and depends on nothing;
@@ -982,8 +983,13 @@ Still to do, in rough order of payoff:
 - **Windows: a winget manifest** for `netgap-gui`, so `winget install` works
   and the app appears in a search. The archive name and installer behaviour are
   already stable.
-- **Linux: `.rpm`.** The same layout as the `.deb`, written as a spec file
-  and built in the release workflow with `rpmbuild`.
+- **Linux: `.rpm` — done.** `packaging/rpm/build.sh` builds both programs from
+  the same binaries with two spec files that only install files; rpmbuild
+  reads the ELF headers and writes the glibc floor into `Requires` itself.
+  The window package carries the menu entry and icon and refreshes the caches
+  from its scriptlets. Verified by building both packages with rpm 6.0.1 and
+  reading their metadata, file lists and scriptlets; CI builds them with the
+  runner's rpm on every release.
 - **A Nix flake** and an **AUR PKGBUILD**; both are thin wrappers over
   `cargo build --release` and the same install layout.
 - **macOS: Homebrew, but only after an arm64 build exists.** Releases are

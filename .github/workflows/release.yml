@@ -187,6 +187,18 @@ jobs:
           packaging/deb/build.sh netgap "${{ needs.version.outputs.version }}" \
             "target/${{ matrix.target }}/release/netgap" "$PWD"
 
+      # The RPM carries the same binary. rpmbuild is not installed on the
+      # runner; it is the only extra tool this needs.
+      - name: Package the .rpm (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y rpm >/dev/null
+          packaging/rpm/build.sh netgap "${{ needs.version.outputs.version }}" \
+            "target/${{ matrix.target }}/release/netgap" "$PWD"
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.archive }}
@@ -198,6 +210,13 @@ jobs:
         with:
           name: netgap_${{ needs.version.outputs.version }}_amd64.deb
           path: netgap_*.deb
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux'
+        with:
+          name: netgap-${{ needs.version.outputs.version }}-1.x86_64.rpm
+          path: netgap-[0-9]*.rpm
           if-no-files-found: error
 
   # The window application cannot be static: it loads the desktop's graphics
@@ -275,6 +294,15 @@ jobs:
           packaging/deb/build.sh netgap-gui "${{ needs.version.outputs.version }}" \
             target/release/netgap-gui "$PWD"
 
+      - name: Package the .rpm
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update >/dev/null
+          apt-get install -y --no-install-recommends rpm >/dev/null
+          packaging/rpm/build.sh netgap-gui "${{ needs.version.outputs.version }}" \
+            target/release/netgap-gui "$PWD"
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ needs.version.outputs.gui_linux }}
@@ -285,6 +313,12 @@ jobs:
         with:
           name: netgap-gui_${{ needs.version.outputs.version }}_amd64.deb
           path: netgap-gui_*.deb
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: netgap-gui-${{ needs.version.outputs.version }}-1.x86_64.rpm
+          path: netgap-gui-*.rpm
           if-no-files-found: error
 
   build-gui-windows:
@@ -360,7 +394,7 @@ jobs:
           ls -lh
           # For a tool people download and run, a checksum in the release is
           # the difference between verifying the download and hoping.
-          sha256sum ./*.tar.gz ./*.zip ./*.deb > SHA256SUMS
+          sha256sum ./*.tar.gz ./*.zip ./*.deb ./*.rpm > SHA256SUMS
           cat SHA256SUMS
 
       - name: Create the release
@@ -396,6 +430,8 @@ jobs:
           - $GUI_LINUX (Linux) and $GUI_WINDOWS (Windows) — the window application
           - netgap_*.deb and netgap-gui_*.deb (Debian, Ubuntu) — the same two,
             installed to /usr/bin with the icon and menu entry
+          - netgap-*.rpm and netgap-gui-*.rpm (Fedora, openSUSE) — the same,
+            installed by the system package manager
           "
 
           gh release create "$TAG" \
@@ -403,5 +439,5 @@ jobs:
             --title "$TAG" \
             --notes "$notes" \
             --generate-notes \
-            dist/*.tar.gz dist/*.zip dist/*.deb dist/SHA256SUMS
+            dist/*.tar.gz dist/*.zip dist/*.deb dist/*.rpm dist/SHA256SUMS
           echo "Published $TAG"
