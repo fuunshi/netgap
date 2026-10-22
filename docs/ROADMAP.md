@@ -980,9 +980,16 @@ Fedora and openSUSE.
 
 Still to do, in rough order of payoff:
 
-- **Windows: a winget manifest** for `netgap-gui`, so `winget install` works
-  and the app appears in a search. The archive name and installer behaviour are
-  already stable.
+- **Windows: winget manifests — generated, awaiting submission.** Every
+  release now carries `netgap-winget-<version>.zip`: the version, locale and
+  installer manifests for `fuunshi.Netgap`, generated from the Windows archive
+  and its hash. `packaging/winget/README.md` has the submission steps. Until
+  the first pull request is merged into `microsoft/winget-pkgs`,
+  `winget install` does not find it; generating the manifest is the part this
+  repository can do.
+- **Chocolatey and Scoop: decided against.** winget ships with the systems
+  this runs on; three channels for one program are three things to keep
+  working.
 - **Linux: `.rpm` — done.** `packaging/rpm/build.sh` builds both programs from
   the same binaries with two spec files that only install files; rpmbuild
   reads the ELF headers and writes the glibc floor into `Requires` itself.
@@ -996,8 +1003,6 @@ Still to do, in rough order of payoff:
   x86_64 only today; a formula that installs an Intel binary on an M-series
   machine is a bad first impression. The `portable-interfaces` feature already
   covers enumeration there, so this is CI work more than code.
-- **Decide between winget, Chocolatey and Scoop** rather than shipping all
-  three; winget is the one people find.
 
 The archives and checksums are generated per release and their names are
 already deterministic, so every one of these can point at the same artifacts.

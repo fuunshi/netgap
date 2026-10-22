@@ -387,6 +387,22 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # winget manifests name one version, one URL and one hash, so they are
+      # written here from the archive that was just built, and travel with the
+      # release. The submit to microsoft/winget-pkgs is a reviewed step a
+      # person does; this is its input.
+      - name: Write the winget manifests
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          GUI_WINDOWS: ${{ needs.version.outputs.gui_windows }}
+        run: |
+          set -euo pipefail
+          sha=$(sha256sum "dist/$GUI_WINDOWS" | cut -d' ' -f1)
+          packaging/winget/make-manifests.sh "$VERSION" "$sha" dist
+          command -v zip >/dev/null 2>&1 || sudo apt-get install -y zip >/dev/null
+          (cd dist && zip -qr "netgap-winget-$VERSION.zip" manifests)
+          unzip -l "dist/netgap-winget-$VERSION.zip"
+
       - name: Checksums
         run: |
           set -euo pipefail
@@ -432,6 +448,8 @@ jobs:
             installed to /usr/bin with the icon and menu entry
           - netgap-*.rpm and netgap-gui-*.rpm (Fedora, openSUSE) — the same,
             installed by the system package manager
+          - netgap-winget-*.zip — the winget manifests for this version, ready
+            to submit to microsoft/winget-pkgs (see packaging/winget/README.md)
           "
 
           gh release create "$TAG" \
