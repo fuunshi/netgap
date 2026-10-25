@@ -1,0 +1,42 @@
+# Maintainer: Pranil Shrestha <pranilshrestha2016@gmail.com>
+pkgname=netgap-gui
+pkgver=1.0.9
+pkgrel=1
+pkgdesc='LAN security scanner: the window application'
+arch=('x86_64')
+url='https://github.com/fuunshi/netgap'
+license=('MIT' 'Apache-2.0')
+depends=(
+  'gcc-libs'
+  'fontconfig'
+  'hicolor-icon-theme'
+  'libglvnd'
+  'libx11'
+  'libxcursor'
+  'libxi'
+  'libxkbcommon'
+  'libxrandr'
+  'wayland'
+)
+makedepends=('cargo' 'rust')
+source=("git+$url.git#tag=v$pkgver")
+sha256sums=('SKIP')
+
+build() {
+  cd netgap
+  # The tags do not carry the version in Cargo.toml; the stamp is what makes
+  # the version in the window's corner the release it was built from.
+  export NETGAP_RELEASE_VERSION="$pkgver"
+  cargo build --release --locked --bin netgap-gui
+}
+
+package() {
+  cd netgap
+  install -Dm0755 target/release/netgap-gui "$pkgdir/usr/bin/netgap-gui"
+  install -Dm0644 netgap-gui/assets/netgap.desktop \
+    "$pkgdir/usr/share/applications/netgap.desktop"
+  install -Dm0644 netgap-gui/assets/netgap.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/netgap.svg"
+  install -Dm0644 LICENSE-MIT "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+  install -Dm0644 LICENSE-APACHE "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+}

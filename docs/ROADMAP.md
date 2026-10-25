@@ -997,12 +997,34 @@ Still to do, in rough order of payoff:
   from its scriptlets. Verified by building both packages with rpm 6.0.1 and
   reading their metadata, file lists and scriptlets; CI builds them with the
   runner's rpm on every release.
-- **A Nix flake** and an **AUR PKGBUILD**; both are thin wrappers over
-  `cargo build --release` and the same install layout.
+- **Linux: Nix flake — done.** `flake.nix` builds both programs from the
+  checkout with `rustPlatform.buildRustPackage` and the committed
+  `Cargo.lock`, installs the menu entry and icon, and wraps `netgap-gui` so
+  the graphics and input libraries it opens at run time are on
+  `LD_LIBRARY_PATH` — a bare `dlopen` finds nothing on NixOS. `nix flake
+  check --no-build` and `nix eval .#packages.x86_64-linux.netgap.name`
+  (which returns `netgap-1.0.0`) both ran against the checkout; the
+  derivation itself was not built here.
+- **Linux: AUR PKGBUILDs — written, not submitted.** `packaging/aur/` holds
+  `netgap` and `netgap-gui`; both clone the release tag, export
+  `NETGAP_RELEASE_VERSION="$pkgver"` so the binary reports the tag it was
+  built from, build with `--release --locked`, and install the same layout
+  as the other packages. Their `.SRCINFO` files are generated from the
+  PKGBUILDs. The `netgap` recipe was exercised from a clean clone — the
+  build finished in under three minutes and the binary answered
+  `netgap 1.0.9` — but `makepkg` packaging itself was not run end to end
+  here, so the packages are not on the AUR yet.
 - **macOS: Homebrew, but only after an arm64 build exists.** Releases are
   x86_64 only today; a formula that installs an Intel binary on an M-series
   machine is a bad first impression. The `portable-interfaces` feature already
   covers enumeration there, so this is CI work more than code.
+
+One thing blocks all of them: the repository is private. Release assets, the
+`git+https://` PKGBUILD sources, the winget installer URL and any `github:`
+fetch of the flake need `fuunshi/netgap` to be readable without an account.
+Until it is public, these recipes work only for someone with access, and
+publishing them to winget or the AUR would ship instructions nobody can
+follow. Making the repository public comes before any submission.
 
 The archives and checksums are generated per release and their names are
 already deterministic, so every one of these can point at the same artifacts.

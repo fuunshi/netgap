@@ -1,0 +1,27 @@
+# Maintainer: Pranil Shrestha <pranilshrestha2016@gmail.com>
+pkgname=netgap
+pkgver=1.0.9
+pkgrel=1
+pkgdesc='LAN security scanner: the engine, the command line and the interactive view'
+arch=('x86_64')
+url='https://github.com/fuunshi/netgap'
+license=('MIT' 'Apache-2.0')
+depends=('gcc-libs')
+makedepends=('cargo' 'rust')
+source=("git+$url.git#tag=v$pkgver")
+sha256sums=('SKIP')
+
+build() {
+  cd netgap
+  # The tags do not carry the version in Cargo.toml; the stamp is what makes
+  # the binary report the release it was built from.
+  export NETGAP_RELEASE_VERSION="$pkgver"
+  cargo build --release --locked --bin netgap
+}
+
+package() {
+  cd netgap
+  install -Dm0755 target/release/netgap "$pkgdir/usr/bin/netgap"
+  install -Dm0644 LICENSE-MIT "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+  install -Dm0644 LICENSE-APACHE "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+}

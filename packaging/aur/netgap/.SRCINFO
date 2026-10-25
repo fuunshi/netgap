@@ -1,0 +1,15 @@
+pkgbase = netgap
+	pkgdesc = LAN security scanner: the engine, the command line and the interactive view
+	pkgver = 1.0.9
+	pkgrel = 1
+	url = https://github.com/fuunshi/netgap
+	arch = x86_64
+	license = MIT
+	license = Apache-2.0
+	makedepends = cargo
+	makedepends = rust
+	depends = gcc-libs
+	source = git+https://github.com/fuunshi/netgap.git#tag=v1.0.9
+	sha256sums = SKIP
+
+pkgname = netgap

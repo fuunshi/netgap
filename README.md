@@ -560,8 +560,9 @@ Known gaps:
 - Rogue AP / evil-twin detection (needs monitor mode and a different permission model)
 - Passive WiFi scanning
 - The config file feeds `netgap scan`; `discover` and `watch` still read flags
-- Desktop packaging (winget, Homebrew, `.deb`/`.rpm`, Nix), signed releases, and native
-  tray icons on Windows and macOS
+- Desktop packaging is mostly in place (`.deb`, `.rpm`, Nix, winget manifests, AUR
+  recipes); Homebrew needs an arm64 build, and winget/AUR submission plus signed
+  releases are still open. Native tray icons on Windows and macOS are missing.
 - Mobile app bridges (uniffi-rs)
 - Web UI dashboard (the desktop window is `netgap-gui`; a browser interface is still open)
 
