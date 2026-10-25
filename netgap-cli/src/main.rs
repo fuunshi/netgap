@@ -34,7 +34,7 @@ use discovery::DiscoveryPlan;
 #[derive(Parser)]
 #[command(name = "netgap")]
 #[command(about = "Network security scanner for discovering and assessing vulnerabilities on your LAN", long_about = None)]
-#[command(version)]
+#[command(version = netgap_core::VERSION)]
 #[command(author = "Pranil Shrestha")]
 struct Cli {
     #[command(subcommand)]

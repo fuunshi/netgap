@@ -8,6 +8,17 @@ use std::fmt;
 use std::net::IpAddr;
 use std::path::PathBuf;
 
+/// The version a build reports.
+///
+/// A release workflow stamps the binary with the tag it is publishing,
+/// because the tag points at a commit whose `Cargo.toml` still carries the
+/// workspace version. A source build without a stamp — `cargo install`, an
+/// AUR or Nix package that does not set one — reports what `Cargo.toml` says.
+pub const VERSION: &str = match option_env!("NETGAP_RELEASE_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 pub mod version {
     use std::cmp::Ordering;
 

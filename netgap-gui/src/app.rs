@@ -981,12 +981,9 @@ impl NetgapApp {
 
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                     ui.label(
-                        RichText::new(theme::tracked(&format!(
-                            "NETGAP V{}",
-                            env!("CARGO_PKG_VERSION")
-                        )))
-                        .font(theme::mono(8.0))
-                        .color(p.muted),
+                        RichText::new(theme::tracked(&format!("NETGAP V{}", netgap_core::VERSION)))
+                            .font(theme::mono(8.0))
+                            .color(p.muted),
                     );
                     ui.add_space(8.0);
 

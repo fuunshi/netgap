@@ -139,21 +139,14 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
-      # The binary reports its own version, and a download whose --version
-      # disagrees with its tag is a bug report waiting to happen. The manifest
-      # is rewritten to the version being released, which is why this builds
-      # without --locked: the lockfile's copy of the workspace version has to
-      # move with it.
-      - name: Set the version being released
-        shell: bash
-        run: |
-          set -euo pipefail
-          sed -i.bak 's/^version = ".*"/version = "${{ needs.version.outputs.version }}"/' Cargo.toml
-          rm -f Cargo.toml.bak
-          grep '^version' Cargo.toml
 
       - name: Build
         shell: bash
+        env:
+          # The tag points at a commit whose Cargo.toml still says the
+          # workspace version; the stamp is what makes the binary report the
+          # version being released, and a source package can set it too.
+          NETGAP_RELEASE_VERSION: ${{ needs.version.outputs.version }}
         run: cargo build --release --bin netgap --target ${{ matrix.target }}
 
       - name: Package (Linux)
@@ -251,15 +244,12 @@ jobs:
         with:
           toolchain: ${{ steps.rust.outputs.channel }}
 
-      - name: Set the version being released
-        shell: bash
-        run: |
-          set -euo pipefail
-          sed -i.bak 's/^version = ".*"/version = "${{ needs.version.outputs.version }}"/' Cargo.toml
-          rm -f Cargo.toml.bak
-          grep '^version' Cargo.toml
 
       - name: Build
+        env:
+          # The window shows its version in the corner; the stamp is what
+          # makes it the one being released.
+          NETGAP_RELEASE_VERSION: ${{ needs.version.outputs.version }}
         run: cargo build --release --bin netgap-gui
 
       # The archive is what a person unpacks when they want the window: the
@@ -347,16 +337,11 @@ jobs:
         with:
           key: release-gui-x86_64-pc-windows-msvc
 
-      - name: Set the version being released
-        shell: bash
-        run: |
-          set -euo pipefail
-          sed -i.bak 's/^version = ".*"/version = "${{ needs.version.outputs.version }}"/' Cargo.toml
-          rm -f Cargo.toml.bak
-          grep '^version' Cargo.toml
 
       - name: Build
         shell: bash
+        env:
+          NETGAP_RELEASE_VERSION: ${{ needs.version.outputs.version }}
         run: cargo build --release --bin netgap-gui --target x86_64-pc-windows-msvc
 
       # A single .exe: double-clicking it is the whole install. The manifest
