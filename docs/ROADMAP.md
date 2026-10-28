@@ -1036,19 +1036,27 @@ Whoever can replace an archive on the release can replace the checksum beside
 it, so the checksum proves the file arrived intact, not that it came from this
 project. For a security tool that is a credibility gap, not paperwork.
 
-Two credible paths:
+- **Keyless signing — done.** The publish job signs `SHA256SUMS` with cosign
+  and publishes the Sigstore bundle beside it. The signing identity is the
+  workflow's own OIDC token, which Sigstore's CA exchanges for a short-lived
+  certificate naming this repository and workflow. No key lives in the
+  repository or in a secret, so there is nothing to leak or rotate.
+- **SLSA provenance — done.** `actions/attest-build-provenance` records an
+  attestation for every digest listed in `SHA256SUMS`, tying each archive and
+  package to the run that built it. `gh attestation verify` checks a download
+  against the repository without cosign.
+- **A maintainer key was not used.** A minisign or GPG key would give an
+  identity independent of GitHub, at the cost of custody and a rotation
+  story; it would also be a key whose trust the same repository has to
+  publish. Worth revisiting only if releases need to outlive the platform.
+- **Verification is documented where people download.** The README carries
+  the `gh attestation verify` and `cosign verify-blob` commands at the
+  download table; a signature nobody knows how to check protects nothing.
 
-- **SLSA provenance through GitHub Actions OIDC**
-  (`actions/attest-build-provenance`): the artifact is tied to the workflow run
-  that produced it, with no key to manage and nothing to rotate. Ties identity
-  to GitHub.
-- **Signing `SHA256SUMS` and the archives** with a maintainer key (minisign or
-  GPG): a stable identity independent of the platform, at the cost of key
-  custody and a documented rotation story.
-
-Either is a contained change to `release.yml`; the part people skip is
-**documenting how to verify**, in the README next to the download table. A
-signature nobody knows how to check protects nothing.
+What remains outside the signature: a `dry_run` stops before the publish job,
+so it builds without signing. The signature and attestations exist only on a
+real release — and, while the repository is private, only people with access
+can fetch that release to verify it.
 
 ---
 

@@ -45,6 +45,38 @@ Both read and write the same scan history (`~/.config/netgap/scans.db`), so a
 scan started in the window shows up in `netgap report`, and the other way
 around.
 
+### Verifying a Download
+
+A checksum proves a file arrived intact; it does not prove who made it, since
+whoever can replace an archive can replace the checksum beside it. Releases
+are signed so the origin can be checked too: every artifact carries a GitHub
+build-provenance attestation, and `SHA256SUMS` is signed keyless by the
+release workflow. Both identities come from GitHub at build time — there is
+no release key to trust or rotate.
+
+With the GitHub CLI (2.49 or newer):
+
+```bash
+gh attestation verify netgap-gui-<version>-linux-x86_64.tar.gz \
+  --repo fuunshi/netgap
+```
+
+With [cosign](https://docs.sigstore.dev/cosign/overview/), using the bundle
+published beside the checksums:
+
+```bash
+cosign verify-blob \
+  --bundle SHA256SUMS.sigstore.json \
+  --certificate-identity-regexp \
+    '^https://github\.com/fuunshi/netgap/\.github/workflows/release\.yml@refs/heads/main$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  SHA256SUMS
+sha256sum -c SHA256SUMS
+```
+
+With the checksum file in the same directory as the downloads, that last
+command checks each file against the signed list.
+
 ### Build from Source
 
 ```bash

@@ -366,6 +366,16 @@ jobs:
     needs: [version, build-cli, build-gui-linux, build-gui-windows]
     if: inputs.dry_run == false
     runs-on: ubuntu-latest
+    # Signing and provenance need an identity that comes from GitHub rather
+    # than from a key stored in this repository: the job mints a short-lived
+    # OIDC token, Sigstore's CA turns it into a certificate naming this
+    # repository and workflow, and the signature is logged in a public
+    # transparency log. Nothing long-lived is kept here, and nothing has to
+    # be rotated.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -394,9 +404,34 @@ jobs:
           cd dist
           ls -lh
           # For a tool people download and run, a checksum in the release is
-          # the difference between verifying the download and hoping.
-          sha256sum ./*.tar.gz ./*.zip ./*.deb ./*.rpm > SHA256SUMS
+          # the difference between verifying the download and hoping. Bare
+          # names, not ./, because the attestation reads this file too.
+          sha256sum *.tar.gz *.zip *.deb *.rpm > SHA256SUMS
           cat SHA256SUMS
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
+
+      # A checksum file anyone can replace proves the download arrived
+      # intact, not that it came from here. Signing it keyless ties it to
+      # this repository and this workflow at the moment of the run, and the
+      # bundle beside it is everything a verifier needs.
+      - name: Sign the checksums
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes \
+            --bundle dist/SHA256SUMS.sigstore.json \
+            dist/SHA256SUMS
+
+      # The same identity records build provenance for every file the
+      # checksum file lists: subject, digest, repository, workflow, commit.
+      # `gh attestation verify` reads it back without cosign.
+      - name: Attest the artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-checksums: dist/SHA256SUMS
 
       - name: Create the release
         env:
@@ -435,6 +470,23 @@ jobs:
             installed by the system package manager
           - netgap-winget-*.zip — the winget manifests for this version, ready
             to submit to microsoft/winget-pkgs (see packaging/winget/README.md)
+          - SHA256SUMS and SHA256SUMS.sigstore.json — the checksums and the
+            Sigstore signature over them
+
+          **Verifying a download.** Every archive carries a GitHub build
+          provenance attestation, and the checksum file is signed keyless by
+          this workflow. Either check proves the file was built here:
+
+              gh attestation verify <file> --repo $GITHUB_REPOSITORY
+
+              cosign verify-blob --bundle SHA256SUMS.sigstore.json \\
+                --certificate-identity-regexp \\
+                  '^https://github\\.com/$GITHUB_REPOSITORY/\\.github/workflows/release\\.yml@refs/heads/main$' \\
+                --certificate-oidc-issuer https://token.actions.githubusercontent.com \\
+                SHA256SUMS
+              sha256sum -c SHA256SUMS
+
+          The README has the same commands at the download table.
           "
 
           gh release create "$TAG" \
@@ -442,5 +494,6 @@ jobs:
             --title "$TAG" \
             --notes "$notes" \
             --generate-notes \
-            dist/*.tar.gz dist/*.zip dist/*.deb dist/*.rpm dist/SHA256SUMS
+            dist/*.tar.gz dist/*.zip dist/*.deb dist/*.rpm \
+            dist/SHA256SUMS dist/SHA256SUMS.sigstore.json
           echo "Published $TAG"
